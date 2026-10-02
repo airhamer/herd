@@ -15,6 +15,7 @@ import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { TopologyPage } from "./components/Topology/TopologyPage";
 import { ServiceManagerPage } from "./components/ServiceManager/ServiceManagerPage";
 import { RequestsPage } from "./components/Requests/RequestsPage";
+import { ManageNodesDialog } from "./components/Nodes/ManageNodesDialog";
 import { ThemeSwitch } from "./components/ThemeSwitch";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { GearIcon, BoltIcon } from "./components/ui/icons";
@@ -158,6 +159,7 @@ function DashboardApp() {
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showManageNodes, setShowManageNodes] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   /** Used when WS is down so add/delete still updates the tab bar */
@@ -361,7 +363,17 @@ function DashboardApp() {
               onReorder={handleReorder}
             />
           )}
-          <div className="ml-auto flex items-center gap-2.5">
+          {inFleet && (
+            <button
+              type="button"
+              onClick={() => setShowManageNodes(true)}
+              className="rounded-lg border border-border bg-surface px-2.5 py-1 text-[11px] font-medium text-muted transition-colors hover:border-accent hover:text-text"
+              title="Add, edit, or remove fleet nodes and their RoCE links"
+            >
+              Manage Nodes
+            </button>
+          )}
+          <div className="ml-auto flex items-center gap-2.">
             <button
               type="button"
               onClick={() => setShowSettings(true)}

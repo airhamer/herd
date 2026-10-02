@@ -96,6 +96,14 @@ secrets stay out of the repo and out of the container's filesystem. A node
 without these mounts still boots and reports `gpu: null`,
 `containers: []` (degraded telemetry-only behavior).
 
+**Tailscale (agent ≥0.3.0).** The install script also mounts the tailscale
+CLI, the tailscaled socket (+ parent dir), `/var/lib/tailscale`, and
+`/etc/tailscale` so the agent can read `tailscale status --json` and report
+the node's own tailnet view (hostname, MagicDNS name, Tailscale IP, backend
+state, config) as the `tailscale` field on `/telemetry`. Best-effort:
+a node without tailscaled still boots and reports `tailscale: null`
+(degraded, not broken).
+
 Full node-agent details: [`docs/NODE-AGENT.md`](NODE-AGENT.md).
 
 ### 2. Dashboard — one host

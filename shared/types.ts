@@ -324,6 +324,68 @@ export interface NetMetrics {
   linkSpeedMbps: number | null;
 }
 
+/** Tailscale host config (best-effort; every field degrades to null). */
+export interface TailscaleConfig {
+  /** tailscaled --state= path (from the systemd unit). */
+  stateFile: string | null;
+  /** tailscaled --socket= path (from the systemd unit). */
+  socket: string | null;
+  /** tailscaled --port= (from the systemd unit). */
+  port: string | null;
+  /** $FLAGS reference in the unit (true when the unit uses $FLAGS). */
+  flags: string | null;
+  /** Contents of /etc/tailscale/tailscale.conf. */
+  conf: string | null;
+  /** Contents of /etc/tailscale/tailscale.env. */
+  env: string | null;
+}
+
+/**
+ * Tailscale node info: hostname, IP, and config. Collected from the host's
+ * `tailscale status --json` + config files. Additive NodeAgentSnapshot field
+ * (null when the host has no tailscaled — degraded, not an error).
+ */
+export interface TailscaleMetrics {
+  /** True when `tailscale status --json` was read and had a Self entry. */
+  available: boolean;
+  /** Hostname as reported by tailscaled (Self.HostName). */
+  hostname: string | null;
+  /** MagicDNS name (Self.DNSName). */
+  dnsName: string | null;
+  /** Primary Tailscale IP (IPv4 preferred). */
+  tailscaleIp: string | null;
+  /** All Tailscale IPs (v4 + v6). */
+  tailscaleIps: string[];
+  /** tailscaled backend state (Running | Stopped | NeedsLogin | NoState). */
+  backendState: string | null;
+  /** OS reported by tailscaled (Self.OS). */
+  os: string | null;
+  /** tailscaled version. */
+  version: string | null;
+  /** DERP relay region, or null when the node has a direct path. */
+  relay: string | null;
+  /** Exit node, or null. */
+  exitNode: string | null;
+  /** TUN device info (from status.TUN). */
+  tun: object | null;
+  /** Current tailnet (status.CurrentTailnet). */
+  currentTailnet: string | null;
+  /** MagicDNS suffix (status.MagicDNSSuffix). */
+  magicDNSSuffix: string | null;
+  /** Key expiry ISO timestamp, or null when disabled. */
+  keyExpiry: string | null;
+  /** True when the key has expired. */
+  keyExpired: boolean;
+  /** Node's own online view (Self.Online). null when not reported. */
+  online: boolean | null;
+  /** Tailscale health warnings. */
+  health: string[];
+  /** Host tailscale config (state/socket/conf/env). */
+  config: TailscaleConfig | null;
+  /** Error message when collection degraded. */
+  error: string | null;
+}
+
 // ─── Node agent snapshot (full telemetry) ──────────────────────────────────
 
 /**
@@ -366,6 +428,8 @@ export interface NodeAgentSnapshot {
   requests: RequestStats | null;
   /** Topology (role, rank, RoCE peers). null when not available. */
   topology: TopologyInfo | null;
+  /** Tailscale node info (hostname, IP, config). null when not available. */
+  tailscale: TailscaleMetrics | null;
   /** Last time this snapshot was polled (ms epoch). */
   polledAt: number;
 }

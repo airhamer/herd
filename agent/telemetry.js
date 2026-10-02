@@ -15,6 +15,10 @@
  *    `comfy`, `systemd`) — permitted by api.schema.json (no
  *    additionalProperties restriction) so the dashboard can consume raw probe
  *    data; Batch 5B can formalize them in types.ts.
+ *  - `tailscale` (TailscaleMetrics) is collected from the host's
+ *    `tailscale status --json` + config files (hostname, IP, socket, conf/env).
+ *    Additive property; null when the host has no tailscaled (degraded, not
+ *    an error).
  */
 import { collectGpu } from "./collectors/gpu.js";
 import { collectCpu } from "./collectors/cpu.js";
@@ -25,9 +29,10 @@ import { collectDocker } from "./collectors/docker.js";
 import { collectSystemd } from "./collectors/systemd.js";
 import { collectLlm } from "./collectors/llm.js";
 import { collectComfy } from "./collectors/comfy.js";
+import { collectTailscale } from "./collectors/tailscale.js";
 import { readTextFile, parseUptimeSeconds } from "./collectors/util.js";
 
-export const AGENT_VERSION = "0.2.0";
+export const AGENT_VERSION = "0.3.0";
 
 /**
  * Derive quantization from a model id/path reference.
@@ -117,6 +122,7 @@ export function assembleSnapshot({
   systemdUnits = [],
   llm = [],
   comfy = null,
+  tailscale = null,
 }) {
   return {
     nodeId,
@@ -141,6 +147,8 @@ export function assembleSnapshot({
     llm,
     comfy,
     systemd: systemdUnits,
+    // Tailscale node info (hostname, IP, config); null when no tailscaled.
+    tailscale,
   };
 }
 
@@ -174,6 +182,7 @@ export async function collectTelemetry(nodeId, nodeName, lanIp, ports = [], comf
     systemdUnits,
     llm,
     comfy,
+    tailscale,
   ] = await Promise.all([
     inj.gpu ? inj.gpu() : collectGpu(opts),
     inj.cpu ? inj.cpu() : collectCpu(opts),
@@ -184,6 +193,7 @@ export async function collectTelemetry(nodeId, nodeName, lanIp, ports = [], comf
     inj.systemd ? inj.systemd() : collectSystemd(opts),
     inj.llm ? inj.llm(ports) : collectLlm(ports, { authTokens: opts.llmAuthTokens }),
     inj.comfy ? inj.comfy(comfyPort) : collectComfy(comfyPort, opts),
+    inj.tailscale ? inj.tailscale() : collectTailscale(opts),
   ]);
 
   let uptimeSeconds = null;
@@ -212,5 +222,6 @@ export async function collectTelemetry(nodeId, nodeName, lanIp, ports = [], comf
     systemdUnits,
     llm,
     comfy,
+    tailscale,
   });
 }

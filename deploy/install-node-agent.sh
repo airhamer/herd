@@ -19,6 +19,12 @@
 #   which is why the container runs as root), and every /dev/nvidia* device.
 #   /proc and /sys are already host-visible; no extra mount needed.
 #
+#   Tailscale (agent ≥0.3.0): the agent reads `tailscale status --json` and
+#   the host config, so the container mounts the tailscale CLI, the
+#   tailscaled socket (+ parent dir), /var/lib/tailscale, and /etc/tailscale.
+#   Best-effort: a node without tailscaled still boots; the tailscale
+#   snapshot degrades to null.
+#
 # Optional per-node env file (NOT mounted into the container, host-side):
 #   ${HOME}/sparkdash-node-agent/agent.env  (suggested mode 600)
 #   Any KEY=VALUE lines are exported to the container, e.g.
@@ -112,6 +118,34 @@ if [[ ${#DEVICE_ARGS[@]} -eq 0 ]]; then
   log "warning: no /dev/nvidia* devices found — GPU telemetry will be null on this host"
 fi
 
+# ── 6b. Tailscale host access (best-effort; not every node runs tailscaled) ─
+# The agent reads `tailscale status --json` and the host config, so the
+# container mounts the tailscale CLI, the tailscaled socket (+ parent dir),
+# the state dir, and /etc/tailscale. All best-effort: a node without
+# tailscaled still boots; the tailscale snapshot degrades to null.
+TAILSCALE_MOUNTS=()
+TAILSCALE_CLI="$(command -v tailscale 2>/dev/null || true)"
+TAILSCALE_SOCKET=""
+for cand in /run/tailscale/tailscaled.sock /var/run/tailscale/tailscaled.sock /tmp/tailscaled.sock; do
+  if [[ -S "${cand}" ]]; then TAILSCALE_SOCKET="${cand}"; break; fi
+done
+if [[ -n "${TAILSCALE_CLI}" ]]; then
+  TAILSCALE_MOUNTS+=(-v "${TAILSCALE_CLI}:${TAILSCALE_CLI}:ro")
+fi
+if [[ -n "${TAILSCALE_SOCKET}" ]]; then
+  TAILSCALE_MOUNTS+=(-v "${TAILSCALE_SOCKET}:${TAILSCALE_SOCKET}")
+  SOCKET_DIR="$(dirname "${TAILSCALE_SOCKET}")"
+  [[ -d "${SOCKET_DIR}" ]] && TAILSCALE_MOUNTS+=(-v "${SOCKET_DIR}:${SOCKET_DIR}")
+fi
+for d in /var/lib/tailscale /etc/tailscale; do
+  [[ -d "${d}" ]] && TAILSCALE_MOUNTS+=(-v "${d}:${d}:ro")
+done
+if [[ ${#TAILSCALE_MOUNTS[@]} -gt 0 ]]; then
+  log "tailscale host access: socket=${TAILSCALE_SOCKET:-none} mounts=${#TAILSCALE_MOUNTS[@]}"
+else
+  log "info: no tailscale host access detected — tailscale telemetry will be null on this host"
+fi
+
 # ── 7. (Re)start the container (idempotent: remove any existing one first) ─
 if docker ps -a --format '{{.Names}}' | grep -qx "${CONTAINER}"; then
   log "stopping existing ${CONTAINER} ..."
@@ -129,6 +163,7 @@ docker run -d \
   -v /usr/bin/systemctl:/usr/bin/systemctl:ro \
   -v /run/systemd:/run/systemd \
   "${DEVICE_ARGS[@]}" \
+  "${TAILSCALE_MOUNTS[@]}" \
   "${ENV_ARGS[@]}" \
   "${IMAGE}" >/dev/null
 
@@ -154,5 +189,9 @@ fi
 if [[ "${containers_empty}" -eq 1 ]]; then
   log "warning: /telemetry reports no containers — check the docker socket mount"
 fi
-log "node-agent live on this host at 127.0.0.1:${AGENT_PORT}"
+tailscale_null="$(printf '%s' "${telem}" | grep -c '"tailscale":null' || true)"
+if [[ "${tailscale_null}" -eq 1 ]]; then
+  log "info: /telemetry reports tailscale:null — tailscaled not visible to the container (normal on non-tailnet nodes)"
+fi
+log "node-agent live on this host at 27.0.0.1:${AGENT_PORT}"
 log "add this host to the dashboard's config/nodes.json (id, endpoint <lan-ip>:${AGENT_PORT})"

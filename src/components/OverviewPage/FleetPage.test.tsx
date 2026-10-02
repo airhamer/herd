@@ -51,6 +51,7 @@ function node(nodeId: string, overrides: Partial<NodeAgentSnapshot> = {}): NodeA
     memory: online ? budget(nodeId) : null,
     requests: null,
     topology: null,
+    tailscale: null,
     polledAt: Date.now() - 1000,
     ...overrides,
   };

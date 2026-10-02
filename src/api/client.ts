@@ -473,3 +473,62 @@ export function sendNodeAction(
     body: JSON.stringify(body),
   });
 }
+
+/** One RoCE/transport link as stored in the node registry. */
+export interface NodeLink {
+  from: string;
+  to: string;
+  fromIf?: string | null;
+  toIf?: string | null;
+  speedMbps: number | null;
+  transport: "roce" | "tcp";
+  up: boolean;
+}
+
+/** One node record in config/nodes.json (the fleet registry). */
+export interface NodeRecord {
+  id: string;
+  name: string;
+  endpoint: string;
+  lanIp: string;
+  role: "head" | "worker" | "standalone";
+  rank: number | null;
+  groupId: string | null;
+  headId: string | null;
+  links: NodeLink[];
+  agentPort: number;
+  isLocal: boolean;
+}
+
+/** List all registered fleet nodes. */
+export function fetchFleetNodes(): Promise<{ nodes: NodeRecord[] }> {
+  return apiFetch("/api/fleet/nodes");
+}
+
+/** Add a fleet node (persisted to config/nodes.json). */
+export function addFleetNode(node: NodeRecord): Promise<{ success: boolean; node: NodeRecord }> {
+  return apiFetch("/api/fleet/nodes", {
+    method: "POST",
+    body: JSON.stringify(node),
+  });
+}
+
+/** Update a fleet node by id. */
+export function updateFleetNode(
+  id: string,
+  patch: Partial<NodeRecord>
+): Promise<{ success: boolean; node: NodeRecord }> {
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(patch),
+  });
+}
+
+/** Remove a fleet node by id. */
+export function deleteFleetNode(
+  id: string
+): Promise<{ success: boolean; removed: NodeRecord }> {
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}

@@ -22,6 +22,13 @@
 #   -v /run/systemd:/run/systemd           systemctl's private socket (0700 root)
 #   --device /dev/nvidiactl  --device /dev/nvidia0   (all /dev/nvidia* present)
 #
+#   Tailscale (agent ≥0.3.0) — best-effort, only on nodes that run tailscaled:
+#   -v /usr/bin/tailscale:/usr/bin/tailscale:ro
+#   -v /run/tailscale/tailscaled.sock:/run/tailscale/tailscaled.sock
+#   -v /run/tailscale:/run/tailscale
+#   -v /var/lib/tailscale:/var/lib/tailscale:ro
+#   -v /etc/tailscale:/etc/tailscale:ro
+#
 # The container therefore runs as ROOT on purpose: /run/systemd/private is
 # srwx------ root, so systemd actions (start/stop/restart + unit telemetry)
 # are impossible as any non-root user. Combined with the docker socket, the

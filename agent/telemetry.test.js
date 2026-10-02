@@ -139,6 +139,34 @@ const NET_FIXTURE = [
   { iface: "eth0", ip: "192.168.50.150", rxSpeed: 0, txSpeed: 0, linkSpeedMbps: 25000 },
 ];
 const SYSTEMD_FIXTURE = [{ name: "vllm.service", status: "running", uptimeSeconds: 400 }];
+const TAILSCALE_FIXTURE = {
+  available: true,
+  hostname: "narthex",
+  dnsName: "narthex.tailda7857.ts.net.",
+  tailscaleIp: "100.99.211.91",
+  tailscaleIps: ["100.99.211.91", "fd7a:115c:a1e0::99"],
+  backendState: "Running",
+  os: "linux",
+  version: "1.102.4",
+  relay: "nyc",
+  exitNode: null,
+  tun: { TUNName: "tailscale0", MTU: 65520 },
+  currentTailnet: "elcid92@ts.net",
+  magicDNSSuffix: "ts.net",
+  keyExpiry: "2027-06-08T03:33:02Z",
+  keyExpired: false,
+  online: true,
+  health: [],
+  config: {
+    stateFile: "/var/lib/tailscale/tailscaled.state",
+    socket: "/run/tailscale/tailscaled.sock",
+    port: null,
+    flags: "$FLAGS",
+    conf: null,
+    env: null,
+  },
+  error: null,
+};
 
 const FULL_INJECT = {
   gpu: async () => GPU_FIXTURE,
@@ -151,6 +179,7 @@ const FULL_INJECT = {
   llm: async () => LLM_FIXTURE,
   comfy: async () => COMFY_FIXTURE,
   uptime: async () => 12345,
+  tailscale: async () => TAILSCALE_FIXTURE,
 };
 
 // ─── Tests ────────────────────────────────────────────────────────────────
@@ -211,6 +240,12 @@ test("telemetry: full snapshot validates against shared/api.schema.json", async 
   assert.deepEqual(snap.llm, LLM_FIXTURE);
   assert.deepEqual(snap.comfy, COMFY_FIXTURE);
   assert.deepEqual(snap.systemd, SYSTEMD_FIXTURE);
+
+  // Tailscale node info (hostname, IP, config) — additive field.
+  assert.deepEqual(snap.tailscale, TAILSCALE_FIXTURE);
+  assert.equal(snap.tailscale.hostname, "narthex");
+  assert.equal(snap.tailscale.tailscaleIp, "100.99.211.91");
+  assert.equal(snap.tailscale.config.socket, "/run/tailscale/tailscaled.sock");
 });
 
 test("telemetry: all collectors failing still yields a schema-valid snapshot", async () => {

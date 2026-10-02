@@ -88,9 +88,21 @@ the GPU devices and wires all of this automatically; a hand-rolled
 `docker run` needs the equivalent flags (full list in
 [`deploy/Dockerfile.node-agent`](../deploy/Dockerfile.node-agent)).
 
+**Tailscale (agent ≥0.3.0).** The agent reports the node's own tailnet view
+— hostname, MagicDNS name, Tailscale IP, backend state, and config (socket,
+state file, conf/env) — as the `tailscale` field on `/telemetry`. It reads
+`tailscale status --json` + the host config files, so the container mounts
+the tailscale CLI, the tailscaled socket (+ parent dir), `/var/lib/tailscale`, and
+`/etc/tailscale`. Best-effort: a node without tailscaled still boots and
+reports `tailscale: null` (degraded, not broken). The install script wires
+these mounts automatically; a hand-rolled `docker run` needs the equivalent
+flags (full list in [`deploy/Dockerfile.node-agent`](../deploy/Dockerfile.node-agent)).
+
 Without these mounts the agent still boots and reports what it can reach:
 `gpu: null`, `containers: []`, empty systemd services, and no action
 capability — degraded, not broken.
+
+**Tailscale (agent ≥0.3.0).** The agent reports the node's own tailnet view — hostname, MagicDNS name, Tailscale IP, backend state, and config (socket, state file, conf/env) — as the `tailscale` field on `/telemetry`. It reads `tailscale status --json` + the host config files, so the container mounts the tailscale CLI, the tailscaled socket (+ parent dir), `/var/lib/tailscale`, and `/etc/tailscale`. Best-effort: a node without tailscaled still boots and reports `tailscale: null` (degraded, not broken). `deploy/install-node-agent.sh` wires these mounts automatically; a hand-rolled `docker run` needs the equivalent flags (full list in [`deploy/Dockerfile.node-agent`](../deploy/Dockerfile.node-agent)).
 
 ### B. docker-compose
 
@@ -156,7 +168,8 @@ All endpoints are JSON. With `NODE_AGENT_TOKEN` set, send
 
 | Endpoint | Method | Returns |
 |---|---|---|
-| `/telemetry` | GET | A full `NodeAgentSnapshot` (the primary data structure the dashboard polls). `services` (recipes joined with live state), `memory` (budget, report-only `wantMB: 0`), and `requests` (per-engine queued/running/finished) are **fields of this snapshot**, not separate routes. `topology` is registry-owned (dashboard side). |
+| `/telemetry` | GET | A full `NodeAgentSnapshot` (the primary data structure the dashboard polls). `services` (recipes joined with live state), `memory` (budget, report-only `wantMB: 0`), `requests` (per-engine queued/running/finished), and `tailscale` (hostname, IP, config) are **fields of this snapshot**, not separate routes. `topology` is registry-owned (dashboard side). |
+| `/telemetry` → `tailscale` | — | `TailscaleMetrics` — the node's own tailnet view from `tailscale status --json` + host config (hostname, MagicDNS name, Tailscale IP, backend state, socket, conf/env). Additive field; `null` when the host has no tailscaled (degraded, not an error). |
 | `/versions` | GET | Live `VersionInfo[]` — the *actual* running config (image tag/digest + LLM `server_info` + process env), not a recipe. |
 | `/containers` | GET | `ContainerInfo[]` — running (and, when requested, stopped) Docker containers. |
 | `/actions` | POST | Execute an `ActionRequest`; returns `ActionResponse`. |

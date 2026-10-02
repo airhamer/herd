@@ -245,6 +245,8 @@ New UI views (reachable from the header tabs): `/fleet` (fleet overview), `/topo
 
 The node agent is installed on each Spark with `deploy/install-node-agent.sh` (Docker: `deploy/Dockerfile.node-agent`). The actions build (agent ≥0.2.0) ships `POST /actions` + `GET /audit`, and joins `services`/`memory`/`requests` into the telemetry snapshot; it needs host access (docker socket, `systemctl`, `nvidia-smi`, GPU devices) — the install script wires the mounts automatically (see `docs/NODE-AGENT.md`). The fleet layer is fully independent of the SSH-based Spark monitors above — both coexist.
 
+**Tailscale (agent ≥0.3.0).** Each node also reports its own tailnet view as the `tailscale` field on `/telemetry`: hostname, MagicDNS name, Tailscale IP, backend state, and config (socket, state file, conf/env). The install script mounts the tailscale CLI, socket, `/var/lib/tailscale`, and `/etc/tailscale` so the agent can read `tailscale status --json`. Best-effort: a node without tailscaled still boots and reports `tailscale: null` (degraded, not broken).
+
 ---
 
 ## Quick start

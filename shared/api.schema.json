@@ -22,6 +22,7 @@
     "memory": { "$ref": "#/definitions/MemoryBudget" },
     "requests": { "$ref": "#/definitions/RequestStats" },
     "topology": { "$ref": "#/definitions/TopologyInfo" },
+    "tailscale": { "$ref": "#/definitions/TailscaleMetrics" },
     "polledAt": { "type": "number", "description": "ms epoch" }
   },
   "definitions": {
@@ -157,6 +158,42 @@
         "nodeId": { "type": "string" },
         "stats": { "type": "array", "items": { "type": "object", "required": ["modelId", "engine", "nodeId", "port", "queued", "running", "finished", "polledAt"], "properties": { "modelId": { "type": "string" }, "engine": { "type": "string" }, "nodeId": { "type": "string" }, "port": { "type": "number" }, "queued": { "type": "number" }, "running": { "type": "number" }, "finished": { "type": "number" }, "polledAt": { "type": "number" } } } },
         "polledAt": { "type": "number" }
+      }
+    },
+    "TailscaleMetrics": {
+      "type": ["object", "null"],
+      "description": "Tailscale node info: hostname, IP, and config. Additive (null when the host has no tailscaled).",
+      "required": ["available", "hostname", "dnsName", "tailscaleIp", "tailscaleIps", "backendState", "os", "version", "relay", "exitNode", "tun", "currentTailnet", "magicDNSSuffix", "keyExpiry", "keyExpired", "online", "health", "config", "error"],
+      "properties": {
+        "available": { "type": "boolean" },
+        "hostname": { "type": ["string", "null"] },
+        "dnsName": { "type": ["string", "null"] },
+        "tailscaleIp": { "type": ["string", "null"] },
+        "tailscaleIps": { "type": "array", "items": { "type": "string" } },
+        "backendState": { "type": ["string", "null"] },
+        "os": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"] },
+        "relay": { "type": ["string", "null"] },
+        "exitNode": { "type": ["string", "null"] },
+        "tun": { "type": ["object", "null"] },
+        "currentTailnet": { "type": ["string", "null"] },
+        "magicDNSSuffix": { "type": ["string", "null"] },
+        "keyExpiry": { "type": ["string", "null"] },
+        "keyExpired": { "type": "boolean" },
+        "online": { "type": ["boolean", "null"] },
+        "health": { "type": "array", "items": { "type": "string" } },
+        "config": {
+          "type": ["object", "null"],
+          "properties": {
+            "stateFile": { "type": ["string", "null"] },
+            "socket": { "type": ["string", "null"] },
+            "port": { "type": ["string", "null"] },
+            "flags": { "type": ["string", "null"] },
+            "conf": { "type": ["string", "null"] },
+            "env": { "type": ["string", "null"] }
+          }
+        },
+        "error": { "type": ["string", "null"] }
       }
     },
     "TopologyInfo": {

@@ -30,6 +30,11 @@ On each DGX Spark (from a checkout of the repo):
   access for the actions build** (docker socket, host `docker`/`nvidia-smi`/
   `systemctl` binaries, `/run/systemd`, all `/dev/nvidia*` devices — the
   container runs as root, by design, see `Dockerfile.node-agent`)
+- Mounts the tailscale CLI, socket (+ parent dir), `/var/lib/tailscale`, and
+  `/etc/tailscale` (agent ≥0.3.0) so the node reports its own tailnet view
+  (hostname, MagicDNS name, Tailscale IP, backend state, config) as the
+  `tailscale` field on `/telemetry`. Best-effort: a node without tailscaled
+  still boots and reports `tailscale: null` (degraded, not broken)
 - Reads an optional host-side `~/sparkdash-node-agent/agent.env` (keep `0600`)
   for `LLM_AUTH_TOKENS`, `NODE_AGENT_TOKEN`, and other agent env vars
 - Verifies `curl http://127.0.0.1:30091/health` → `{"ok":true,...}` and warns
