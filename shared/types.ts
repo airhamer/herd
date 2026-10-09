@@ -551,3 +551,123 @@ export interface FleetSnapshot {
   /** Last time this snapshot was polled (ms epoch). */
   polledAt: number;
 }
+
+// ─── DGX updates (docs/SPEC-UPDATES.md §9; docs/ is gitignored, this is the
+//     source of truth) ─────────────────────────────────────────────────────
+
+/** One apt package in an available DGX update. */
+export interface DgxPackageUpdate {
+  name: string;
+  currentVersion: string;
+  availableVersion: string;
+  sizeBytes: number | null;
+}
+
+/** One firmware item in an available DGX update. */
+export interface DgxFirmwareUpdate {
+  /** UEFI, EC, USB-PD, TPM, SoC, … */
+  component: string;
+  currentVersion: string;
+  availableVersion: string | null;
+}
+
+/** OTA bundle metadata (from 11000 /updates). */
+export interface DgxOtaInfo {
+  version: string;
+  date: string | null;
+  priority: "Critical" | "Normal" | null;
+  releaseNotesUrl: string | null;
+}
+
+/** Agent-side cached probe snapshot. */
+export interface DgxUpdateSnapshot {
+  probedAt: number;
+  agentReachable: boolean;
+  /** /etc/dgx-release DGX_SWBUILD_VERSION */
+  swBuild: string | null;
+  latestOtaApplied: { version: string; date: string } | null;
+  otaAvailable: DgxOtaInfo | null;
+  packages: DgxPackageUpdate[];
+  firmware: DgxFirmwareUpdate[];
+  updatesDisabled: boolean;
+  /** false when agent/config/dgx.json has no credentials yet */
+  dgxConfigured?: boolean;
+}
+
+/** Stage tokens from the 11000 update stream. */
+export type DgxUpdateStage =
+  | "update_cache"
+  | "upgrade_packages"
+  | "upgrade_firmware"
+  | "reboot";
+
+/** Agent-side update state (incl. persisted event log). */
+export interface DgxUpdateState {
+  inProgress: boolean;
+  stage: DgxUpdateStage | null;
+  startedAt: number | null;
+  finishedAt: number | null;
+  /** post-boot confirmation marker */
+  bootId: string | null;
+  lastOutcome: "success" | "error" | null;
+  lastOutcomeDetail: string | null;
+  events: Array<{ at: number; stage: string; message: string }>;
+}
+
+/** One schedule entry, stored on the node agent. */
+export interface NodeUpdateSchedule {
+  id: string;
+  action: "dgx-update";
+  kind: "at" | "cron";
+  /** kind === "at" (epoch ms) */
+  at: number | null;
+  /** kind === "cron" (5-field) */
+  cron: string | null;
+  /** computed; recomputed after each fire (cron) */
+  nextFire: number;
+  /** cron schedules stay pending after firing */
+  status: "pending" | "fired" | "done" | "cancelled";
+  /** host crontab entry installed */
+  mirrorCron: boolean;
+  createdAt: number;
+  firedAt: number | null;
+  lastFireResult: "triggered" | "skipped-current" | "error" | null;
+}
+
+/** What GET /api/fleet/updates returns, per node. */
+export interface NodeUpdatesView {
+  nodeId: string;
+  /** agent reachable */
+  reachable: boolean;
+  snapshot: DgxUpdateSnapshot | null;
+  state: DgxUpdateState;
+  schedules: NodeUpdateSchedule[];
+  /** dashboard-derived */
+  display:
+    | "current"
+    | "available"
+    | "updating"
+    | "rebooting"
+    | "slow"
+    | "stale"
+    | "failed";
+  /** set while rebooting/slow */
+  graceElapsedMs: number | null;
+  /** membership in the active fleet plan */
+  waveIndex: number | null;
+}
+
+/** A set of sparks updated together (one wave). */
+export interface UpdateGroup {
+  nodeIds: string[];
+  reason: "tp-pair" | "standalone" | "manual";
+}
+
+/** Ordered fleet plan (wave 0 runs first). */
+export interface FleetUpdatePlan {
+  groups: UpdateGroup[];
+  createdAt: number;
+  /** null = planned, not started */
+  startedAt: number | null;
+  waveStates: Array<"pending" | "running" | "rebooting" | "slow" | "healthy">;
+}
