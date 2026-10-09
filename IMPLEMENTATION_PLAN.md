@@ -418,6 +418,18 @@ seed-and-diff (deploy scripts idempotent); e2e (dashboard + node-agent wired, PR
 
 ## 6. Running log
 
+### 2026-10-09 — Batch 2 (agent probe) DONE
+- **Commit:** bd34472
+- **Files:** agent/updates/dgx.js, agent/updates/scheduler.js, agent/updates/cronMirror.js, agent/updates/__tests__/scheduler.test.js
+- **Tests:** 264/264 agent tests pass, 0 fail
+- **Notes:** dgx.js = 11000 client (login/JWT, probe, status, trigger, SSE/WS stream, event ring, post-boot outcome). scheduler.js = persisted schedule table, at timers, 5-field cron, re-arm/past-due, idempotent fire. cronMirror.js = marker-commented host crontab mirror. Wired into http.js (GET /updates), dispatch.js (4 new action types), main.js (createNodeAgent).
+
+### 2026-10-09 — Batch 1 (spike, read-only) DONE
+- **Deliverable:** docs/UPDATES-11000.md
+- **Contract:** POST /api/login {username,password} → JWT; GET /api/v1/updates/available; GET /api/v1/update_reboot/status; GET /api/v1/update_reboot/stream; POST /api/v1/update_reboot (trigger); GET /api/v1/updates/enabled (public)
+- **Notes:** Read-only spike on all three sparks. No triggers fired. Authenticated payload shape pending Steve's DGX password.
+
+
 **2026-09-23 ~10:53 EDT** — Batch 5 DONE (commits 5fb17ab + b1ad8e8). Worker 5A
 delivered agent/catalog/media.js + config/media-recipes.json + media.test.js
 (22 tests). Worker 5B delivered deploy/{docker-compose,Dockerfile.node-agent,

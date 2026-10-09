@@ -52,6 +52,9 @@
 |  4B | 2026-09-23 08:40 | DONE | c999c92 | ServiceManager/Requests UI + timeAgo; 26 tests; 96/96 frontend suite |
 | 5A | 2026-09-23 10:20 | DONE | 5fb17ab | Media catalog (video/image/tts/stt/voice) + media-recipes.json; 22 tests |
 | 5B | 2026-09-23 10:20 | DONE | b1ad8e8 | Deploy compose/Dockerfile/install script + docs + PR prep; 10 files |
+| 1 (updates) | 2026-10-09 13:00 | DONE | — | Batch 1 spike: 11000 contract mapped, docs/UPDATES-11000.md |
+| 2 (updates) | 2026-10-09 13:00 | DONE | bd34472 | Batch 2 agent probe: dgx.js + scheduler.js + cronMirror.js + 16 tests, 264/264 green |
+| 5 (updates) | 2026-10-09 15:10 | DISPATCHED | — | Batch 5 dashboard routes + WaveSequencer |
 
 ## Gate Findings Log
 
