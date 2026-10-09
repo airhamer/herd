@@ -86,7 +86,7 @@ test("http: identity + health endpoints", async () => {
     assert.deepEqual(await root.json(), {
       name: "sparkdash-node-agent",
       version: "0.2.0",
-      endpoints: ["/telemetry", "/versions", "/containers", "/actions", "/audit", "/health"],
+      endpoints: ["/telemetry", "/versions", "/containers", "/actions", "/audit", "/health", "/updates"],
     });
 
     const health = await fetch(`${base}/health`);

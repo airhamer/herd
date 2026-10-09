@@ -13,6 +13,9 @@
  *                       response = ActionResponse
  *   GET  /audit       → last N audit entries (AuditEntry[]; ?limit=N,
  *                       default 50)
+  *   GET  /updates     → DGX-update view { snapshot, state, schedules }
+  *                       (agent/updates/; DGX dashboard-backend client +
+  *                       scheduler). Requires opts.updates.
  *
  * Each telemetry/versions/containers request invokes snapshotFn() directly
  * (no cache) — the dashboard server owns poll pacing. POST /actions and
@@ -88,6 +91,7 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
     typeof opts.auditPath === "string" && opts.auditPath !== "" ? opts.auditPath : undefined;
   const llmAuthTokens =
     opts.llmAuthTokens && typeof opts.llmAuthTokens === "object" ? opts.llmAuthTokens : undefined;
+  const updates = opts.updates && typeof opts.updates === "object" ? opts.updates : null;
   /** @type {import("node:http").Server | null} */
   let server = null;
 
@@ -133,16 +137,16 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
             } catch {
               throw Object.assign(new Error("invalid JSON body"), { httpStatus: 400 });
             }
-            return dispatchAction(
-              request,
-              catalog && {
+            return dispatchAction(request, {
+              ...(catalog && {
                 getRecipe: catalog.getRecipe,
                 listRecipes: catalog.listRecipes,
-                snapshotFn,
-                auditPath,
-                llmAuthTokens,
-              }
-            ).then((response) => ({ status: 200, body: response }));
+              }),
+              snapshotFn,
+              auditPath,
+              llmAuthTokens,
+              ...(updates && { updates }),
+            }).then((response) => ({ status: 200, body: response }));
           })
           .then(({ status, body }) => json(res, status, body))
           .catch((err) => {
@@ -164,7 +168,15 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
         json(res, 200, {
           name: "sparkdash-node-agent",
           version: agentVersion,
-          endpoints: ["/telemetry", "/versions", "/containers", "/actions", "/audit", "/health"],
+          endpoints: [
+            "/telemetry",
+            "/versions",
+            "/containers",
+            "/actions",
+            "/audit",
+            "/health",
+            "/updates",
+          ],
         });
         return;
       }
@@ -190,6 +202,21 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
               error: "telemetry failed",
               message: String(err?.message || err),
             });
+          });
+        return;
+      }
+
+      if (pathname === "/updates") {
+        if (!updates) {
+          json(res, 503, { error: "updates module not available" });
+          return;
+        }
+        Promise.resolve()
+          .then(() => updates.fullView())
+          .then((view) => json(res, 200, view))
+          .catch((err) => {
+            const status = Number.isInteger(err?.httpStatus) ? err.httpStatus : 500;
+            json(res, status, { error: String(err?.message || "updates view failed") });
           });
         return;
       }

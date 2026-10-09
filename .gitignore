@@ -40,3 +40,7 @@ agent/config/audit.log
 agent/state/
 # Node-agent Docker image build context (not committed)
 agent/Dockerfile.build
+agent/config/dgx.json
+agent/config/schedules.json
+agent/config/update-events.json
+agent/config/update-snapshot.json

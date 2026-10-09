@@ -39,6 +39,15 @@ import { appendAudit } from "./audit.js";
 /** Action types the HTTP endpoint accepts (shared/types.ts ActionRequest.type). */
 export const ACTION_TYPES = ["start", "stop", "restart", "switch"];
 
+/** DGX fleet-update action types (agent/updates/ module; routed through
+ *  deps.updates, not the recipe catalog). */
+export const DGX_ACTION_TYPES = [
+  "dgx-update-now",
+  "schedule-update",
+  "cancel-schedule",
+  "fire-schedule",
+];
+
 const CONTAINER_VERBS = {
   start: startContainer,
   stop: stopContainer,
@@ -84,6 +93,11 @@ export async function dispatchAction(request, deps = {}) {
 
   if (!request || typeof request !== "object" || Array.isArray(request)) {
     throw new ActionError(400, "action request must be a JSON object");
+  }
+
+  // DGX update actions bypass the recipe catalog entirely.
+  if (DGX_ACTION_TYPES.includes(request.type)) {
+    return dispatchDgxAction(request, d);
   }
 
   const type = request.type;
@@ -166,6 +180,57 @@ export async function dispatchAction(request, deps = {}) {
   );
 
   return response;
+}
+
+/**
+ * DGX fleet-update dispatch (agent/updates/). The updates handle is injected
+ * via deps.updates (see agent/main.js): { triggerNow, scheduleUpdate,
+ * cancelSchedule, fireSchedule, fullView }. Handler errors carry an
+ * httpStatus (400/404/409) and propagate for http.js to surface.
+ *
+ * @param {object} request
+ * @param {object} d
+ */
+async function dispatchDgxAction(request, d) {
+  if (!d.updates || typeof d.updates !== "object") {
+    throw new ActionError(503, "updates module not configured on this node");
+  }
+  const type = request.type;
+  let response;
+  if (type === "dgx-update-now") {
+    response = await d.updates.triggerNow();
+  } else if (type === "schedule-update") {
+    response = await d.updates.scheduleUpdate(request);
+  } else if (type === "cancel-schedule") {
+    if (typeof request.scheduleId !== "string" || request.scheduleId === "") {
+      throw new ActionError(400, "scheduleId is required");
+    }
+    response = await d.updates.cancelSchedule(request.scheduleId);
+  } else {
+    if (typeof request.scheduleId !== "string" || request.scheduleId === "") {
+      throw new ActionError(400, "scheduleId is required");
+    }
+    response = await d.updates.fireSchedule(request.scheduleId);
+  }
+
+  await appendAudit(
+    {
+      action: type,
+      serviceName: "dgx-update",
+      port: null,
+      modelId: null,
+      engine: "dgx",
+      status: "ok",
+      message:
+        typeof response?.message === "string"
+          ? response.message
+          : JSON.stringify(response ?? {}).slice(0, 200),
+      durationMs: null,
+    },
+    { path: typeof d.auditPath === "string" && d.auditPath !== "" ? d.auditPath : undefined }
+  );
+
+  return { type, status: "ok", ...(response && typeof response === "object" ? response : { ok: response }) };
 }
 
 /**

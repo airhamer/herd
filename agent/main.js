@@ -54,6 +54,8 @@ import { listServices } from "./catalog/services.js";
 import { createHttpServer } from "./http.js";
 import { collectTelemetry, AGENT_VERSION } from "./telemetry.js";
 import { parseLlmAuthTokens } from "./collectors/llm.js";
+import { createDgxUpdates } from "./updates/dgx.js";
+import { createUpdateScheduler } from "./updates/scheduler.js";
 
 // Catalog seam — re-exported so Worker 1A (telemetry) and 2A/2B (actions) can
 // import from agent/main.js or the catalog modules directly (same code).
@@ -393,6 +395,18 @@ export function enrichSnapshot(snapshot, opts = {}) {
 export function createNodeAgent(opts = {}) {
   const identity = readNodeIdentity(opts.env);
   const catalog = loadCatalog(opts.env, { force: Boolean(opts.reloadCatalog) });
+  // DGX fleet-updates (docs/SPEC-UPDATES.md §5): 11000 client + scheduler.
+  // Degraded-safe: no agent/config/dgx.json → every entry point answers with
+  // dgxConfigured:false and nothing throws.
+  const dgx = createDgxUpdates();
+  const scheduler = createUpdateScheduler({ dgx });
+  const updates = {
+    triggerNow: () => dgx.triggerNow(),
+    scheduleUpdate: (req) => scheduler.scheduleUpdate(req),
+    cancelSchedule: (id) => scheduler.cancelSchedule(id),
+    fireSchedule: (id) => scheduler.fireSchedule(id),
+    fullView: () => scheduler.fullView(),
+  };
   const httpServer = createHttpServer(
     () =>
       collectTelemetry(
@@ -414,6 +428,7 @@ export function createNodeAgent(opts = {}) {
       },
       auditPath: identity.auditPath,
       llmAuthTokens: identity.llmAuthTokens,
+      updates,
     }
   );
   return {
@@ -434,6 +449,10 @@ export function createNodeAgent(opts = {}) {
       listServices: (liveState) => listServices(catalog.recipes, liveState),
     },
     start() {
+      // Re-arm persisted schedules (past-due one-shot fires once) and start
+      // the hourly DGX prober. Timers fire; nothing polls between them.
+      scheduler.start();
+      dgx.startProber();
       return httpServer.start().then((addr) => {
         console.log(
           JSON.stringify(

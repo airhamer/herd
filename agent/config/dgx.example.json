@@ -1,0 +1,7 @@
+{
+  "_comment": "Copy to dgx.json (0600) on each spark. Credentials for the DGX dashboard backend (11000). Same PAM user you sign into the DGX dashboard web UI.",
+  "host": "127.0.0.1",
+  "port": 11000,
+  "username": "steve",
+  "password": "REPLACE-ME"
+}
