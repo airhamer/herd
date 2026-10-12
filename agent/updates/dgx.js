@@ -526,6 +526,19 @@ export function createDgxUpdates(opts = {}) {
     return { ...state, events: events.slice() };
   }
 
+  /**
+   * GET /updates producer — consumed by scheduler.fullView(), which awaits
+   * this and adds its own `schedules` key; http.js serves the merged
+   * { snapshot, state, schedules } body. Cache-only composition on purpose:
+   * getSnapshot/getState never probe and never throw, and the dashboard may
+   * poll /updates far faster than the hourly prober cadence — spec §3
+   * forbids backend polling between prober ticks. Degraded-safe: with no
+   * credentials the snapshot carries dgxConfigured:false.
+   */
+  async function fullView() {
+    return { snapshot: getSnapshot(), state: getState() };
+  }
+
   /** Hourly unref'd prober; probes only when configured, nothing between ticks. */
   function startProber() {
     if (prober) return prober;
@@ -556,6 +569,7 @@ export function createDgxUpdates(opts = {}) {
     configured: () => loadConfig() !== null,
     getSnapshot,
     getState,
+    fullView,
     probe,
     probeForce: () => probe(true),
     status,
