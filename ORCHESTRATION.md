@@ -54,13 +54,15 @@
 | 5B | 2026-09-23 10:20 | DONE | b1ad8e8 | Deploy compose/Dockerfile/install script + docs + PR prep; 10 files |
 | 1 (updates) | 2026-10-09 13:00 | DONE | — | Batch 1 spike: 11000 contract mapped, docs/UPDATES-11000.md |
 | 2 (updates) | 2026-10-09 13:00 | DONE | bd34472 | Batch 2 agent probe: dgx.js + scheduler.js + cronMirror.js + 16 tests, 264/264 green |
-| 5 (updates) | 2026-10-12 14:28 | RUNNING | — | Worker session 771ed1ed (runId 2d84819d, vllm/qwen3.8-27b, run-timeout 4h). NOTE: the 2026-10-09 and 2026-10-11 "DISPATCHED" rows were phantom — `sessions_spawn` is a deferred tool; a direct call returns "Tool not found" and no worker ever ran. Real dispatch went through `tool_call(id=openclaw:core:sessions_spawn)`. Cron loop a3ae59a9 fixed 2026-10-12: every 10m, timeout 1200s, cleared hung `aeon/aeon-tp2` model override, best-effort delivery, re-enabled. |
+| 5 (updates) | 2026-10-12 16:52 | RESUMED | — | Worker #1 (771ed1ed) ended NOT-DONE honestly (~70%): 4 files + 43 tests on disk, orchestrator-verified 106/106 fleet + tsc 0. Resume worker `agent:main:dashboard:6ca9d189` (runId 5d8e3fbf) does steps 1-6: index.js wiring, .gitignore, example plan, 3× gate, SELF-REVIEW, commit. Earlier phantom-dispatch note: 10-09/10-11 "DISPATCHED" rows were false — sessions_spawn is deferred; wrap via tool_call(id=openclaw:core:sessions_spawn). Cron loop a3ae59a9 fixed same day (10m/1200s/default model/best-effort). |
 
 ## Gate Findings Log
 
 | Batch | Defect | Severity | Decision | Durable rule |
 |---|---|---|---|---|
 | 0 | — | — | — | — |
+| 2 (found in 5) | `agent/updates/dgx.js` never returns `fullView`; `scheduler.js:362` awaits it → production GET /updates would 500; agent tests stub a fake dgx and hide it | Medium (dashboard degrades per spec; breaks agent-side deploy) | Fix in a small agent follow-up batch BEFORE Batch 7 deploy | One integration test per batch must exercise REAL module wiring — dependency stubs may not cover exported-shape claims |
+| 2 (found in 5) | `/telemetry` snapshot carries no DGX update state → waveSequencer fails closed in production (correct behavior, inert gate) | Design gap | **PARKED — human decision**: who owns merging `/updates` into `/telemetry` (new agent-build batch vs. Batch 7) changes what the plan is | — |
 
 ## Standing Dispatch Rules
 
