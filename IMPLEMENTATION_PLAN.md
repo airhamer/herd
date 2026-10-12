@@ -418,6 +418,12 @@ seed-and-diff (deploy scripts idempotent); e2e (dashboard + node-agent wired, PR
 
 ## 6. Running log
 
+### 2026-10-12 ~18:45 EDT — Batch 5b ACCEPTED (ba43c0d); worker timed out AFTER committing — disk evidence accepted over missing report
+- Worker `130b930a` hit its 1h run cap before producing a final report; the commit was already on disk: `ba43c0d` = exactly the 3 owned files (dgx.js +14L, dgx.test.js 150L, fullView.integration.test.js 104L), tree clean, not pushed.
+- **Orchestrator independent gate, 3× identical:** `node --test agent/updates/__tests__/*.test.js` → 23 pass / 0 fail; full agent suite (`agent/__tests__` + `agent/*/__tests__`) → 234 pass / 0 fail. The integration test wires REAL scheduler + REAL dgx with fetch stubbed only — the durable-rule requirement met.
+- **Rule note:** a timed-out worker is judged by its artifacts, not its report. Claim-audit passed: commit exists, scope exact, gate independently green.
+- Batch 6 (UI) still running as of this entry.
+
 ### 2026-10-12 ~17:25 EDT — Batch 5 ACCEPTED (b903d9b); Batches 5b + 6 dispatched in parallel (disjoint sets declared)
 - **Batch 5 DONE:** worker #2 resume landed the 6 remaining steps; commit `b903d9b` = 8 files, +1706L, tree clean, `config/fleet-update-plan.json` correctly never staged. **Orchestrator independent gate: 3× runs on the committed tree — 106 pass / 0 fail, tsc exit 0, identical.** Accepted at 17:23.
 - **Batch 5b dispatched** (`130b930a`, runId e92f2d9c, 1h cap): dgx fullView defect fix per docs/BATCH5B-BRIEF.md — owns exactly agent/updates/dgx.js + 2 new real-wiring tests (integration test over REAL scheduler+dgx, fetch stubbed only — the durable rule from the findings log).
