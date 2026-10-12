@@ -54,7 +54,9 @@
 | 5B | 2026-09-23 10:20 | DONE | b1ad8e8 | Deploy compose/Dockerfile/install script + docs + PR prep; 10 files |
 | 1 (updates) | 2026-10-09 13:00 | DONE | — | Batch 1 spike: 11000 contract mapped, docs/UPDATES-11000.md |
 | 2 (updates) | 2026-10-09 13:00 | DONE | bd34472 | Batch 2 agent probe: dgx.js + scheduler.js + cronMirror.js + 16 tests, 264/264 green |
-| 5 (updates) | 2026-10-12 16:52 | RESUMED | — | Worker #1 (771ed1ed) ended NOT-DONE honestly (~70%): 4 files + 43 tests on disk, orchestrator-verified 106/106 fleet + tsc 0. Resume worker `agent:main:dashboard:6ca9d189` (runId 5d8e3fbf) does steps 1-6: index.js wiring, .gitignore, example plan, 3× gate, SELF-REVIEW, commit. Earlier phantom-dispatch note: 10-09/10-11 "DISPATCHED" rows were false — sessions_spawn is deferred; wrap via tool_call(id=openclaw:core:sessions_spawn). Cron loop a3ae59a9 fixed same day (10m/1200s/default model/best-effort). |
+| 5 (updates) | 2026-10-12 17:23 | DONE | b903d9b | Worker #2 resume completed the 6 remaining steps (routes +189L, .gitignore, example plan, SELF-REVIEW). Orchestrator independently gated 3× on the committed tree: 106 pass / 0 fail + tsc exit 0, all runs identical. Accepted.
+| 5b (updates) | 2026-10-12 17:25 | RUNNING | — | dgx fullView defect fix — session `130b930a` (runId e92f2d9c), owns agent/updates/dgx.js + 2 new real-wiring tests. Brief docs/BATCH5B-BRIEF.md. Disjoint vs Batch 6 (declared).
+| 6 (updates) | 2026-10-12 17:25 | RUNNING | — | Updates page UI — session `5806d2e2` (runId e214121a), owns src/** list only. Brief docs/BATCH6-BRIEF.md (SPEC §6.3 binding; zero new npm deps). Gate: vitest + tsc + fleet suite unchanged. |
 
 ## Gate Findings Log
 

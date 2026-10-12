@@ -418,6 +418,13 @@ seed-and-diff (deploy scripts idempotent); e2e (dashboard + node-agent wired, PR
 
 ## 6. Running log
 
+### 2026-10-12 ~17:25 EDT — Batch 5 ACCEPTED (b903d9b); Batches 5b + 6 dispatched in parallel (disjoint sets declared)
+- **Batch 5 DONE:** worker #2 resume landed the 6 remaining steps; commit `b903d9b` = 8 files, +1706L, tree clean, `config/fleet-update-plan.json` correctly never staged. **Orchestrator independent gate: 3× runs on the committed tree — 106 pass / 0 fail, tsc exit 0, identical.** Accepted at 17:23.
+- **Batch 5b dispatched** (`130b930a`, runId e92f2d9c, 1h cap): dgx fullView defect fix per docs/BATCH5B-BRIEF.md — owns exactly agent/updates/dgx.js + 2 new real-wiring tests (integration test over REAL scheduler+dgx, fetch stubbed only — the durable rule from the findings log).
+- **Batch 6 dispatched** (`5806d2e2`, runId e214121a, 4h cap): Updates page UI per docs/BATCH6-BRIEF.md (SPEC §6.3 binding: fleet table, schedule dialog with At|Cron modes + cron-preview known-answers, plan dialog with wave cards ▲▼ reorder, refresh 60s/5s mode switch, 409 inline notice; zero new npm deps). Owns src/** list in the brief; server/** is the read-only seam.
+- **Parallel-safety declaration:** 5b touches agent/updates/** only; 6 touches src/** only — disjoint. Both instructed: git add owned paths only, never `git add -A`.
+- **Circuit note for cron loop:** two workers now active; per-wake check is both sessions, accept each independently.
+
 ### 2026-10-12 ~16:55 EDT — Batch 5 worker #1 ended NOT-DONE (honest BLOCKED, ~70%); resume worker dispatched; 2 findings logged
 - Worker #1 (`771ed1ed`) finished without commit but with full evidence: 4 files written (updatesProxy.js 379L, waveSequencer.js 227L, 43 new tests), all green. **Orchestrator-verified on disk: fleet suite 106 pass / 0 fail, `tsc --noEmit` exit 0, HEAD still 386ee1f.**
 - **Ratified its judgments (binding for resume):** request.type discriminator (SPEC §5.1 "action:" prose stale); stuck wave members surface as waveState "running" with truth in per-node view display; plan store lives in updatesProxy.js; first successful single-node trigger stamps plan.startedAt; GET /api/fleet/updates returns `{ views: [...] }`; live plan file materializes at first write.
