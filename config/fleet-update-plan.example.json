@@ -1,0 +1,9 @@
+{
+  "groups": [
+    { "nodeIds": ["gx10-1c2c"], "reason": "standalone" },
+    { "nodeIds": ["gx10-102c", "gx10-25ed"], "reason": "tp-pair" }
+  ],
+  "createdAt": 1760000000000,
+  "startedAt": null,
+  "waveStates": ["pending", "pending"]
+}

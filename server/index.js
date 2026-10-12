@@ -51,6 +51,8 @@ import { loadNodes, listNodes, addNode, updateNode, removeNode } from "./fleet/r
 import { createFleetConnection } from "./fleet/connection.js";
 import { buildTopology } from "./fleet/topology.js";
 import { aggregateRequests } from "./fleet/aggregate.js";
+import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
+import { createWaveSequencer } from "./fleet/waveSequencer.js";
 
 dotenv.config();
 
@@ -319,6 +321,24 @@ const fleetEnergyRuntime = createFleetEnergyRuntime({
 // (missing file → empty fleet, not an error — mirrors SparkRegistry).
 let fleetConnection = createFleetConnection(loadNodes());
 
+// ─── DGX fleet-updates layer (Batch 5, docs/SPEC-UPDATES.md) ────
+// Live plan store (config/fleet-update-plan.json, gitignored; the file
+// materializes at the FIRST plan write), fan-out updates proxy, and the wave
+// gate. The proxy + sequencer capture the node list and plan at construction,
+// so both are rebuilt alongside the connection on registry mutations and on
+// plan writes (refreshUpdatesLayer).
+const updatePlanStore = createPlanStore();
+let updatesProxy = null;
+let waveSequencer = null;
+
+function refreshUpdatesLayer() {
+  const nodes = loadNodes();
+  const plan = updatePlanStore.read();
+  updatesProxy = createUpdatesProxy({ nodes, plan });
+  waveSequencer = createWaveSequencer({ nodes, connection: fleetConnection, plan });
+}
+refreshUpdatesLayer();
+
 /** Minimal NodeAgentSnapshot for a registered node that has never polled successfully. */
 function emptyNodeSnapshot(rec) {
   return {
@@ -390,6 +410,7 @@ function buildFleetSnapshot() {
 function restartFleetConnection() {
   const prev = fleetConnection;
   fleetConnection = createFleetConnection(loadNodes());
+  refreshUpdatesLayer();
   void fleetConnection
     .start()
     .catch((err) => console.error("[fleet] poller start failed:", err.message));
@@ -643,6 +664,174 @@ app.post("/api/fleet/nodes/:id/actions", async (req, res) => {
     res.json(body ?? { ok: true });
   } catch (err) {
     res.status(502).json({ error: `Node agent unreachable: ${err.message}` });
+  }
+});
+
+// ─── Fleet updates API (Batch 5, docs/SPEC-UPDATES.md §6) ───
+// The seven SPEC §6 routes. Node-agent actions ride the existing
+// POST /actions seam with request.type as the discriminator (per the
+// committed dispatch code): dgx-update-now / schedule-update /
+// cancel-schedule. fetch semantics mirror the /actions proxy above.
+
+/**
+ * Proxy one updates action to the node agent POST /actions, mirroring the
+ * /api/fleet/nodes/:id/actions fetch pattern (405 -> 501 telemetry-only,
+ * non-ok/unreachable -> 502 with the upstream error when present).
+ * @returns {Promise<{status: number, body: object}>}
+ */
+async function proxyUpdatesAction(rec, request, timeoutMs = 60_000) {
+  const endpoint = (rec.endpoint || `${rec.lanIp}:${rec.agentPort}`).replace(/\/+$/, "");
+  try {
+    const upstream = await fetch(`http://${endpoint}/actions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        actionId: randomUUID(),
+        idempotent: true,
+        timeoutMs: null,
+        ...request,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const body = await upstream.json().catch(() => null);
+    if (upstream.status === 405) {
+      return {
+        status: 501,
+        body: {
+          error:
+            "The node agent on this node is a telemetry-only build (no /actions endpoint yet). Fleet update actions are available once the agent updates build is deployed.",
+        },
+      };
+    }
+    if (!upstream.ok) {
+      return {
+        status: 502,
+        body: { error: body?.error || `Node agent responded ${upstream.status}` },
+      };
+    }
+    return { status: 200, body: body ?? { ok: true } };
+  } catch (err) {
+    return { status: 502, body: { error: `Node agent unreachable: ${err.message}` } };
+  }
+}
+
+/** Registry lookup for the :id updates routes; answers 404 and returns null. */
+function updatesNodeOr404(req, res) {
+  const rec = listNodes().find((n) => n.id === req.params.id);
+  if (!rec) res.status(404).json({ error: "Node not found" });
+  return rec || null;
+}
+
+// 1. Fleet-wide updates view: one NodeUpdatesView per registered node.
+app.get("/api/fleet/updates", async (_req, res) => {
+  try {
+    const views = await updatesProxy.getAllViews();
+    res.json({ views });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 2. Trigger an immediate DGX update on one node. 409 while any wave is
+// open (SPEC §6.2 trigger guard). The first successful single-node trigger
+// stamps plan.startedAt (orchestrator-ratified) so outcome attribution has
+// a time floor; a stamp failure never masks the accepted trigger.
+app.post("/api/fleet/nodes/:id/updates/now", async (req, res) => {
+  if (waveSequencer.isWaveOpen()) {
+    return res.status(409).json({
+      error: "A fleet wave is in flight; single-node updates are disabled while any wave is open.",
+    });
+  }
+  const rec = updatesNodeOr404(req, res);
+  if (!rec) return;
+  const result = await proxyUpdatesAction(rec, { type: "dgx-update-now" });
+  if (result.status === 200) {
+    const plan = updatePlanStore.read();
+    if (plan && plan.startedAt == null) {
+      plan.startedAt = Date.now();
+      try {
+        updatePlanStore.write(plan);
+      } catch (err) {
+        console.error("[fleet-updates] failed to stamp plan.startedAt:", err.message);
+      }
+      refreshUpdatesLayer();
+    }
+  }
+  res.status(result.status).json(result.body);
+});
+
+// 3. Schedule this node's single pending update ({ kind, at|cron,
+// mirrorCron }); the agent owns the one-pending-per-node rule.
+app.post("/api/fleet/nodes/:id/updates/schedule", async (req, res) => {
+  const rec = updatesNodeOr404(req, res);
+  if (!rec) return;
+  const { kind, at, cron, mirrorCron } = req.body || {};
+  const result = await proxyUpdatesAction(rec, {
+    type: "schedule-update",
+    kind,
+    at,
+    cron,
+    mirrorCron,
+  });
+  res.status(result.status).json(result.body);
+});
+
+// 4. Cancel a node's pending schedule by id.
+app.delete("/api/fleet/nodes/:id/updates/schedule/:sid", async (req, res) => {
+  const rec = updatesNodeOr404(req, res);
+  if (!rec) return;
+  const result = await proxyUpdatesAction(rec, {
+    type: "cancel-schedule",
+    scheduleId: req.params.sid,
+  });
+  res.status(result.status).json(result.body);
+});
+
+// 5. Store the fleet plan: waves are ordered groups. Accepts
+// [["node-a","node-b"], ...] or [{ nodeIds: [...], reason }, ...]; the
+// store validates, normalizes, and atomically writes the live file.
+app.post("/api/fleet/updates/plan", (req, res) => {
+  try {
+    const groups = (Array.isArray(req.body?.groups) ? req.body.groups : []).map((g) =>
+      Array.isArray(g) ? { nodeIds: g } : g
+    );
+    const plan = {
+      groups,
+      createdAt: Date.now(),
+      startedAt: null,
+      waveStates: groups.map(() => "pending"),
+    };
+    updatePlanStore.write(plan);
+    refreshUpdatesLayer();
+    res.json({ success: true, plan: updatePlanStore.read() });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// 6. Current plan + live waveStates ("pending"|"running"|"rebooting"|"slow"|
+// "healthy"; stuck members surface as "running", the truth is per-node view).
+app.get("/api/fleet/updates/plan", (_req, res) => {
+  res.json({
+    plan: updatePlanStore.read(),
+    waveStates: waveSequencer.getWaveStates(),
+  });
+});
+
+// 7. Abandon the plan — only while no wave is in flight (a wave must run to
+// its gate; deleting the plan mid-wave would orphan the running members).
+app.delete("/api/fleet/updates/plan", (_req, res) => {
+  if (waveSequencer.isWaveOpen()) {
+    return res.status(409).json({
+      error: "A fleet wave is in flight; the plan cannot be abandoned until every wave has closed.",
+    });
+  }
+  try {
+    updatePlanStore.write(null);
+    refreshUpdatesLayer();
+    res.json({ success: true, abandoned: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 

@@ -118,3 +118,85 @@ byEngine/byMachine; expectation corrected from 1→2); re-run 15/15.
 Batch 3 wiring should add `server/fleet/__tests__/*.test.js` to that glob.
 (Out of scope for this worker: do not edit `server/index.js` or
 `src/api/types.ts`.)
+
+---
+
+## Batch 5 (updates) — Pre-Gate Self-Review
+
+_Reviewer: Batch 5 worker #2 (resumed worker). Batch 3 content above is
+preserved verbatim._
+
+### What was built
+
+- `server/fleet/updatesProxy.js` (379 L, worker #1) — fan-out GET /updates to
+  each registered node agent (parallel, AbortSignal.timeout, default 5 s),
+  NodeUpdatesView derivation (display / graceElapsedMs / waveIndex per the
+  BATCH5 seam contract), last-good-view degradation with `reachable:false`,
+  and the `createPlanStore` fleet-update-plan store (atomic tmp+rename, mirror
+  of registry.js; missing/corrupt file → null, never an error).
+- `server/fleet/waveSequencer.js` (227 L, worker #1) — state-derived wave gate
+  over FleetConnection's existing 2 s snapshots: getWaveStates / isWaveOpen /
+  getCurrentWave / canAdvance / isFullyAvailable, 6 min RECOVER_GRACE_MS,
+  reboot→slow grace flip, fails closed on absent update-state evidence.
+- `server/index.js` (this worker) — the 7 SPEC §6 routes wired after the
+  `/api/fleet/nodes/:id/actions` proxy, mirroring its fetch semantics via a
+  shared `proxyUpdatesAction` (405→501 telemetry-only, non-ok/unreachable→502
+  with upstream error). `request.type` carries the action discriminator
+  (dgx-update-now / schedule-update / cancel-schedule; scheduleId for cancel),
+  verified against the committed dispatch in `agent/actions/dispatch.js`.
+  `createPlanStore` + `createUpdatesProxy` + `createWaveSequencer` instantiate
+  alongside `fleetConnection`; `refreshUpdatesLayer()` rebuilds proxy+sequencer
+  on registry mutations (restartFleetConnection), plan writes, plan deletes,
+  and the startedAt stamp. Trigger-now returns 409 while `isWaveOpen()`;
+  DELETE plan returns 409 while a wave is in flight; first successful
+  single-node trigger stamps `plan.startedAt` (a stamp failure is logged but
+  never masks the accepted trigger). Existing routes untouched.
+- `.gitignore` — added `config/fleet-update-plan.json` (live store; the file
+  materializes at the first plan write via the store, not before).
+- `config/fleet-update-plan.example.json` — brief's shape: gx10-1c2c
+  standalone + gx10-102c/gx10-25ed tp-pair, createdAt/startedAt/waveStates.
+- 43 new tests (updatesProxy.test.js, waveSequencer.test.js — worker #1).
+
+### Gate results (run 4×, identical)
+
+`node --test server/fleet/__tests__/*.test.js` → **106 pass / 0 fail /
+0 cancelled / 0 skipped**, exit 0 — all 4 runs (one standalone + a 3-run
+back-to-back loop). `npx tsc --noEmit` → **exit 0**, all 4 runs.
+`node --check server/index.js` → exit 0.
+
+### Deviations (all orchestrator-ratified before implementation)
+
+- Action discriminator is `request.type` per the committed dispatch code
+  (SPEC §5.1's `action:` prose is stale).
+- waveStates enum surfaces stuck members as "running"; the failure truth lives
+  in the per-node view display ("failed").
+- Plan store lives in updatesProxy.js exports (single fleet-plan module).
+- First successful single-node trigger stamps plan.startedAt.
+- `GET /api/fleet/updates` returns `{ views: [...] }`, mirroring the sibling
+  `{ nodes: [...] }`.
+- `config/fleet-update-plan.json` materializes at first plan write (absent
+  from the tree until then; gitignored).
+- Micro-notes within pattern latitude: agent 409 (one-pending-schedule) and
+  400s surface as 502-with-agent-error (the mandated /actions mapping); POST
+  plan accepts plain `[nodeId,…]` group arrays in addition to
+  `{nodeIds,reason}` objects (store normalizes); example file uses a
+  positive createdAt because the store's own validator rejects 0.
+
+### Worker #1 findings (carried forward, not fixed here)
+
+1. **predecessor_fail — agent `dgx.js` never returns fullView.** The agent's
+   dgx module never resolves a full `fullView()`, so a production
+   `GET :port/updates` 500s; the agent-side tests stub it, hiding the defect.
+   The dashboard proxy degrades correctly (unreachable → last-view +
+   "stale"), but the seam stays dead until the agent producer is fixed.
+   Fix belongs to the agent owner (Batch 2 territory — not touched here).
+2. **Telemetry gap — /telemetry carries no update state.** waveSequencer reads
+   `snapshot.updates.state` (the §6.2 mount point) and correctly FAILS CLOSED
+   today: no evidence → no gate opens. Full wave automation requires an agent
+   build that merges /updates into /telemetry. Until then wave gates stay shut
+   by design (fail-closed is safe, not broken).
+
+### Escalations
+
+None beyond the two findings above (worker #1's, already routed to the
+orchestrator; re-confirmed by read, not re-filed).
