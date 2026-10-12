@@ -54,7 +54,7 @@
 | 5B | 2026-09-23 10:20 | DONE | b1ad8e8 | Deploy compose/Dockerfile/install script + docs + PR prep; 10 files |
 | 1 (updates) | 2026-10-09 13:00 | DONE | — | Batch 1 spike: 11000 contract mapped, docs/UPDATES-11000.md |
 | 2 (updates) | 2026-10-09 13:00 | DONE | bd34472 | Batch 2 agent probe: dgx.js + scheduler.js + cronMirror.js + 16 tests, 264/264 green |
-| 5 (updates) | 2026-10-09 15:10 | DISPATCHED | — | Batch 5 dashboard routes + WaveSequencer |
+| 5 (updates) | 2026-10-12 14:28 | RUNNING | — | Worker session 771ed1ed (runId 2d84819d, vllm/qwen3.8-27b, run-timeout 4h). NOTE: the 2026-10-09 and 2026-10-11 "DISPATCHED" rows were phantom — `sessions_spawn` is a deferred tool; a direct call returns "Tool not found" and no worker ever ran. Real dispatch went through `tool_call(id=openclaw:core:sessions_spawn)`. Cron loop a3ae59a9 fixed 2026-10-12: every 10m, timeout 1200s, cleared hung `aeon/aeon-tp2` model override, best-effort delivery, re-enabled. |
 
 ## Gate Findings Log
 

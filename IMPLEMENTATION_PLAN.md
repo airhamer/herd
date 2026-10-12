@@ -418,6 +418,18 @@ seed-and-diff (deploy scripts idempotent); e2e (dashboard + node-agent wired, PR
 
 ## 6. Running log
 
+### 2026-10-12 ~14:30 EDT — Batch 5 REDISPATCHED (real worker live); orchestrator loop root-caused and fixed
+- **Phantom-dispatch root cause:** `sessions_spawn` is a deferred tool in this catalog; direct invocation returns "Tool not found". Every 2026-10-09/10-11 "DISPATCHED" claim was false — no worker ever executed. Fix: wrap via `tool_call(id=openclaw:core:sessions_spawn, args={…})`; rule recorded in cron wake message and ORCHESTRATION.md dispatch log.
+- **Real worker:** vllm/qwen3.8-27b, visible session `agent:main:dashboard:771ed1ed-0435-4775-9afe-db6c4fafcf71` (sidebar group "sparkDash"), runId `2d84819d-b873-4cf4-9623-d7974d2cd139`, started 14:28 EDT, run-timeout 4h. Task carries: orchestrated-worker skill contract, brief (docs/BATCH5-BRIEF.md), exhaustive 10-item read-list, seam contracts by name, method spec, gate (3×), pre-gate self-review, commit-not-DONE.
+- **Cron loop (a3ae59a9) root cause:** per-job model override `aeon/aeon-tp2` hung at model-call-started; 600s timeout × every-5m cadence → 10 consecutive timeouts → auto-disable 02:27 EDT. Fixes applied: schedule 10m, timeout 1200s, cleared model + fallbacks (session default qwen3.8-27b, live-proven), best-effort delivery (Telegram chatId route missing), re-enabled. `cron show` verified: enabled yes, every 10m, no model override.
+
+### 2026-10-11 — Batch 5 (dashboard routes + WaveSequencer) DISPATCHED *(phantom — no worker ran; see 2026-10-12 entry)*
+- **Brief:** docs/BATCH5-BRIEF.md
+- **Worker:** vllm/qwen3.8-27b, sessions_spawn mode:run, context:isolated
+- **Cron loop:** orchestrator-loop-sparkdash-updates (every 5m, pacing 3m–45m)
+- **Status:** in progress
+- **Gate:** node --test server/fleet/__tests__/*.test.js + npx tsc --noEmit, 3× runs
+
 ### 2026-10-09 — Batch 2 (agent probe) DONE
 - **Commit:** bd34472
 - **Files:** agent/updates/dgx.js, agent/updates/scheduler.js, agent/updates/cronMirror.js, agent/updates/__tests__/scheduler.test.js
