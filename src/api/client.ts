@@ -1,12 +1,17 @@
 import type {
+  AbandonPlanResponse,
   DecodeBenchJob,
   DecodeBenchListResponse,
   FleetEnergy,
+  FleetPlanResponse,
   FleetSnapshot,
+  FleetUpdatesResponse,
   HermesBatchUpdateResponse,
   HermesUpdatesResponse,
   LlmMetrics,
   LlmDailyResponse,
+  SavePlanResponse,
+  ScheduleUpdateRequest,
   Settings,
   ShowcaseListResponse,
   ShowcaseSessionState,
@@ -18,6 +23,7 @@ import type {
   PrefillBenchJob,
   PrefillBenchListResponse,
   StartPrefillBenchRequest,
+  UpdateActionResponse,
 } from "./types";
 
 const BASE = "";
@@ -25,6 +31,21 @@ const TOKEN = (typeof localStorage !== "undefined" && localStorage.getItem("spar
 
 function authHeaders(): Record<string, string> {
   return TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {};
+}
+
+/**
+ * Error thrown by apiFetch for a non-ok response. `status` carries the HTTP
+ * status code so callers can branch on it (e.g. the 409 wave-lock on
+ * single-node update triggers). Message text is unchanged for callers that
+ * only read `message`.
+ */
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
 }
 
 // ─── Generic fetch wrapper ────────────────────────────────
@@ -40,7 +61,7 @@ async function apiFetch<T>(path: string, opts?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    throw new Error(body.error || `HTTP ${res.status}`);
+    throw new ApiError(body.error || `HTTP ${res.status}`, res.status);
   }
   return res.json();
 }
@@ -531,4 +552,68 @@ export function deleteFleetNode(
   return apiFetch(`/api/fleet/nodes/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
+}
+
+// ─── Fleet updates (docs/SPEC-UPDATES.md §6.1) ────────
+/** Fleet-wide updates view: one NodeUpdatesView per registered node. */
+export function fetchFleetUpdates(): Promise<FleetUpdatesResponse> {
+  return apiFetch("/api/fleet/updates");
+}
+
+/**
+ * Trigger an immediate DGX update on one node. Rejects with ApiError status
+ * 409 while any fleet wave is open (the §6.2 trigger guard).
+ */
+export function triggerUpdateNow(nodeId: string): Promise<UpdateActionResponse> {
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(nodeId)}/updates/now`, {
+    method: "POST",
+  });
+}
+
+/**
+ * Schedule this node's single pending update ({ kind, at|cron, mirrorCron }).
+ * `at` is epoch-ms; `cron` a 5-field expression. The agent owns the
+ * one-pending-per-node rule; the resulting schedule list arrives via the
+ * refreshed fleet-updates view, not this response body.
+ */
+export function scheduleUpdate(
+  nodeId: string,
+  body: ScheduleUpdateRequest
+): Promise<UpdateActionResponse> {
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(nodeId)}/updates/schedule`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** Cancel a node's pending schedule by id. */
+export function cancelSchedule(
+  nodeId: string,
+  scheduleId: string
+): Promise<UpdateActionResponse> {
+  return apiFetch(
+    `/api/fleet/nodes/${encodeURIComponent(nodeId)}/updates/schedule/${encodeURIComponent(scheduleId)}`,
+    { method: "DELETE" }
+  );
+}
+
+/**
+ * Store the fleet plan: ordered waves of node ids. The server accepts
+ * [[nodeId,…], …] groups and normalizes them to { nodeIds, reason } entries.
+ */
+export function saveUpdatePlan(groups: string[][]): Promise<SavePlanResponse> {
+  return apiFetch("/api/fleet/updates/plan", {
+    method: "POST",
+    body: JSON.stringify({ groups }),
+  });
+}
+
+/** Current plan (null = none) + live wave states. */
+export function fetchUpdatePlan(): Promise<FleetPlanResponse> {
+  return apiFetch("/api/fleet/updates/plan");
+}
+
+/** Abandon the plan. Rejects with ApiError status 409 while a wave is in flight. */
+export function abandonUpdatePlan(): Promise<AbandonPlanResponse> {
+  return apiFetch("/api/fleet/updates/plan", { method: "DELETE" });
 }

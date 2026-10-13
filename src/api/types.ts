@@ -926,3 +926,75 @@ export type {
   VersionInfo,
   ContainerInfo,
 } from "../../shared/types";
+
+// ─── Fleet updates (docs/SPEC-UPDATES.md §6/§9) ────
+// NodeUpdatesView / FleetUpdatePlan et al. are the §9 seam types; the
+// dashboard server (server/index.js + server/fleet/updatesProxy.js) emits
+// exactly those shapes. The wrappers below mirror the 7 updates routes' actual
+// response bodies, route by route.
+export type {
+  DgxFirmwareUpdate,
+  DgxOtaInfo,
+  DgxPackageUpdate,
+  DgxUpdateSnapshot,
+  DgxUpdateStage,
+  DgxUpdateState,
+  FleetUpdatePlan,
+  NodeUpdateSchedule,
+  NodeUpdatesView,
+  UpdateGroup,
+} from "../../shared/types";
+
+// Local bindings for the two §9 names the wrappers below reference (the
+// `export type … from` re-export does not introduce local names).
+import type { FleetUpdatePlan, NodeUpdatesView } from "../../shared/types";
+
+/** GET /api/fleet/updates → one NodeUpdatesView per registered node. */
+export interface FleetUpdatesResponse {
+  views: NodeUpdatesView[];
+}
+
+/** Live wave state, as emitted by waveSequencer.getWaveStates(). */
+export type FleetWaveState = "pending" | "running" | "rebooting" | "slow" | "healthy";
+
+/** GET /api/fleet/updates/plan → stored plan (null = none) + live wave states. */
+export interface FleetPlanResponse {
+  plan: FleetUpdatePlan | null;
+  waveStates: FleetWaveState[];
+}
+
+/** POST /api/fleet/updates/plan → stored (normalized) plan echoed back. */
+export interface SavePlanResponse {
+  success: boolean;
+  plan: FleetUpdatePlan;
+}
+
+/** DELETE /api/fleet/updates/plan. */
+export interface AbandonPlanResponse {
+  success: boolean;
+  abandoned: boolean;
+}
+
+/**
+ * Passthrough body of an agent action (now / schedule / cancel) proxied via
+ * POST /actions: the server forwards the agent's JSON (or `{ ok: true }`).
+ * The authoritative schedule list arrives via the refreshed fleet-updates view,
+ * never from this passthrough.
+ */
+export interface UpdateActionResponse {
+  ok?: boolean;
+  error?: string;
+  [key: string]: unknown;
+}
+
+/**
+ * POST /api/fleet/nodes/:id/updates/schedule request body. `at` is epoch-ms
+ * (§9 NodeUpdateSchedule.at); `cron` a 5-field expression; mirrorCron installs
+ * a host crontab entry too. The agent owns the one-pending-per-node rule.
+ */
+export interface ScheduleUpdateRequest {
+  kind: "at" | "cron";
+  at?: number;
+  cron?: string;
+  mirrorCron?: boolean;
+}

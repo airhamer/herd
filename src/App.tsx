@@ -13,6 +13,8 @@ import { OverviewPage } from "./components/OverviewPage/OverviewPage";
 import { FleetPage } from "./components/OverviewPage/FleetPage";
 import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { TopologyPage } from "./components/Topology/TopologyPage";
+import { UpdatesPage } from "./components/Updates/UpdatesPage";
+import { FleetUpdatesProvider } from "./components/Updates/FleetUpdatesContext";
 import { ServiceManagerPage } from "./components/ServiceManager/ServiceManagerPage";
 import { RequestsPage } from "./components/Requests/RequestsPage";
 import { ManageNodesDialog } from "./components/Nodes/ManageNodesDialog";
@@ -146,6 +148,8 @@ function DashboardApp() {
   const navigate = useRoute(setActiveId);
   const { view: fleetView, navigate: fleetNavigate } = useFleetRoute();
   const inFleet = fleetView != null;
+  /** FleetCard "DGX update available" badge → /updates (SPEC §6.3). */
+  const openUpdates = useCallback(() => fleetNavigate({ page: "updates" }), [fleetNavigate]);
   const { snapshot: fleet, error: fleetError } = useFleetData(inFleet);
 
   /** Leave any fleet view (URL replaced, no extra history entry), then switch spark. */
@@ -324,6 +328,7 @@ function DashboardApp() {
   );
 
   return (
+    <FleetUpdatesProvider openUpdates={openUpdates}>
     <div className="min-h-screen p-0 text-text sm:p-8">
       <div className="dashboard-shell">
         <header className="flex flex-wrap items-center gap-3" style={{ marginBottom: "var(--density-header-gap)" }}>
@@ -351,6 +356,11 @@ function DashboardApp() {
               label="Topology"
               active={inFleet && fleetView?.page === "topology"}
               onClick={() => fleetNavigate({ page: "topology" })}
+            />
+            <ViewTab
+              label="Updates"
+              active={inFleet && fleetView?.page === "updates"}
+              onClick={() => fleetNavigate({ page: "updates" })}
             />
           </nav>
           {!inFleet && (
@@ -466,6 +476,7 @@ function DashboardApp() {
         onSaved={handleSettingsSaved}
       />
     </div>
+    </FleetUpdatesProvider>
   );
 }
 
@@ -550,6 +561,12 @@ function FleetViewPane({
   onNavigate: (v: FleetView | null) => void;
   onActionError: (msg: string) => void;
 }) {
+  if (view.page === "updates") {
+    // Self-contained page: it fetches the fleet-updates + registry reads itself,
+    // so it does not depend on the fleet snapshot poll.
+    return <UpdatesPage />;
+  }
+
   if (!fleet) {
     return (
       <div className="panel mx-auto mt-16 max-w-md p-8 text-center">

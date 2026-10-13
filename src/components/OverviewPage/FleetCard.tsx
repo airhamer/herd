@@ -11,6 +11,7 @@ import type {
   VersionInfo,
 } from "../../../shared/types";
 import { MetricBar } from "../ui/MetricBar";
+import { useNodeUpdateDisplay } from "../Updates/FleetUpdatesContext";
 
 export interface FleetCardProps {
   nodeId: string;
@@ -123,6 +124,10 @@ export function FleetCard(props: FleetCardProps) {
     onSelect,
   } = props;
 
+  /** SPEC §6.3: single "DGX update available" badge from view.display. */
+  const { displayByNode, openUpdates } = useNodeUpdateDisplay(nodeId);
+  const updateAvailable = displayByNode.get(nodeId) === "available";
+
   const usage = gpu?.usage ?? 0;
   const temp = gpu?.temperature ?? 0;
   const usageBarColor = usage > 85 ? "bg-danger" : usage > 60 ? "bg-warning" : "bg-accent";
@@ -189,6 +194,20 @@ export function FleetCard(props: FleetCardProps) {
         >
           {roleBadgeText(role)}
         </span>
+        {updateAvailable && (
+          <button
+            type="button"
+            data-testid="update-badge"
+            onClick={(e) => {
+              e.stopPropagation();
+              openUpdates();
+            }}
+            className="shrink-0 rounded bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-warning hover:bg-warning/25"
+            title="DGX update available — open the Updates page"
+          >
+            DGX update available
+          </button>
+        )}
         <span className="text-[10px] uppercase tracking-wide text-muted" data-testid="fleet-card-status">
           {online ? "online" : "offline"}
         </span>
