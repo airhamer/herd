@@ -56,7 +56,7 @@
 | 2 (updates) | 2026-10-09 13:00 | DONE | bd34472 | Batch 2 agent probe: dgx.js + scheduler.js + cronMirror.js + 16 tests, 264/264 green |
 | 5 (updates) | 2026-10-12 17:23 | DONE | b903d9b | Worker #2 resume completed the 6 remaining steps (routes +189L, .gitignore, example plan, SELF-REVIEW). Orchestrator independently gated 3× on the committed tree: 106 pass / 0 fail + tsc exit 0, all runs identical. Accepted.
 | 5b (updates) | 2026-10-12 18:45 | DONE | ba43c0d | dgx fullView fix — worker session `130b930a` hit its 1h cap AFTER committing: ba43c0d = exactly the 3 owned files (+268L), tree clean. Orchestrator gate 3× identical: updates tests 23/23, full agent suite 234/234, 0 fail. Accepted. Report itself was lost to the timeout; disk evidence stands. |
-| 6 (updates) | 2026-10-12 17:25 | RUNNING | — | Updates page UI — session `5806d2e2` (runId e214121a), owns src/** list only. Brief docs/BATCH6-BRIEF.md (SPEC §6.3 binding; zero new npm deps). Gate: vitest + tsc + fleet suite unchanged. |
+| 6 (updates) | 2026-10-12 20:18 | RUNNING (attempt 2) | — | Attempt 1 (`5806d2e2`) failed: "stopped making progress" interrupt after ~48 min, no commit, no report — left 3 orphan helpers untracked in src/components/Updates/ (describeCron.ts, format.ts, FleetUpdatesContext.tsx). Attempt 2 (`6c18180f`, runId 66f4dbbd, 4h cap) re-dispatched with those artifacts claimed as owned starting material + explicit PACING RULE (per-sub-step 3-strikes → loop-detected escalation, no silent 4th retry) + strict step order. Gate: vitest + typecheck + fleet 106 unchanged. |
 
 ## Gate Findings Log
 

@@ -418,6 +418,12 @@ seed-and-diff (deploy scripts idempotent); e2e (dashboard + node-agent wired, PR
 
 ## 6. Running log
 
+### 2026-10-12 ~20:25 EDT — Batch 6 attempt 1 FAILED (stalled, no commit); attempt 2 dispatched with anti-stall pacing rule
+- **Failure:** worker `5806d2e2` (Batch 6 UI, dispatched 17:25) was interrupted ~48 min in with "stopped making progress"; no completion text, no commit, no report. On disk it left exactly 3 untracked helper files in its owned dir (describeCron.ts, format.ts, FleetUpdatesContext.tsx). Fleet at 1ccd686 unaffected; nothing of Batch 5/5b touched.
+- **Response (not a blind re-dispatch):** attempt 2 `6c18180f` (runId 66f4dbbd, 4h cap) with (a) the 3 orphans explicitly claimed as owned starting artifacts, (b) a binding PACING RULE — strict 10-step order; 3 consecutive failed attempts on any sub-step → stop and return `loop-detected:` naming the sub-step, never a silent 4th retry, (c) an orchestrator follow-up message queued to the child clarifying the authoritative gate commands (vitest + `npm run typecheck` + fleet suite 106 unchanged).
+- **Rule learned (durable):** qwen38 UI-scale tasks stall on big single-shot dispatches; sub-stepped pacing with a per-step strike limit converts a silent stall into a named BLOCKED report.
+- Batch 5 (`b903d9b`) and 5b (`ba43c0d`) remain ACCEPTED; HEAD is orchestrator doc commit 1ccd686.
+
 ### 2026-10-12 ~18:45 EDT — Batch 5b ACCEPTED (ba43c0d); worker timed out AFTER committing — disk evidence accepted over missing report
 - Worker `130b930a` hit its 1h run cap before producing a final report; the commit was already on disk: `ba43c0d` = exactly the 3 owned files (dgx.js +14L, dgx.test.js 150L, fullView.integration.test.js 104L), tree clean, not pushed.
 - **Orchestrator independent gate, 3× identical:** `node --test agent/updates/__tests__/*.test.js` → 23 pass / 0 fail; full agent suite (`agent/__tests__` + `agent/*/__tests__`) → 234 pass / 0 fail. The integration test wires REAL scheduler + REAL dgx with fetch stubbed only — the durable-rule requirement met.
