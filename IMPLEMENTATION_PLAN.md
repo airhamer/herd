@@ -418,6 +418,10 @@ seed-and-diff (deploy scripts idempotent); e2e (dashboard + node-agent wired, PR
 
 ## 6. Running log
 
+### 2026-10-13 ~10:2x EDT — Batch 6c ACCEPTED at `1a92a55`; Batch 7 (deploy) dispatched — RUNNING
+- Worker `1c53315d` delivered 6c: 6 files +485/−15, owned paths only, parent `7baae1f` exactly. **Orchestrator independent gate 3×: fleet suite exit 0 ×3 (120 tests, +14 new), tsc exit 0 ×3.** The production 409-forever gap is closed: sequencer now reads update evidence from the proxy `/updates` cache (precedence cache→snapshot→null; no-evidence still fails CLOSED — every row pinned by a named test, incl. real-wiring integration test per the durable rule). Worker's parent-commit claim was wrong (said f74ebc8; actually 7baae1f) — harmless, flagged.
+- **Batch 7 deployed per Steve's authorization**: brief docs/BATCH7-BRIEF.md committed; worker `e152bfbe` (runId `97113556`, qwen38, isolated, 4h). Contract: push origin main first, deploy `1a92a55` to gx10-1c2c → gx10-102c → gx10-25ed via the repo's own deploy mechanism, per-node failure isolation, READ-ONLY verification only. HARD-FORBIDDEN: any update trigger/reboot/crontab mutation, touching model serving, force-push. This deploys code; it performs ZERO updates.
+
 ### 2026-10-13 ~08:5x EDT — Parked telemetry decision RESOLVED by Steve: 6c fix authorized, then deploy
 - Steve: "Do the telemetry fix before deploying then go ahead and deploy." Option (b) — dashboard-side: sequencer reads per-member update state from the updatesProxy `/updates` fan-out cache (precedence cache→snapshot→null; null keeps fail-closed semantics unchanged). No agent changes. Batch 7 deploy is thereby authorized conditional on 6c acceptance.
 - docs/BATCH6C-BRIEF.md written (binding design rulings, owned-file list: updatesProxy.js / waveSequencer.js / index.js / fleet tests / FINDINGS doc; forbidden: agent, src, shared, config, program docs). Worker `1c53315d` (runId 2901b706, qwen38, isolated, 4h) dispatched. Real-wiring integration test mandated per the durable rule.
