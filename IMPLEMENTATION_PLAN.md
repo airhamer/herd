@@ -418,6 +418,12 @@ seed-and-diff (deploy scripts idempotent); e2e (dashboard + node-agent wired, PR
 
 ## 6. Running log
 
+### 2026-10-13 ~11:2x EDT — Batch 7 ACCEPTED: deployed & live-verified. PROGRAM COMPLETE (5/5b/6/6c/7).
+- Worker `e152bfbe` DONE: origin pushed (`6559a1d..bd80f34`), node-agents on all three sparks built from tree-exact `1a92a55` (sha256 of dgx.js + http.js match on-box), dashboard deployed on Narthex :5555 (loopback bind; first time running anywhere), inference containers untouched throughout, recipes/env preserved, zero update/reboot/crontab actions — deploy performed ZERO updates, by contract.
+- Orchestrator live verification (independent, read-only): fleet endpoint 200; updates endpoint 200 ×2; `{views:[...]}` covers all three nodes reachable:true; every agent `/updates` returns the contract shape — the pre-deploy `dgx.fullView is not a function` failure is now red→green in production. Code delta `1a92a55..HEAD` docs-only → gate state inherited from 6c (120/120 + tsc0 ×3).
+- Fleet-hygiene flag for Steve (pre-existing, not introduced here): node agents run WITHOUT NODE_AGENT_TOKEN on 0.0.0.0:30091 — worth a follow-up batch given the HTTP surface is the security boundary.
+- Cron job `a3ae59a9` (orchestrator-loop-sparkdash-updates) disabled per procedure step 5. Parked items that survive the program: qwen38-cockpit integration verdict (Batch 8 candidate), token hardening, PR #114 upstream review.
+
 ### 2026-10-13 ~10:2x EDT — Batch 6c ACCEPTED at `1a92a55`; Batch 7 (deploy) dispatched — RUNNING
 - Worker `1c53315d` delivered 6c: 6 files +485/−15, owned paths only, parent `7baae1f` exactly. **Orchestrator independent gate 3×: fleet suite exit 0 ×3 (120 tests, +14 new), tsc exit 0 ×3.** The production 409-forever gap is closed: sequencer now reads update evidence from the proxy `/updates` cache (precedence cache→snapshot→null; no-evidence still fails CLOSED — every row pinned by a named test, incl. real-wiring integration test per the durable rule). Worker's parent-commit claim was wrong (said f74ebc8; actually 7baae1f) — harmless, flagged.
 - **Batch 7 deployed per Steve's authorization**: brief docs/BATCH7-BRIEF.md committed; worker `e152bfbe` (runId `97113556`, qwen38, isolated, 4h). Contract: push origin main first, deploy `1a92a55` to gx10-1c2c → gx10-102c → gx10-25ed via the repo's own deploy mechanism, per-node failure isolation, READ-ONLY verification only. HARD-FORBIDDEN: any update trigger/reboot/crontab mutation, touching model serving, force-push. This deploys code; it performs ZERO updates.
