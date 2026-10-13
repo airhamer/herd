@@ -418,6 +418,11 @@ seed-and-diff (deploy scripts idempotent); e2e (dashboard + node-agent wired, PR
 
 ## 6. Running log
 
+### 2026-10-12 ~21:15 EDT — Orchestrator error-of-record corrected: attempt 2 IS ALIVE and building
+- A queue item re-delivering attempt 1's failure (runId `e214121a`) was misread at ~20:55 as attempt 2's death; uncommitted notes then briefly claimed "attempt 2 ALSO stalled, zero artifacts" and "attempt 3 = 6a dispatched" — both false, and no attempt 3 was ever spawned. Caught at 21:09 by direct disk check BEFORE committing; ORCHESTRATION.md line 6 corrected in place.
+- **True state at 21:09:** attempt 2 (`6c18180f`, runId `66f4dbbd`) running ~50 min into its 4h cap and producing artifacts: `src/api/client.ts` + `src/api/types.ts` modified in tree (step order followed: client/types first). HEAD `22a38c6` untouched by the worker; Batch 5 (`b903d9b`) + 5b (`ba43c0d`) accepted states unaffected.
+- 6a/6b decomposition remains a contingency for a future attempt, not a current dispatch. If attempt 2 completes: gate = vitest + `npm run typecheck` + fleet 106 unchanged, 3×.
+
 ### 2026-10-12 ~20:25 EDT — Batch 6 attempt 1 FAILED (stalled, no commit); attempt 2 dispatched with anti-stall pacing rule
 - **Failure:** worker `5806d2e2` (Batch 6 UI, dispatched 17:25) was interrupted ~48 min in with "stopped making progress"; no completion text, no commit, no report. On disk it left exactly 3 untracked helper files in its owned dir (describeCron.ts, format.ts, FleetUpdatesContext.tsx). Fleet at 1ccd686 unaffected; nothing of Batch 5/5b touched.
 - **Response (not a blind re-dispatch):** attempt 2 `6c18180f` (runId 66f4dbbd, 4h cap) with (a) the 3 orphans explicitly claimed as owned starting artifacts, (b) a binding PACING RULE — strict 10-step order; 3 consecutive failed attempts on any sub-step → stop and return `loop-detected:` naming the sub-step, never a silent 4th retry, (c) an orchestrator follow-up message queued to the child clarifying the authoritative gate commands (vitest + `npm run typecheck` + fleet suite 106 unchanged).
