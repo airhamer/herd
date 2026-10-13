@@ -418,6 +418,11 @@ seed-and-diff (deploy scripts idempotent); e2e (dashboard + node-agent wired, PR
 
 ## 6. Running log
 
+### 2026-10-13 ~00:10 EDT — Batch 6 (updates UI) ACCEPTED at `6a9ff85`; Batches 5+5b+6 all landed
+- Resume worker `f590a241` delivered steps 7–10 exactly: 6 test files + testKit (58 new tests; fake timers + mocked fetch), SELF-REVIEW, one clean commit (20 files, 2644+, tree clean). ONE fix outside tests, test-witnessed: UpdateRow `bytes()` rendered MB as GB — the 2 MiB known-answer case caught it pre-acceptance.
+- **Orchestrator independent gate 3×** (exit codes, unfiltered): fleet node --test 0, vitest 25 files 154/154, tsc 0 — identical all 3 passes; scope verified against `git show --stat`.
+- Pattern validated: implementer stall → honest CHECKPOINT → fresh resume worker. Batch 7 QUEUED behind parked human decisions (telemetry-merge fail-closed + upstream-integration question posed to Steve); cron stays armed.
+
 ### 2026-10-12 ~21:15 EDT — Orchestrator error-of-record corrected: attempt 2 IS ALIVE and building
 - A queue item re-delivering attempt 1's failure (runId `e214121a`) was misread at ~20:55 as attempt 2's death; uncommitted notes then briefly claimed "attempt 2 ALSO stalled, zero artifacts" and "attempt 3 = 6a dispatched" — both false, and no attempt 3 was ever spawned. Caught at 21:09 by direct disk check BEFORE committing; ORCHESTRATION.md line 6 corrected in place.
 - **True state at 21:09:** attempt 2 (`6c18180f`, runId `66f4dbbd`) running ~50 min into its 4h cap and producing artifacts: `src/api/client.ts` + `src/api/types.ts` modified in tree (step order followed: client/types first). HEAD `22a38c6` untouched by the worker; Batch 5 (`b903d9b`) + 5b (`ba43c0d`) accepted states unaffected.
