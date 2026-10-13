@@ -122,6 +122,7 @@ function firstRebootEventMs(state) {
  *   timeoutMs: number,
  *   getAllViews: () => Promise<object[]>,
  *   buildView: (node: object, raw: object) => object,
+ *   getCachedStates: () => Record<string, object>,
  * }}
  */
 export function createUpdatesProxy(opts = {}) {
@@ -236,7 +237,9 @@ export function createUpdatesProxy(opts = {}) {
     return nodes.map((node, i) => {
       const r = settled[i];
       if (r.status === "fulfilled") {
-        lastViews.set(node.id, r.value);
+        // BATCH 6c cache write: last good view + fetchedAt (clock-injected).
+        // A failure branch NEVER touches this map entry for the node.
+        lastViews.set(node.id, { ...r.value, fetchedAt: clock() });
         return { ...r.value };
       }
       const prev = lastViews.get(node.id);
@@ -258,7 +261,22 @@ export function createUpdatesProxy(opts = {}) {
     });
   }
 
-  return { timeoutMs, getAllViews, buildView };
+  /**
+   * BATCH 6c (BATCH6C-BRIEF ruling 1): the last KNOWN-GOOD view per node —
+   * the same evidence getAllViews built — as a plain object
+   * { [nodeId]: view } where view is { state, snapshot, schedules, fetchedAt,
+   * ...NodeUpdatesView fields }. Synchronous: no fetch, no throw. Empty {}
+   * before the first successful fan-out. A failed fan-out keeps (never
+   * clears nor overwrites) each node's previous entry.
+   * @returns {Record<string, object>}
+   */
+  function getCachedStates() {
+    const out = {};
+    for (const [id, view] of lastViews) out[id] = view;
+    return out;
+  }
+
+  return { timeoutMs, getAllViews, buildView, getCachedStates };
 }
 
 // ── Fleet plan store ────────────────────────────────────────────────────────

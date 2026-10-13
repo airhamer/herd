@@ -482,3 +482,75 @@ test("planStore: normalization on write (reason default, waveStates coerce, stri
   assert.throws(() => store.write({ groups: [{ nodeIds: [7] }], createdAt: 1 }), /non-string/);
   assert.throws(() => store.write({ groups: [{ nodeIds: ["a"] }] }), /createdAt/);
 });
+
+// ─── BATCH 6c: getCachedStates — the fan-out cache feeding the wave gate ────
+
+test("6c: getCachedStates surface; empty {} before the first fan-out", () => {
+  const proxy = createUpdatesProxy({ nodes: [node("a")], fetch: fakeFetch().fn });
+  assert.equal(typeof proxy.getCachedStates, "function");
+  const empty = proxy.getCachedStates();
+  assert.deepEqual(empty, {});
+  assert.equal(Object.getPrototypeOf(empty), Object.prototype, "plain object, not the Map");
+});
+
+test("6c: getCachedStates populated after one fan-out; entry shape {state, snapshot, schedules, fetchedAt}", async () => {
+  const nodes = [node("a"), node("b")];
+  const { fn } = fakeFetch({
+    [urlFor(nodes[0])]: okRes(
+      body({ state: { ...defaultUpdateState(), lastOutcome: "success", finishedAt: 7 } })
+    ),
+    [urlFor(nodes[1])]: okRes(
+      body({
+        state: { ...defaultUpdateState(), inProgress: true, stage: "reboot", startedAt: 40 },
+        schedules: [{ id: "s1", kind: "cron" }],
+      })
+    ),
+  });
+  let t = 500;
+  const proxy = createUpdatesProxy({ nodes, fetch: fn, now: () => t });
+  await proxy.getAllViews();
+  const cache = proxy.getCachedStates();
+  assert.deepEqual(Object.keys(cache).sort(), ["a", "b"]);
+  assert.equal(cache.a.state.lastOutcome, "success");
+  assert.equal(cache.a.snapshot.swBuild, "7.2.3", "full last-good view cached (snapshot included)");
+  assert.deepEqual(cache.a.schedules, []);
+  assert.equal(cache.a.fetchedAt, 500, "fetchedAt stamped from the injected clock");
+  assert.equal(cache.b.state.stage, "reboot");
+  assert.deepEqual(cache.b.schedules, [{ id: "s1", kind: "cron" }]);
+  // A second successful fan-out re-stamps with the advanced clock:
+  t = 900;
+  await proxy.getAllViews();
+  assert.equal(proxy.getCachedStates().a.fetchedAt, 900, "fresh success → fresh fetchedAt");
+});
+
+test("6c: failed fan-out KEEPS previous entries untouched (never clears, never overwrites)", async () => {
+  const nodes = [node("a"), node("b")];
+  const { fn, set } = fakeFetch({
+    [urlFor(nodes[0])]: okRes(
+      body({ state: { ...defaultUpdateState(), lastOutcome: "success", finishedAt: 7 } })
+    ),
+    [urlFor(nodes[1])]: okRes(body()),
+  });
+  let t = 100;
+  const proxy = createUpdatesProxy({ nodes, fetch: fn, now: () => t });
+  await proxy.getAllViews();
+  const before = proxy.getCachedStates();
+  set(urlFor(nodes[0]), "throw"); // node a dies; b keeps answering
+  t = 800;
+  await proxy.getAllViews();
+  const after = proxy.getCachedStates();
+  assert.deepEqual(after.a, before.a, "failed node keeps its LAST GOOD entry, fetchedAt untouched");
+  assert.equal(after.a.fetchedAt, 100, "stale-but-good evidence survives the failure");
+  assert.equal(after.b.fetchedAt, 800, "the healthy node's entry is refreshed independently");
+  // getAllViews itself still reports the degradation (cache ≠ report): 
+  const views = await proxy.getAllViews();
+  assert.equal(views[0].reachable, false);
+});
+
+test("6c: a node that never answered has NO cache entry (absence never fabricates evidence)", async () => {
+  const nodes = [node("ghost", { endpoint: "", lanIp: "" })];
+  const { fn } = fakeFetch({});
+  const proxy = createUpdatesProxy({ nodes, fetch: fn });
+  await proxy.getAllViews();
+  assert.deepEqual(proxy.getCachedStates(), {}, "no successful fetch → no entry, ever");
+});

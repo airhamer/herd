@@ -333,3 +333,154 @@ test("determinism: repeated derivation on unchanged input is identical", () => {
   assert.equal(s.getCurrentWave(), s.getCurrentWave());
   assert.deepEqual(s.getWaveStates(), ["rebooting", "pending"]);
 });
+
+// ── BATCH 6c: injectable updateStates source (BATCH6C-BRIEF rulings 2 + 4) ──
+//
+// The cache viewLike is exactly what updatesProxy.getCachedStates() carries:
+// a full NodeUpdatesView ({ state: DgxUpdateState, snapshot, schedules,
+// fetchedAt, ... }) — the same DgxUpdateState object the snapshot mount
+// carries (ruling 2's resolution chains one type through ??).
+
+function cacheView(stOver = {}) {
+  return {
+    reachable: true,
+    snapshot: { probedAt: 1000 },
+    state: {
+      inProgress: false,
+      stage: null,
+      startedAt: null,
+      finishedAt: null,
+      bootId: "boot-1",
+      lastOutcome: null,
+      lastOutcomeDetail: null,
+      events: [],
+      ...stOver,
+    },
+    schedules: [],
+    fetchedAt: 900,
+  };
+}
+
+/** Idle-with-confirmed-success: the "fully available" cache evidence. */
+const IDLE_OK = { lastOutcome: "success", startedAt: 1000, finishedAt: 5000 };
+/** Member mid-reboot (reboot event at 1500). */
+const REBOOTING = {
+  inProgress: true,
+  stage: "reboot",
+  startedAt: 1500,
+  events: [{ at: 1500, stage: "reboot", message: "rebooting now" }],
+};
+
+/** Production-shaped /telemetry snapshot: NO updates mount (the real build). */
+function bareSnap(id) {
+  return { nodeId: id, online: true, llm: [] };
+}
+
+function seqCached(plan, connection, updateStates, { now = () => 0 } = {}) {
+  return createWaveSequencer({
+    nodes: [{ id: "a" }, { id: "b" }, { id: "c" }],
+    connection,
+    plan,
+    now,
+    updateStates,
+  });
+}
+
+test("6c(a): all-idle cache vs snapshot-available → IDENTICAL gate behavior", () => {
+  const plan = planOf([["a", "b"], ["c"]], 1000);
+  // Batch-5 path: evidence via snapshot.updates.state.
+  const sA = makeSeq(plan, healthyConn(["a", "b"]));
+  // Batch-6c path: same evidence via cache; snapshots carry NO mount.
+  const connB = fakeConn({ a: bareSnap("a"), b: bareSnap("b") }, ["a", "b"]);
+  const sB = seqCached(plan, connB, () => ({
+    a: cacheView(IDLE_OK),
+    b: cacheView(IDLE_OK),
+  }));
+  assert.deepEqual(sB.getWaveStates(), sA.getWaveStates());
+  assert.deepEqual(sB.getWaveStates(), ["healthy", "pending"]);
+  assert.equal(sB.canAdvance(), sA.canAdvance());
+  assert.equal(sB.canAdvance(), true);
+  assert.equal(sB.isWaveOpen(), sA.isWaveOpen());
+  assert.equal(sB.isWaveOpen(), false);
+  assert.equal(sB.getCurrentWave(), sA.getCurrentWave());
+});
+
+test("6c(b): cache says one member rebooting → wave OPEN without any snapshot mount", () => {
+  const plan = planOf([["a", "b"]], 1000);
+  const conn = fakeConn({ a: bareSnap("a"), b: bareSnap("b") }, ["a", "b"]);
+  const s = seqCached(plan, conn, () => ({ a: cacheView(IDLE_OK), b: cacheView(REBOOTING) }), {
+    now: () => 2000,
+  });
+  assert.equal(s.isWaveOpen(), true);
+  assert.equal(s.getCurrentWave(), 0);
+  assert.deepEqual(s.getWaveStates(), ["rebooting"]);
+  assert.equal(s.canAdvance(), false);
+  // Same inputs WITHOUT the cache source (Batch-6 production reality): the
+  // snapshot-blind sequencer cannot see the reboot at all — stays "pending".
+  const sBlind = makeSeq(plan, conn, { now: () => 2000 });
+  assert.deepEqual(sBlind.getWaveStates(), ["pending"], "regression witness: the gap 6c closes");
+  assert.equal(sBlind.isWaveOpen(), false);
+});
+
+test("6c(c): cache absent + snapshot mount absent → STILL FAILS CLOSED (no evidence)", () => {
+  const conn = fakeConn({ a: bareSnap("a") }, ["a"]);
+  const s = seqCached(planOf([["a"], ["b"]], 1000), conn, () => ({}));
+  assert.equal(s.isFullyAvailable("a"), false, "absence of evidence never says available");
+  assert.deepEqual(s.getWaveStates(), ["pending", "pending"]);
+  assert.equal(s.isWaveOpen(), false, "nothing ever opens on no evidence");
+  assert.equal(
+    s.canAdvance(),
+    true,
+    "fireable pending wave ≠ opened gate (matches Batch-5 no-evidence semantics)"
+  );
+  // updateStates() answering null (out-of-contract) = no evidence, never a crash:
+  const sNull = seqCached(planOf([["a"]], 1000), conn, () => null);
+  assert.equal(sNull.isFullyAvailable("a"), false);
+  assert.equal(sNull.isWaveOpen(), false);
+});
+
+test("6c(d): STALE-GOOD cache entry wins over empty snapshot (getSnapshot → null)", () => {
+  const conn = fakeConn({}, ["a"]); // getSnapshot → null for everyone
+  const s = seqCached(planOf([["a"]], 1000), conn, () => ({ a: cacheView(IDLE_OK) }), {
+    now: () => 9000,
+  });
+  assert.equal(s.isFullyAvailable("a"), true, "cache evidence alone passes all four checks");
+  assert.deepEqual(s.getWaveStates(), ["healthy"]);
+  assert.equal(s.isWaveOpen(), false);
+});
+
+test("6c(e): precedence — cache state beats snapshot state in BOTH directions", () => {
+  // Cache rebooting vs snapshot fully-available → OPEN (cache wins).
+  const conn1 = fakeConn({ a: healthySnap("a") }, ["a"]);
+  const s1 = seqCached(planOf([["a"]], 1000), conn1, () => ({ a: cacheView(REBOOTING) }), {
+    now: () => 2000,
+  });
+  assert.equal(s1.isWaveOpen(), true, "cache rebooting beats a success snapshot");
+  assert.deepEqual(s1.getWaveStates(), ["rebooting"]);
+  // Cache idle-success vs snapshot mid-reboot → CLOSED (cache wins the other way).
+  const conn2 = fakeConn(
+    { a: makeSnap("a", { inProgress: true, stage: "reboot", startedAt: 1500, events: [{ at: 1500, stage: "reboot" }] }) },
+    ["a"]
+  );
+  const s2 = seqCached(planOf([["a"]], 1000), conn2, () => ({ a: cacheView(IDLE_OK) }), {
+    now: () => 2000,
+  });
+  assert.equal(s2.isWaveOpen(), false, "cache success outranks a snapshot mid-flight");
+  assert.deepEqual(s2.getWaveStates(), ["healthy"]);
+  // Present view WITHOUT a .state field → falls through to the snapshot (?? semantics).
+  const s3 = seqCached(planOf([["a"]], 1000), conn2, () => ({ a: { snapshot: null, schedules: [] } }), {
+    now: () => 2000,
+  });
+  assert.equal(s3.isWaveOpen(), true, "state-less view falls through to the snapshot mount");
+});
+
+test("6c: updateStates guard — non-function throws; out-of-contract string state fails CLOSED", () => {
+  assert.throws(
+    () => createWaveSequencer({ nodes: [], connection: fakeConn(), plan: null, updateStates: 42 }),
+    /updateStates must be a zero-arg function/
+  );
+  const conn = fakeConn({ a: bareSnap("a") }, ["a"]);
+  const s = seqCached(planOf([["a"]], 1000), conn, () => ({ a: { state: "rebooting" } }));
+  assert.equal(s.isFullyAvailable("a"), false, "string state is NOT evidence — fail closed");
+  assert.deepEqual(s.getWaveStates(), ["pending"], "a string never opens a gate");
+});

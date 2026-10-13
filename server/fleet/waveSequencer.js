@@ -7,21 +7,26 @@
 // dashboard that was down when a wave finished re-evaluates correctly on
 // restart (derived state, not event bookkeeping).
 //
-// Seam (docs/BATCH5-BRIEF.md §"Seam contracts"):
-//   createWaveSequencer({ nodes, connection, plan, now, graceMs }) →
+// Seam (docs/BATCH5-BRIEF.md §"Seam contracts", extended BATCH6C-BRIEF
+// ruling 2 — optional updateStates view source):
+//   createWaveSequencer({ nodes, connection, plan, now, graceMs, updateStates }) →
 //     getWaveStates(): string[]   // "pending"|"running"|"rebooting"|"slow"|"healthy"
 //     isWaveOpen():    boolean    // any member updating / rebooting / slow
 //     getCurrentWave(): number|null
 //     canAdvance():    boolean    // current wave passed the gate, a wave remains
 //     isFullyAvailable(nodeId): boolean
 //
-// Per-member update state is read from snapshot.updates.state — the mount
-// point where the agent's /updates view ({snapshot, state, schedules}) is
-// merged into the /telemetry snapshot (SPEC §6.2: "FleetConnection's existing
-// 2 s snapshots (agent health, update state, LLM health)"). When the mount is
-// absent (telemetry build that predates the updates merge) the gate FAILS
-// CLOSED: "fully available" requires evidence, and absence of evidence never
-// opens a gate on a possibly-bricked box. LLM health (§3.1 check 4) uses the
+// Per-member update state comes PRIMARILY from the dashboard's own /updates
+// proxy cache (BATCH6C-BRIEF: the injected updateStates() source over the
+// updatesProxy fan-out — production /telemetry carries no update mount, so a
+// snapshot-only read would fail the gate closed forever). The telemetry
+// snapshot.updates.state mount (SPEC §6.2: "FleetConnection's existing 2 s
+// snapshots (agent health, update state, LLM health)") stays as FALLBACK for
+// a future agent build that merges it. Resolution per member: cache view →
+// snapshot mount → null. When BOTH are absent the gate FAILS CLOSED exactly
+// as before (byte-identical §3.1 semantics): "fully available" requires
+// evidence, and absence of evidence never opens a gate on a possibly-bricked
+// box. LLM health (§3.1 check 4) uses the
 // snapshot's existing `llm` metrics (backend != null ⇒ the endpoint answered
 // healthily); no llm entries → the check is vacuous ("if available").
 //
@@ -47,6 +52,10 @@ const OPEN_STATES = ["updating", "rebooting", "slow"];
  * @param {object | null} [opts.plan] FleetUpdatePlan (shared/types.ts §9)
  * @param {() => number} [opts.now] clock (tests); default Date.now
  * @param {number} [opts.graceMs] grace window, default RECOVER_GRACE_MS
+ * @param {() => Record<string, object>} [opts.updateStates] BATCH 6c:
+ *   optional zero-arg source of { [nodeId]: viewLike } views (the dashboard's
+ *   updatesProxy.getCachedStates()); viewLike.state is the agent's
+ *   DgxUpdateState (same object the snapshot.updates.state mount carries)
  * @returns {{
  *   getWaveStates: () => string[],
  *   isWaveOpen: () => boolean,
@@ -73,15 +82,34 @@ export function createWaveSequencer(opts = {}) {
   const clock = typeof opts.now === "function" ? opts.now : () => Date.now();
   const graceMs =
     Number.isFinite(opts.graceMs) && opts.graceMs > 0 ? opts.graceMs : RECOVER_GRACE_MS;
+  if (opts.updateStates !== undefined && typeof opts.updateStates !== "function") {
+    throw new TypeError(
+      "createWaveSequencer: updateStates must be a zero-arg function when provided"
+    );
+  }
+  const updateStates = typeof opts.updateStates === "function" ? opts.updateStates : null;
 
   const activePlan = plan && typeof plan === "object" && Array.isArray(plan.groups) ? plan : null;
   const groups = activePlan ? activePlan.groups : [];
 
-  /** The agent's DgxUpdateState for a node, or null when evidence is absent. */
+  /**
+   * The agent's DgxUpdateState for a node, or null when evidence is absent.
+   * BATCH 6c resolution order (BATCH6C-BRIEF ruling 2, verbatim):
+   *   const v = updateStates?.()[nodeId];
+   *   state = (v && v.state) ?? snapshot?.updates?.state ?? null
+   * The cache branch is the primary production evidence (updatesProxy fan-out);
+   * the snapshot mount is the fallback. When updateStates is absent/empty the
+   * result is IDENTICAL to the Batch-5 snapshot-only read for every input.
+   * A non-object returned state (out-of-contract) is treated as NO EVIDENCE
+   * (null) — the same fail-closed normalization Batch 5 applied to the
+   * snapshot branch; it never opens a gate.
+   */
   function updateStateOf(nodeId) {
+    const views = updateStates ? updateStates() : null;
+    const v = views && typeof views === "object" ? views[nodeId] : null;
     const snap = connection.getSnapshot(nodeId);
     const updates = snap && typeof snap === "object" ? snap.updates : null;
-    const state = updates && typeof updates === "object" ? updates.state : null;
+    const state = (v && v.state) ?? updates?.state ?? null;
     return state && typeof state === "object" && !Array.isArray(state) ? state : null;
   }
 

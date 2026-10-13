@@ -335,7 +335,15 @@ function refreshUpdatesLayer() {
   const nodes = loadNodes();
   const plan = updatePlanStore.read();
   updatesProxy = createUpdatesProxy({ nodes, plan });
-  waveSequencer = createWaveSequencer({ nodes, connection: fleetConnection, plan });
+  // BATCH 6c: the gate's evidence source is the proxy's own /updates fan-out
+  // cache (arrow re-reads the current proxy across refreshes; production
+  // /telemetry carries no update mount).
+  waveSequencer = createWaveSequencer({
+    nodes,
+    connection: fleetConnection,
+    plan,
+    updateStates: () => updatesProxy.getCachedStates(),
+  });
 }
 refreshUpdatesLayer();
 
@@ -737,6 +745,9 @@ app.get("/api/fleet/updates", async (_req, res) => {
 // stamps plan.startedAt (orchestrator-ratified) so outcome attribution has
 // a time floor; a stamp failure never masks the accepted trigger.
 app.post("/api/fleet/nodes/:id/updates/now", async (req, res) => {
+  // BATCH 6c: refresh the fan-out cache at decision time; on fan-out failure
+  // proceed with the last-known cache (fail-closed path covers it).
+  try { await updatesProxy.getAllViews(); } catch { /* keep last-known */ }
   if (waveSequencer.isWaveOpen()) {
     return res.status(409).json({
       error: "A fleet wave is in flight; single-node updates are disabled while any wave is open.",
@@ -820,7 +831,9 @@ app.get("/api/fleet/updates/plan", (_req, res) => {
 
 // 7. Abandon the plan — only while no wave is in flight (a wave must run to
 // its gate; deleting the plan mid-wave would orphan the running members).
-app.delete("/api/fleet/updates/plan", (_req, res) => {
+app.delete("/api/fleet/updates/plan", async (_req, res) => {
+  // BATCH 6c: same decision-time cache refresh as the trigger guard.
+  try { await updatesProxy.getAllViews(); } catch { /* keep last-known */ }
   if (waveSequencer.isWaveOpen()) {
     return res.status(409).json({
       error: "A fleet wave is in flight; the plan cannot be abandoned until every wave has closed.",
