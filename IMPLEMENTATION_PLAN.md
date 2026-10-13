@@ -418,6 +418,11 @@ seed-and-diff (deploy scripts idempotent); e2e (dashboard + node-agent wired, PR
 
 ## 6. Running log
 
+### 2026-10-13 ~08:5x EDT — Parked telemetry decision RESOLVED by Steve: 6c fix authorized, then deploy
+- Steve: "Do the telemetry fix before deploying then go ahead and deploy." Option (b) — dashboard-side: sequencer reads per-member update state from the updatesProxy `/updates` fan-out cache (precedence cache→snapshot→null; null keeps fail-closed semantics unchanged). No agent changes. Batch 7 deploy is thereby authorized conditional on 6c acceptance.
+- docs/BATCH6C-BRIEF.md written (binding design rulings, owned-file list: updatesProxy.js / waveSequencer.js / index.js / fleet tests / FINDINGS doc; forbidden: agent, src, shared, config, program docs). Worker `1c53315d` (runId 2901b706, qwen38, isolated, 4h) dispatched. Real-wiring integration test mandated per the durable rule.
+- On 6c acceptance: orchestrator re-runs gate 3× independently, records ACCEPT, then dispatches Batch 7 (deploy to gx10-1c2c / gx10-102c / gx10-25ed).
+
 ### 2026-10-13 ~00:10 EDT — Batch 6 (updates UI) ACCEPTED at `6a9ff85`; Batches 5+5b+6 all landed
 - Resume worker `f590a241` delivered steps 7–10 exactly: 6 test files + testKit (58 new tests; fake timers + mocked fetch), SELF-REVIEW, one clean commit (20 files, 2644+, tree clean). ONE fix outside tests, test-witnessed: UpdateRow `bytes()` rendered MB as GB — the 2 MiB known-answer case caught it pre-acceptance.
 - **Orchestrator independent gate 3×** (exit codes, unfiltered): fleet node --test 0, vitest 25 files 154/154, tsc 0 — identical all 3 passes; scope verified against `git show --stat`.
