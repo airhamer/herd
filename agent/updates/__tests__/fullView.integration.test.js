@@ -72,7 +72,7 @@ test("GET /updates end-to-end: real scheduler + real dgx serve {snapshot,state,s
   assert.equal(view.snapshot.dgxConfigured, true);
   assert.deepEqual(view.snapshot.otaAvailable, EXPECTED_OTA);
   assert.deepEqual(view.snapshot.packages, [EXPECTED_PKG]);
-  assert.deepEqual(view.snapshot.raw, AVAILABLE_BODY); // unverified upstream kept verbatim
+  assert.deepEqual(view.snapshot.raw, { available: AVAILABLE_BODY, list: null }); // Batch 8: {available, list} verbatim; /list fail-soft (302) → list null
   // state block
   assert.equal(view.state.inProgress, false);
   assert.deepEqual(view.state.events, []);

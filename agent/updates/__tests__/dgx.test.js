@@ -11,7 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createDgxUpdates } from "../dgx.js";
+import { createDgxUpdates, normalizeList } from "../dgx.js";
 
 function tmpDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "sparkdash-dgx-"));
@@ -94,7 +94,11 @@ test("happy: probe maps /updates/available to known-answer snapshot; fullView ca
   assert.deepEqual(snap.packages, [EXPECTED_PKG]);
   assert.deepEqual(snap.firmware, [EXPECTED_FW]);
   assert.equal(snap.updatesDisabled, false);
-  assert.deepEqual(snap.raw, AVAILABLE_BODY);
+  // Batch 8 (ruling adaptation #3): raw keeps BOTH upstream bodies verbatim.
+  // This stub does not serve /list (302 fall-through) → fail-soft: legacy
+  // guess kept, listError recorded, raw.list null.
+  assert.deepEqual(snap.raw, { available: AVAILABLE_BODY, list: null });
+  assert.match(snap.listError, /302/);
   assert.equal(snap.dgxError, undefined);
   const authed = fetchStub.calls.find((c) => c.url.includes("/updates/available"));
   assert.equal(authed.headers.Authorization, "Bearer jwt-test");
@@ -146,5 +150,129 @@ test("login 401 (bad creds, negative path): error surfaces in dgxError, never th
   const snap = await dgx.probe(true);
   assert.match(snap.dgxError, /dgx login failed \(401\)/);
   assert.equal(snap.dgxConfigured, true);
+});
+
+// ─── Batch 8: /api/v1/updates/list (real gx10-1c2c captured fixtures) ───
+
+const FIXTURES = path.join(path.dirname(new URL(import.meta.url).pathname), "fixtures");
+const LIST_REAL = JSON.parse(fs.readFileSync(path.join(FIXTURES, "updates-list.real.json"), "utf8"));
+
+// Known-answer ground truth, transcribed field-for-field from the committed
+// real fixture (ruling C shape: size verbatim, sizeBytes null).
+const EXPECTED_LIST_PKGS = [
+  { name: "apache2-bin", currentVersion: "2.4.58-1ubuntu8.15", availableVersion: "2.4.58-1ubuntu8.17",
+    sizeBytes: null, size: "1.3 MB", description: "Apache HTTP Server (modules and other binary files)" },
+  { name: "apparmor", currentVersion: "4.0.1really4.0.1-0ubuntu0.24.04.7", availableVersion: "4.0.1really4.0.1-0ubuntu0.24.04.9",
+    sizeBytes: null, size: "601.4 kB", description: "user-space parser utility for AppArmor" },
+  { name: "bind9-dnsutils", currentVersion: "1:9.18.39-0ubuntu0.24.04.7", availableVersion: "1:9.18.39-0ubuntu0.24.04.8",
+    sizeBytes: null, size: "151.2 kB", description: "bind9-dnsutils" },
+  { name: "xvfb", currentVersion: "2:21.1.12-1ubuntu1.6", availableVersion: "2:21.1.12-1ubuntu1.8",
+    sizeBytes: null, size: "850.4 kB", description: "Virtual Framebuffer 'fake' X server" },
+];
+const EXPECTED_LIST_FW = [
+  { component: "Embedded Controller", currentVersion: "0x02000006", availableVersion: "0x02000007" },
+  { component: "UEFI Device Firmware", currentVersion: "0x03000007", availableVersion: "0x03000008" },
+];
+
+function listBackend(listHandler) {
+  return makeFetch((url) => {
+    if (url.endsWith("/api/login")) return { status: 200, json: { token: "***" } };
+    if (url.includes("/api/v1/updates/available")) return { status: 200, json: AVAILABLE_BODY };
+    if (url.includes("/api/v1/updates/enabled")) return { status: 200, json: { updatesEnabled: true } };
+    if (url.includes("/api/v1/updates/list")) return listHandler(url);
+    return { status: 302, text: "SPA fallback" };
+  });
+}
+
+test("normalizeList (real fixture): 4 packages + 2 firmware mapped verbatim (ruling-C shape)", () => {
+  const out = normalizeList(LIST_REAL);
+  assert.deepEqual(out.packages, EXPECTED_LIST_PKGS); // installed/candidate/size/description verbatim
+  assert.deepEqual(out.firmware, EXPECTED_LIST_FW); // hex versions verbatim
+});
+
+test("merge precedence: /list OK → real rows win over /available guess; raw keeps both bodies verbatim", async () => {
+  const dir = tmpDir();
+  writeCreds(dir);
+  const fetchStub = listBackend(() => ({ status: 200, json: LIST_REAL }));
+  const dgx = createDgxUpdates({ configDir: dir, fetch: fetchStub, now: () => 1_000 });
+  const snap = await dgx.probe(true);
+  assert.equal(snap.listError, undefined); // /list succeeded — no error marker
+  assert.deepEqual(snap.packages, EXPECTED_LIST_PKGS); // legacy [EXPECTED_PKG] replaced
+  assert.equal(snap.packages.some((p) => p.name === "linux-nvidia"), false); // guess fully superseded
+  assert.deepEqual(snap.firmware, EXPECTED_LIST_FW);
+  assert.deepEqual(snap.otaAvailable, EXPECTED_OTA); // summary mapping still from /available
+  assert.deepEqual(snap.raw, { available: AVAILABLE_BODY, list: LIST_REAL }); // both upstream verbatim
+  const urls = fetchStub.calls.map((c) => c.url);
+  assert.ok(urls.findIndex((u) => u.includes("/updates/available")) < urls.findIndex((u) => u.includes("/updates/list")),
+    "/list must be fetched AFTER /available succeeds");
+  const listCall = fetchStub.calls.find((c) => c.url.includes("/updates/list"));
+  assert.equal(listCall.headers.Authorization, "Bearer ***"); // same token/base as /available
+});
+
+test("fail-soft: /list 500 → probe OK, legacy rows kept, listError recorded, raw.list null", async () => {
+  const dir = tmpDir();
+  writeCreds(dir);
+  const fetchStub = listBackend(() => ({ status: 500, text: "Internal Server Error" }));
+  const dgx = createDgxUpdates({ configDir: dir, fetch: fetchStub, now: () => 1_000 });
+  const snap = await dgx.probe(true);
+  assert.equal(snap.dgxError, undefined); // a /list failure NEVER fails the probe
+  assert.deepEqual(snap.packages, [EXPECTED_PKG]); // today's behavior preserved
+  assert.deepEqual(snap.firmware, [EXPECTED_FW]);
+  assert.match(snap.listError, /500/);
+  assert.deepEqual(snap.raw, { available: AVAILABLE_BODY, list: null });
+});
+
+test("fail-soft: /list malformed JSON or transport timeout → same legacy outcome + listError", async () => {
+  // 200 but unparseable body (stub json() rejects → mapped to null → unparseable)
+  const d1 = tmpDir();
+  writeCreds(d1);
+  const dgx1 = createDgxUpdates({
+    configDir: d1, fetch: listBackend(() => ({ status: 200 })), now: () => 1_000,
+  });
+  const snap1 = await dgx1.probe(true);
+  assert.equal(snap1.dgxError, undefined);
+  assert.match(snap1.listError, /unparseable/i);
+  assert.deepEqual(snap1.packages, [EXPECTED_PKG]);
+  assert.equal(snap1.raw.list, null);
+  // transport failure (AbortSignal.timeout surfaces as a rejected fetch)
+  const d2 = tmpDir();
+  writeCreds(d2);
+  const dgx2 = createDgxUpdates({
+    configDir: d2,
+    fetch: listBackend(() => { throw new Error("The operation was aborted due to a timeout"); }),
+    now: () => 1_000,
+  });
+  const snap2 = await dgx2.probe(true);
+  assert.equal(snap2.dgxError, undefined);
+  assert.match(snap2.listError, /timeout/i);
+  assert.deepEqual(snap2.packages, [EXPECTED_PKG]);
+});
+
+test("legit zero: packageUpdates [] + firmwareUpdates [] → empty rows, NO listError, guess still superseded", async () => {
+  const dir = tmpDir();
+  writeCreds(dir);
+  const emptyList = { packageUpdates: [], firmwareUpdates: [] };
+  const dgx = createDgxUpdates({
+    configDir: dir, fetch: listBackend(() => ({ status: 200, json: emptyList })), now: () => 1_000,
+  });
+  const snap = await dgx.probe(true);
+  assert.equal(snap.listError, undefined); // legitimate zero ≠ error
+  assert.deepEqual(snap.packages, []); // real zero from /list beats the legacy guess
+  assert.deepEqual(snap.firmware, []);
+  assert.deepEqual(snap.raw.list, emptyList);
+});
+
+test("normalizeList junk tolerance: never throws, empty out, nameless items skipped", () => {
+  const EMPTY = { packages: [], firmware: [] };
+  for (const junk of [null, undefined, "updates", 42, [], {}]) {
+    assert.deepEqual(normalizeList(junk), EMPTY);
+  }
+  assert.deepEqual(normalizeList({ packageUpdates: "nope", firmwareUpdates: 7 }), EMPTY);
+  const out = normalizeList({
+    packageUpdates: [null, "x", 5, { currentVersion: "1", availableVersion: "2" }, { name: "" }, { name: "ok" }],
+    firmwareUpdates: [null, {}, { name: 42 }, { name: "EC", currentVersion: "0x1", availableVersion: "0x2" }],
+  });
+  assert.deepEqual(out.packages, [{ name: "ok", currentVersion: "", availableVersion: "", sizeBytes: null, size: null, description: null }]);
+  assert.deepEqual(out.firmware, [{ component: "EC", currentVersion: "0x1", availableVersion: "0x2" }]);
 });
 

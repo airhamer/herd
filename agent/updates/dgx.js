@@ -4,7 +4,8 @@
  *
  * Live-verified contract (Batch-1 spike, 2026-10-09, read-only):
  *   POST /api/login                     {username,password} (PAM) → JWT
- *   GET  /api/v1/updates/available      401 unauth — package/firmware/OTA list
+ *   GET  /api/v1/updates/available      401 unauth — summary booleans (2026-10-14 capture)
+ *   GET  /api/v1/updates/list           401 unauth — packageUpdates[]/firmwareUpdates[] rows (Batch 8, live capture)
  *   GET  /api/v1/update_reboot/status   401 unauth
  *   POST /api/v1/update_reboot          the trigger (NEVER call from tests)
  *   GET  /api/v1/update_reboot/stream   401 unauth — SSE vs WS TBD (auto-detect)
@@ -159,6 +160,53 @@ export function normalizeAvailable(raw) {
   return out;
 }
 
+/**
+ * Defensive mapping of GET /api/v1/updates/list — REAL captured shapes
+ * (gx10-1c2c, 2026-10-14): { packageUpdates:[{name,description,size,
+ * currentVersion,availableVersion}], firmwareUpdates:[{name,currentVersion,
+ * availableVersion}] }. Orchestrator ruling eeb3696 (reading C): emit the
+ * committed snapshot element shape (DgxPackageUpdate / DgxFirmwareUpdate)
+ * plus additive fields ONLY — packages carry the DGX human size string
+ * VERBATIM under `size` (sizeBytes stays null; the source has no numeric
+ * size — never parse one) and `description`; firmware rows rename source
+ * `name` to `component`. Same defensive style as normalizeAvailable:
+ * non-object input or missing/non-array fields → empty arrays; items
+ * without a string `name` are skipped; never throws.
+ */
+export function normalizeList(raw) {
+  const out = { packages: [], firmware: [] };
+  if (!raw || typeof raw !== "object") return out;
+
+  if (Array.isArray(raw.packageUpdates)) {
+    for (const p of raw.packageUpdates) {
+      if (!p || typeof p !== "object") continue;
+      if (typeof p.name !== "string" || p.name === "") continue;
+      out.packages.push({
+        name: p.name,
+        currentVersion: String(p.currentVersion ?? ""),
+        availableVersion: String(p.availableVersion ?? ""),
+        sizeBytes: null, // /list has no numeric size (ruling: do not invent one)
+        size: typeof p.size === "string" ? p.size : null,
+        description: typeof p.description === "string" ? p.description : null,
+      });
+    }
+  }
+
+  if (Array.isArray(raw.firmwareUpdates)) {
+    for (const f of raw.firmwareUpdates) {
+      if (!f || typeof f !== "object") continue;
+      if (typeof f.name !== "string" || f.name === "") continue;
+      const avail = f.availableVersion;
+      out.firmware.push({
+        component: f.name,
+        currentVersion: String(f.currentVersion ?? ""),
+        availableVersion: avail == null ? null : String(avail),
+      });
+    }
+  }
+  return out;
+}
+
 /** Map a streamed stage token onto the DgxUpdateStage union (null = keep). */
 function mapStage(stage) {
   const s = String(stage).toLowerCase();
@@ -288,7 +336,8 @@ export function createDgxUpdates(opts = {}) {
   }
 
   /**
-   * Probe the backend: available updates + enabled flag + local release info.
+   * Probe the backend: /updates/available + /updates/list (fail-soft, Batch 8)
+   * + enabled flag + local release info.
    * force=false serves the cached snapshot when fresh (<60 s). Never throws:
    * failures return the degraded shape (or last snapshot) with dgxError set.
    */
@@ -304,6 +353,29 @@ export function createDgxUpdates(opts = {}) {
       }
       const raw = await availRes.json().catch(() => null);
       const norm = normalizeAvailable(raw);
+      // Batch 8: GET /api/v1/updates/list — the real pending package/firmware
+      // rows. FAIL-SOFT by contract: non-2xx / timeout / unparseable body must
+      // NEVER fail the probe; the /available snapshot stands and the snapshot
+      // records a short listError reason instead.
+      let listBody = null;
+      let listNorm = null;
+      let listError = null;
+      try {
+        const listRes = await api(c, "/api/v1/updates/list");
+        if (!listRes.ok) {
+          listError = `GET /api/v1/updates/list → ${listRes.status}`;
+        } else {
+          listBody = await listRes.json().catch(() => null);
+          if (!listBody || typeof listBody !== "object") {
+            listError = "GET /api/v1/updates/list: unparseable JSON body";
+            listBody = null;
+          } else {
+            listNorm = normalizeList(listBody);
+          }
+        }
+      } catch (err) {
+        listError = `GET /api/v1/updates/list failed: ${String(err?.message || err)}`.slice(0, 200);
+      }
       let updatesDisabled = false;
       try {
         // PUBLIC endpoint — no bearer needed (spec §2.5).
@@ -319,10 +391,15 @@ export function createDgxUpdates(opts = {}) {
         swBuild: readSwBuild(),
         latestOtaApplied: readLatestOta(),
         otaAvailable: norm.otaAvailable,
-        packages: norm.packages,
-        firmware: norm.firmware,
+        // Merge precedence (ruling): successful /list rows win — even when
+        // legitimately empty; the legacy /available guess is kept ONLY when
+        // /list failed (listNorm null).
+        packages: listNorm ? listNorm.packages : norm.packages,
+        firmware: listNorm ? listNorm.firmware : norm.firmware,
         updatesDisabled,
-        raw, // unverified upstream shape kept verbatim
+        ...(listError ? { listError } : {}),
+        // Batch 8: BOTH upstream bodies kept verbatim; failed/unparseable /list → null.
+        raw: { available: raw, list: listBody },
       };
       const b = bootId();
       if (b) state.bootId = b;

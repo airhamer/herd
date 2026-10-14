@@ -561,6 +561,10 @@ export interface DgxPackageUpdate {
   currentVersion: string;
   availableVersion: string;
   sizeBytes: number | null;
+  /** DGX /updates/list human size VERBATIM, e.g. "1.3 MB" (Batch 8); null/absent when unknown. */
+  size?: string | null;
+  /** Package description from DGX /updates/list (Batch 8); null/absent when unknown. */
+  description?: string | null;
 }
 
 /** One firmware item in an available DGX update. */

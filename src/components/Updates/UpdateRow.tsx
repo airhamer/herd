@@ -132,10 +132,17 @@ export function UpdateRow(props: UpdateRowProps) {
                       <tbody>
                         {snap.packages.map((p) => (
                           <tr key={p.name} className="border-b border-border/40">
-                            <td className="py-1 pr-3 text-text">{p.name}</td>
+                            <td className="py-1 pr-3 text-text">
+                              {p.name}
+                              {p.description ? (
+                                <div className="text-[10px] text-muted" title={p.description}>
+                                  {p.description}
+                                </div>
+                              ) : null}
+                            </td>
                             <td className="py-1 pr-3 font-tabular text-muted">{p.currentVersion}</td>
                             <td className="py-1 pr-3 font-tabular text-text">{p.availableVersion}</td>
-                            <td className="py-1 pr-3 font-tabular text-muted">{bytes(p.sizeBytes)}</td>
+                            <td className="py-1 pr-3 font-tabular text-muted">{p.size ?? bytes(p.sizeBytes)}</td>
                           </tr>
                         ))}
                       </tbody>
