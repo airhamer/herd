@@ -79,6 +79,16 @@ The worker's `spec-conflict:` return is valid. Ruling = reading **C**:
 
 Gate now includes dashboard build path: same three commands, 3×, identical.
 
+## ORCHESTRATOR RULING-2 (2026-10-14 17:45 EDT — RESOLVES `ruling-needed:` one-line scope extension)
+
+The second `ruling-needed:` return is ACCEPTED as correctly raised; the analysis is verified sound (fullView.integration.test.js drives the REAL probe; its happyBackend has no `/list` route → 302 fall-through → fail-soft → `raw.list` null → line-75 old-shape assertion breaks). Ruling:
+
+1. **Granted.** `agent/updates/__tests__/fullView.integration.test.js` joins the owned-files list **for the line-75 `raw` assertion ONLY**, updated to exactly:
+   `assert.deepEqual(view.snapshot.raw, { available: AVAILABLE_BODY, list: null }); // Batch 8: {available, list} verbatim; /list fail-soft (302) → list null`
+   Nothing else in that file changes (line-74 packages assertion passes via fail-soft as-is).
+2. Rejected alternatives (a) conditional/morphic `raw` and (b) silent out-of-scope edit: both concurred — never ratified, never silent.
+3. Ship the already-designed implementation verbatim per the parked report's "Ready to ship" list.
+
 ## Commit (one, message verbatim)
 `Batch 8 (updates): agent probe fetches /api/v1/updates/list — real package/firmware rows (gx10-1c2c captured fixtures)`
 On top of `f9bafaa`. Tree clean after. Report: commit hash, gate table ×3, test delta, deviations (flagged, never silent).
