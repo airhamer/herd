@@ -62,6 +62,23 @@ Record baseline counts BEFORE your edits; every pre-existing test must still pas
 - `packageUpdates: []` → `packages: []` (legit zero ≠ error, `listError` stays absent).
 - Junk tolerance: string input, null input, items missing `name`.
 
+## ORCHESTRATOR RULING (2026-10-14 17:1x EDT — supersedes the Passage A/B conflict in §Contract 2; RESOLVES the BLOCKED return)
+
+The worker's `spec-conflict:` return is valid. Ruling = reading **C**:
+
+1. `normalizeList` emits the **existing committed snapshot shape plus additive fields only**:
+   - packages: `{ name, currentVersion, availableVersion, sizeBytes: null, size: <verbatim string>, description: <string|null> }`
+   - firmware: `{ component: <source name>, currentVersion, availableVersion }`
+   Passage A's `installed/candidate` key names are WITHDRAWN. "size verbatim" now means the additive `size` field; `sizeBytes` stays `null` for list-sourced rows (source has no numeric size — do not parse one).
+2. **Fleet-side change is now IN SCOPE (minimal, additive) — the §Contract-4 STOP is lifted for exactly these two files, added to the owned-files list:**
+   - `shared/types.ts`: `DgxPackageUpdate` gains optional `size?: string | null` and `description?: string | null`.
+   - `src/components/Updates/UpdateRow.tsx`: Size cell renders `p.size ?? bytes(p.sizeBytes)`; description shown only if present (tooltip or subtext — keep it minimal, no layout redesign).
+   No other `server/` or `src/` changes.
+3. In-scope adaptation authorized: `dgx.test.js` happy-path `deepEqual(snap.raw, AVAILABLE_BODY)` updates to the new `{available, list}` raw shape.
+4. Commit message per brief stays verbatim.
+
+Gate now includes dashboard build path: same three commands, 3×, identical.
+
 ## Commit (one, message verbatim)
 `Batch 8 (updates): agent probe fetches /api/v1/updates/list — real package/firmware rows (gx10-1c2c captured fixtures)`
 On top of `f9bafaa`. Tree clean after. Report: commit hash, gate table ×3, test delta, deviations (flagged, never silent).
