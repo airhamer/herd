@@ -156,7 +156,7 @@ export function UpdatesPage({ now }: UpdatesPageProps = {}) {
               <thead>
                 <tr className="border-b border-border text-[10px] uppercase tracking-wide text-muted">
                   <th className="py-1.5 pr-3 font-medium">Node</th>
-                  <th className="py-1.5 pr-3 font-medium">SWBUILD</th>
+                  <th className="py-1.5 pr-3 font-medium">DGX build</th>
                   <th className="py-1.5 pr-3 font-medium">Applied OTA</th>
                   <th className="py-1.5 pr-3 font-medium">Available OTA</th>
                   <th className="py-1.5 pr-3 font-medium">Pkgs</th>

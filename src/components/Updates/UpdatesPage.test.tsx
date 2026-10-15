@@ -211,3 +211,102 @@ describe("UpdatesPage detail expander + grace rendering", () => {
     expect(container.textContent).not.toContain("REBOOTING");
   });
 });
+
+// ─── Batch 10-A: effective build display ───────────────────────────────────
+// latestOtaApplied.version is the authoritative effective build; swBuild is
+// the /etc/dgx-release FILE value (live fleet: 7.2.3/7.5.0 file vs 7.6.0
+// applied fleet-wide). The build cell must LEAD with the effective value and
+// keep the stale file value visible but clearly labeled.
+
+describe("Batch 10-A effective build display", () => {
+  it("applied OTA present → build cell shows the EFFECTIVE build, file value labeled stale", async () => {
+    const { container } = mountPage(() => [
+      updatesView("n1", {
+        snapshot: snapshot({
+          swBuild: "7.2.3",
+          latestOtaApplied: { version: "7.6.0", date: "2026-09-30" },
+        }),
+      }),
+    ]);
+    await flush();
+    const build = container.querySelector('[data-testid="update-row-build"]')?.textContent ?? "";
+    expect(build.startsWith("7.6.0")).toBe(true); // effective value leads
+    expect(build).toContain("file 7.2.3 (stale)"); // both visible, stale clearly labeled
+  });
+
+  it("fallback: no applied OTA → build cell shows swBuild alone, no stale label", async () => {
+    const { container } = mountPage(() => [
+      updatesView("n1", { snapshot: snapshot({ swBuild: "7.5.0", latestOtaApplied: null }) }),
+    ]);
+    await flush();
+    const build = container.querySelector('[data-testid="update-row-build"]')?.textContent ?? "";
+    expect(build.trim()).toBe("7.5.0");
+    expect(build).not.toContain("stale");
+  });
+
+  it("negative: file value EQUAL to the applied OTA is not labeled stale", async () => {
+    const { container } = mountPage(() => [
+      updatesView("n1", {
+        snapshot: snapshot({ swBuild: "7.6.0", latestOtaApplied: { version: "7.6.0", date: "2026-09-30" } }),
+      }),
+    ]);
+    await flush();
+    const build = container.querySelector('[data-testid="update-row-build"]')?.textContent ?? "";
+    expect(build.trim()).toBe("7.6.0");
+    expect(build).not.toContain("stale");
+  });
+});
+
+// ─── Batch 10-A: per-spark status + Update Now wiring ──────────────────────
+
+describe("Batch 10-A per-spark status + Update Now wiring", () => {
+  it("snapshot.listError set → one visible per-spark warning (role=alert); clean snapshot renders none", async () => {
+    // listError is emitted by the agent's /list fail-soft path (producer-
+    // asserted in agent/updates/__tests__/dgx.test.js) and passed verbatim by
+    // server/fleet/updatesProxy.js buildView; not yet declared on the TS type,
+    // so the fixture adds it structurally (Object.assign skips excess-property
+    // checks without casting the seam input).
+    const failing = Object.assign(snapshot({ swBuild: "7.2.3" }), {
+      listError: "GET http://127.0.0.1:11000/updates/list -> HTTP 500",
+    });
+    const { container } = mountPage(() => [
+      updatesView("n1", { snapshot: failing }),
+      updatesView("n2", { snapshot: snapshot() }),
+    ]);
+    await flush();
+    const alerts = Array.from(container.querySelectorAll('[role="alert"]'));
+    expect(alerts).toHaveLength(1); // negative case: n2's clean snapshot is silent
+    expect(alerts[0].textContent).toContain("GET http://127.0.0.1:11000/updates/list -> HTTP 500");
+  });
+
+  it("pending package count + last-check time (probedAt) render per spark", async () => {
+    const packages = ["a", "b", "c"].map((name) => ({
+      name,
+      currentVersion: "1.0",
+      availableVersion: "2.0",
+      sizeBytes: 1024,
+    }));
+    const { container } = mountPage(() => [
+      updatesView("n1", { display: "available", snapshot: snapshot({ probedAt: FIXED_NOW, packages }) }),
+    ]);
+    await flush();
+    expect(container.querySelector('[data-testid="update-row-pkgs"]')?.textContent).toBe("3");
+    // now={FIXED_NOW} prop and probedAt={FIXED_NOW} → zero-elapsed label
+    expect(container.querySelector('[data-testid="update-row-lastcheck"]')?.textContent).toBe("just now");
+  });
+
+  it("row 'Update now' + confirm POSTs the existing route /api/fleet/nodes/:id/updates/now", async () => {
+    const { container } = mountPage(() => [updatesView("n1")], (c) =>
+      c.method === "POST" && c.url === "/api/fleet/nodes/n1/updates/now"
+        ? { status: 200, body: { ok: true } }
+        : null
+    );
+    await flush();
+    click(findButton(container, "Update now")); // two-step confirm (SPEC §6.3)
+    click(findButton(document, "Trigger update"));
+    await flush();
+    const post = calls.find((c) => c.method === "POST" && c.url === "/api/fleet/nodes/n1/updates/now");
+    expect(post).toBeDefined();
+    expect(Array.from(document.querySelectorAll('[role="alert"]'))).toHaveLength(0); // success → no alert
+  });
+});
