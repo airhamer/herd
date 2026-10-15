@@ -31,6 +31,10 @@ import path from "node:path";
 
 const DEFAULT_TIMEOUT_MS = 8_000;
 const STREAM_TIMEOUT_MS = 10 * 60_000; // long-lived stream; reboot ends it anyway
+// Live-measured 2026-10-14: /api/v1/updates/list takes ~26 s on a real box
+// (234 packages). The 8 s default aborted every probe (listError timeout).
+// Batch 9: give the list call minutes; env-overridable for slow backends.
+const LIST_TIMEOUT_MS = Number(process.env.SPARKDASH_DGX_LIST_TIMEOUT_MS) || 5 * 60_000;
 const EVENT_RING_MAX = 200;
 const PROBE_INTERVAL_MS = 60 * 60_000; // hourly cadence (spec §5.1)
 
@@ -361,7 +365,7 @@ export function createDgxUpdates(opts = {}) {
       let listNorm = null;
       let listError = null;
       try {
-        const listRes = await api(c, "/api/v1/updates/list");
+        const listRes = await api(c, "/api/v1/updates/list", {}, true, LIST_TIMEOUT_MS);
         if (!listRes.ok) {
           listError = `GET /api/v1/updates/list → ${listRes.status}`;
         } else {
@@ -619,6 +623,9 @@ export function createDgxUpdates(opts = {}) {
   /** Hourly unref'd prober; probes only when configured, nothing between ticks. */
   function startProber() {
     if (prober) return prober;
+    // Batch 9: kick the first probe immediately at startup. Interval-only meant
+    // every redeploy left the dashboard data-less for up to a full hour.
+    if (loadConfig()) void probe(true).catch(() => {});
     prober = setInterval(() => {
       if (!loadConfig()) return; // not configured → no traffic at all
       void probe(true).catch(() => {});
