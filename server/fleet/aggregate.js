@@ -85,3 +85,43 @@ export function aggregateRequests(snapshots) {
 }
 
 export default aggregateRequests;
+
+/**
+ * Batch 10-B: derive fleet-side GpuMetrics from the SparkMonitor's own
+ * collected metrics. Fleet nodes polled via the node-agent report gpu:null
+ * (container has no /dev/nvidia* access) while the dashboard's SSH monitor
+ * already collects GPU data for the same box (lanIp match). Pure: never
+ * throws, returns null when there is nothing to derive from.
+ *
+ * @param metrics SparkMonitor snapshot `metrics` object (gpu/unifiedMemory)
+ * @returns {{usage:number,temperature:number,powerDraw:number,powerLimit:number,vramUsedMB:number,vramTotalMB:number,vramPercentage:number}} | null
+ */
+export function fleetGpuFromMonitor(metrics) {
+  const g = metrics && typeof metrics === "object" ? metrics.gpu : null;
+  if (!g || typeof g !== "object") return null;
+  const num = (v, fb = 0) => (Number.isFinite(v) ? v : fb);
+  const power = g.power && typeof g.power === "object" ? g.power : {};
+  const vram = g.vram && typeof g.vram === "object" ? g.vram : {};
+  const uni =
+    metrics.unifiedMemory && typeof metrics.unifiedMemory === "object" ? metrics.unifiedMemory : {};
+  const vramUsed = num(vram.used, num(uni.gpuUsed, num(uni.used, 0)));
+  const vramTotal = num(vram.total, num(uni.total, 0));
+  const pct = Number.isFinite(vram.percentage)
+    ? vram.percentage
+    : Number.isFinite(vram.total) && vram.total > 0 && Number.isFinite(vram.used)
+      ? Math.round((vram.used / vram.total) * 100)
+      : Number.isFinite(uni.percentage)
+        ? uni.percentage
+        : vramTotal > 0
+          ? Math.round((vramUsed / vramTotal) * 100)
+          : 0;
+  return {
+    usage: num(g.usage),
+    temperature: num(g.temperature),
+    powerDraw: num(power.draw),
+    powerLimit: num(power.limit),
+    vramUsedMB: vramUsed,
+    vramTotalMB: vramTotal,
+    vramPercentage: pct,
+  };
+}

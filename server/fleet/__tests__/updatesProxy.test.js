@@ -554,3 +554,42 @@ test("6c: a node that never answered has NO cache entry (absence never fabricate
   await proxy.getAllViews();
   assert.deepEqual(proxy.getCachedStates(), {}, "no successful fetch → no entry, ever");
 });
+
+// ─── Batch 10-B: pending rows count as updates-available ───────────────────
+// Live fleet reported otaAvailable null with 234/62/60 pending packages;
+// the badge must not read "0 with updates" while rows are pending.
+test("Batch 10-B display: pending package rows → available", () => {
+  const p = proxyWithClock();
+  const v = p.buildView(
+    node("a"),
+    body({ snapshot: { ...body().snapshot, packages: [{ name: "linux-image-ota" }] } })
+  );
+  assert.equal(v.display, "available");
+});
+
+test("Batch 10-B display: firmware rows alone → available", () => {
+  const p = proxyWithClock();
+  const v = p.buildView(
+    node("a"),
+    body({ snapshot: { ...body().snapshot, firmware: [{ name: "EC Firmware" }] } })
+  );
+  assert.equal(v.display, "available");
+});
+
+test("Batch 10-B display: empty rows + null OTA stays current", () => {
+  const p = proxyWithClock();
+  const v = p.buildView(node("a"), body());
+  assert.equal(v.display, "current");
+});
+
+test("Batch 10-B display: failed outcome still outranks pending rows", () => {
+  const p = proxyWithClock();
+  const v = p.buildView(
+    node("a"),
+    body({
+      state: { ...defaultUpdateState(), lastOutcome: "error" },
+      snapshot: { ...body().snapshot, packages: [{ name: "x" }] },
+    })
+  );
+  assert.equal(v.display, "failed");
+});

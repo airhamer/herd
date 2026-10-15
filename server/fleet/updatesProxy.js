@@ -156,7 +156,15 @@ export function createUpdatesProxy(opts = {}) {
     if (state.inProgress && state.stage === "reboot") return "rebooting";
     if (state.inProgress) return "updating";
     if (state.lastOutcome === "error") return "failed";
-    if (snapshot && snapshot.otaAvailable != null) return "available";
+    if (snapshot) {
+      if (snapshot.otaAvailable != null) return "available";
+      // Batch 10-B: pending package/firmware rows ARE updates-available. The
+      // OTA flag alone misread every live box "current" while carrying
+      // 234/62/60 pending packages (header badge read "0 with updates").
+      const pkgs = Array.isArray(snapshot.packages) ? snapshot.packages.length : 0;
+      const fw = Array.isArray(snapshot.firmware) ? snapshot.firmware.length : 0;
+      if (pkgs > 0 || fw > 0) return "available";
+    }
     return "current";
   }
 

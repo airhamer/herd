@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { aggregateRequests } from "../aggregate.js";
+import { aggregateRequests, fleetGpuFromMonitor } from "../aggregate.js";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 // Mock NodeAgentSnapshots carry only the fields aggregateRequests reads
@@ -182,4 +182,32 @@ test("aggregateRequests: malformed stat entries degrade without crashing", () =>
   // engine/machine views still count it
   assert.equal(r.byEngine["sglang"].length, 2);
   assert.equal(r.byModel["m1"].length, 1);
+});
+
+// ─── Batch 10-B: fleetGpuFromMonitor ───────────────────────────────────────
+test("fleetGpuFromMonitor: maps gpu metrics to fleet GpuMetrics shape", () => {
+  const g = fleetGpuFromMonitor({
+    gpu: { usage: 42, temperature: 55.5, power: { draw: 30, limit: 120 }, vram: { used: 4096, total: 131072, percentage: 3 } },
+  });
+  assert.deepEqual(g, {
+    usage: 42, temperature: 55.5, powerDraw: 30, powerLimit: 120,
+    vramUsedMB: 4096, vramTotalMB: 131072, vramPercentage: 3,
+  });
+});
+
+test("fleetGpuFromMonitor: GB10 fallback — no discrete VRAM, unified memory fills totals", () => {
+  const g = fleetGpuFromMonitor({
+    gpu: { usage: 10, temperature: 40 },
+    unifiedMemory: { total: 131072, gpuUsed: 20480, used: 65536, percentage: 50 },
+  });
+  assert.equal(g.vramTotalMB, 131072);
+  assert.equal(g.vramUsedMB, 20480);
+  assert.equal(g.vramPercentage, 50);
+});
+
+test("fleetGpuFromMonitor: absent/failed gpu collection → null, never throws", () => {
+  assert.equal(fleetGpuFromMonitor(undefined), null);
+  assert.equal(fleetGpuFromMonitor({}), null);
+  assert.equal(fleetGpuFromMonitor({ gpu: null }), null);
+  assert.equal(fleetGpuFromMonitor({ gpu: { collectionFailed: true } }).usage, 0);
 });

@@ -50,7 +50,7 @@ import { randomUUID } from "node:crypto";
 import { loadNodes, listNodes, addNode, updateNode, removeNode } from "./fleet/registry.js";
 import { createFleetConnection } from "./fleet/connection.js";
 import { buildTopology } from "./fleet/topology.js";
-import { aggregateRequests } from "./fleet/aggregate.js";
+import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
 import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
 import { createWaveSequencer } from "./fleet/waveSequencer.js";
 
@@ -379,13 +379,28 @@ function emptyNodeSnapshot(rec) {
 function buildFleetSnapshot() {
   const nodes = listNodes();
   const cached = fleetConnection.getAllSnapshots();
+  // Batch 10-B: node-agent snapshots report gpu:null (the agent container has
+  // no /dev/nvidia* access). The dashboard's SparkMonitor already collects GPU
+  // metrics for the same boxes over SSH — fall back to it, matched by lanIp.
+  const monitorByLanIp = new Map();
+  for (const [id, mon] of monitors) {
+    try {
+      const ms = typeof mon.snapshot === "function" ? mon.snapshot() : null;
+      const ip = (ms && ms.lanIp) || (registry.getSpark(id) || {}).lanIp;
+      if (ip && !monitorByLanIp.has(ip)) monitorByLanIp.set(ip, (ms && ms.metrics) || null);
+    } catch {
+      /* monitor not ready — fallback stays unavailable for this box */
+    }
+  }
   const nodeSnaps = nodes.map((rec) => {
     const snap = fleetConnection.getSnapshot(rec.id) ?? emptyNodeSnapshot(rec);
+    const lanIp = snap.lanIp || rec.lanIp;
     return {
       ...snap,
       nodeName: snap.nodeName || rec.name,
-      lanIp: snap.lanIp || rec.lanIp,
+      lanIp,
       online: fleetConnection.isOnline(rec.id),
+      gpu: snap.gpu ?? fleetGpuFromMonitor(monitorByLanIp.get(lanIp) ?? null),
     };
   });
   const requests = aggregateRequests(cached);
