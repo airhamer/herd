@@ -594,6 +594,9 @@ export interface DgxUpdateSnapshot {
   packages: DgxPackageUpdate[];
   firmware: DgxFirmwareUpdate[];
   updatesDisabled: boolean;
+  /** Present (non-empty) when the /api/v1/updates/list probe fail-soft-ed;
+   *  packages/firmware then reflect the last good list, possibly empty. */
+  listError?: string;
   /** false when agent/config/dgx.json has no credentials yet */
   dgxConfigured?: boolean;
 }
