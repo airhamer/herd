@@ -400,7 +400,10 @@ function buildFleetSnapshot() {
       nodeName: snap.nodeName || rec.name,
       lanIp,
       online: fleetConnection.isOnline(rec.id),
-      gpu: snap.gpu ?? fleetGpuFromMonitor(monitorByLanIp.get(lanIp) ?? null),
+      // Lookup prefers the REGISTRY lanIp: the agent's self-reported lanIp can
+      // be a management/Tailscale address (live: 10.200.0.x on two boxes),
+      // which never matches the Spark monitor's LAN key.
+      gpu: snap.gpu ?? fleetGpuFromMonitor(monitorByLanIp.get(rec.lanIp) ?? monitorByLanIp.get(lanIp) ?? null),
     };
   });
   const requests = aggregateRequests(cached);
