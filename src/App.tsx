@@ -475,6 +475,13 @@ function DashboardApp() {
         onClose={() => setShowSettings(false)}
         onSaved={handleSettingsSaved}
       />
+      <ManageNodesDialog
+        open={showManageNodes}
+        onClose={() => setShowManageNodes(false)}
+        onChanged={() => {
+          void refreshFromApi();
+        }}
+      />
     </div>
     </FleetUpdatesProvider>
   );
