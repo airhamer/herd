@@ -61,6 +61,28 @@ function roleBadgeText(role: NodeRole): string {
   return role === "head" ? "Head" : role === "worker" ? "Worker" : "Standalone";
 }
 
+/** Sort rank: live work first, then starting, then stuck, then idle. */
+const STATUS_RANK: Record<ServiceInstance["status"], number> = {
+  running: 0,
+  loading: 1,
+  wedged: 2,
+  stopped: 3,
+  unknown: 4,
+};
+
+function modelDot(status: ServiceInstance["status"]): string {
+  switch (status) {
+    case "running":
+      return "bg-success";
+    case "loading":
+      return "bg-warning";
+    case "wedged":
+      return "bg-danger";
+    default:
+      return "bg-border";
+  }
+}
+
 function roleBadgeTitle(role: NodeRole, groupId: string | null, rank: number | null): string {
   if (role === "head") return groupId ? `Cluster head · group ${groupId}` : "Cluster head";
   if (role === "worker")
@@ -118,6 +140,7 @@ export function FleetCard(props: FleetCardProps) {
     mem,
     containers,
     services,
+    versions,
     requests,
     memory,
     polledAt,
@@ -149,6 +172,13 @@ export function FleetCard(props: FleetCardProps) {
 
   const activeServices = services.filter((s) => s.active).length;
   const runningServices = services.filter((s) => s.status === "running").length;
+
+  /** Models on this node: one LLM service = one lane; several may coexist. */
+  const llmServices = services
+    .filter((s) => s.kind === "llm")
+    .slice()
+    .sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.port - b.port);
+  const versionByName = new Map(versions.map((v) => [v.serviceName, v]));
 
   const reqs = requests?.stats ?? [];
   const queued = reqs.reduce((n, r) => n + r.queued, 0);
@@ -252,6 +282,54 @@ export function FleetCard(props: FleetCardProps) {
               caption={`${temp}°C`}
             />
             <MetricBar label="Usage" value={usage} max={100} color={usageBarColor} caption={`${usage}%`} />
+          </div>
+
+          {/* Models — one row per LLM service (coexisting lanes), live ones first */}
+          <div className="mt-4 border-t border-border pt-3.5">
+            <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted">Models</div>
+            {llmServices.length === 0 ? (
+              <div className="text-[11px] text-muted" data-testid="fleet-card-models-empty">
+                No LLM services
+              </div>
+            ) : (
+              <ul className="flex flex-col gap-1" data-testid="fleet-card-models">
+                {llmServices.map((s) => {
+                  const v = versionByName.get(s.name);
+                  const title =
+                    `${s.name} \u00b7 ${s.status}${s.modelId ? ` \u00b7 ${s.modelId}` : ""}` +
+                    `${v?.modelPath ? ` \u00b7 ${v.modelPath}` : ""}${v?.quantization ? ` \u00b7 ${v.quantization}` : ""}` +
+                    ` \u00b7 ${s.engine}${(v?.engineVersion ?? s.engineVersion) ? ` ${(v?.engineVersion ?? s.engineVersion)}` : ""} \u00b7 :${s.port}`;
+                  return (
+                    <li key={`${s.name}:${s.port}`} className="flex items-center gap-1.5 text-[11px]" title={title}>
+                      <span
+                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${modelDot(s.status)}`}
+                        aria-hidden="true"
+                      />
+                      <span
+                        className={`min-w-0 flex-1 truncate ${
+                          s.status === "running" ? "font-medium text-text" : "text-muted"
+                        }`}
+                      >
+                        {s.modelId ?? s.name}
+                      </span>
+                      {(s.status === "loading" || s.status === "wedged") && (
+                        <span className={`shrink-0 text-[10px] ${s.status === "wedged" ? "text-danger" : "text-warning"}`}>
+                          {s.status}
+                        </span>
+                      )}
+                      {s.active && s.status === "running" && (
+                        <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] uppercase tracking-wide text-accent">
+                          active
+                        </span>
+                      )}
+                      <span className="shrink-0 font-tabular text-[10px] text-muted">
+                        {s.engine} · :{s.port}
+                      </span>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
 
           {/* Secondary stats */}

@@ -263,4 +263,80 @@ describe("FleetCard", () => {
     );
     expect(container.textContent).toContain("Waiting for metrics…");
   });
+
+  it("Models: renders one row per LLM service with model id, engine and port (multi-model)", () => {
+    const second: ServiceInstance = {
+      name: "llm-glm",
+      kind: "llm",
+      engine: "sglang",
+      port: 8081,
+      status: "running",
+      modelId: "glm-5.3",
+      engineVersion: "v1.3.0",
+      footprintMB: 40000,
+      active: false,
+      polledAt: Date.now(),
+    };
+    const { container } = render(<FleetCard {...makeCard({ services: [...services(), second] })} />);
+    const rows = container.querySelectorAll('[data-testid="fleet-card-models"] li');
+    expect(rows).toHaveLength(2);
+    const text = container.textContent ?? "";
+    expect(text).toContain("qwen3.8-27b");
+    expect(text).toContain("glm-5.3");
+    expect(text).toContain("sglang · :8081");
+  });
+
+  it("Models: sorts running > loading > stopped and labels non-running rows", () => {
+    const stopped: ServiceInstance = {
+      name: "llm-idle",
+      kind: "llm",
+      engine: "vllm",
+      port: 8082,
+      status: "stopped",
+      modelId: null,
+      engineVersion: null,
+      footprintMB: 1000,
+      active: false,
+      polledAt: Date.now(),
+    };
+    const loading: ServiceInstance = { ...stopped, name: "llm-loading", port: 8083, status: "loading", modelId: "qwen-new" };
+    const base = services().find((s) => s.kind === "llm")!;
+    const { container } = render(<FleetCard {...makeCard({ services: [stopped, loading, base] })} />);
+    const names = [...container.querySelectorAll('[data-testid="fleet-card-models"] li')].map(
+      (li) => (li.querySelector("span:nth-child(2)")?.textContent ?? "").trim()
+    );
+    expect(names).toEqual(["qwen3.8-27b", "qwen-new", "llm-idle"]);
+    expect(container.textContent).toContain("loading");
+  });
+
+  it("Models: tooltip carries model path and quantization from versions", () => {
+    const v: VersionInfo = {
+      serviceName: "llm-tp1",
+      kind: "llm",
+      engine: "sglang",
+      engineVersion: "v1.2.0",
+      modelId: "qwen3.8-27b",
+      modelPath: "RadixArk/Qwen3.8-27B-NVFP4",
+      modelRevision: null,
+      quantization: "nvfp4",
+      contextLength: 131072,
+      memFraction: 0.8,
+      tpSize: 1,
+      port: 8080,
+      state: "running",
+      polledAt: Date.now(),
+    };
+    const { container } = render(<FleetCard {...makeCard({ versions: [v] })} />);
+    const row = container.querySelector('[data-testid="fleet-card-models"] li');
+    expect(row?.getAttribute("title")).toContain("RadixArk/Qwen3.8-27B-NVFP4");
+    expect(row?.getAttribute("title")).toContain("nvfp4");
+  });
+
+  it("Models: empty state when the node has no LLM services", () => {
+    const { container } = render(
+      <FleetCard {...makeCard({ services: services().filter((s) => s.kind !== "llm") })} />
+    );
+    expect(container.querySelector('[data-testid="fleet-card-models-empty"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="fleet-card-models"]')).toBeNull();
+  });
 });
