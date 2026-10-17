@@ -26,13 +26,14 @@ that safe and the staged shape of the work.
 hard consequence: the moment the first v2.0.0+ upstream commit lands here, this
 repo cannot stay MIT-only — Apache code cannot be redistributed under MIT alone.
 
-**Required action (Stage 0, before any port):** relicense commit —
-- `LICENSE` → Apache-2.0 text; `LICENSE-MIT` retained (mirrors upstream's own
-  pattern: MIT-era code, including all 50 of our commits, is dual-licensed).
-- Add `NOTICE` (Mia's AI Lab attribution, "portions MIT-era"),
-  `THIRD_PARTY_NOTICES.md`, and `server/collectors/data/NOTICE.md` (data).
-- package.json `license` → `"Apache-2.0"`.
-- Every port commit marks modified upstream files (§4b) in the message.
+**Owner decision (2026-10-17): the repo stays MIT.** Correct reading: we have
+absorbed no Apache-licensed code — we only *depend on* upstream tools
+(macmon, hasso5703's proxy, LightLLM engines) installed unmodified from
+their own repositories, which imposes nothing here. The relicense step is
+cancelled, and with it the "port upstream code" plan: Stage 1/2 features are
+now **re-implementations from spec** (upstream commits read as documentation,
+written fresh in our style). That is the honest price of keeping MIT and is
+fine — their changelog is a free design spec.
 
 ## 2. Target model — the four first-class objects
 
@@ -85,12 +86,20 @@ Sequence notes: S1/S2 should go soon while the upstream seam is shallow —
 their divergence rate is extreme (254 commits in 3.5 weeks). S3–S5 are
 ours-only work, no upstream clock pressure.
 
-## 4. Open decisions for the owner
+## 4. Decisions — RESOLVED 2026-10-17 by owner
 
-1. Relicense to Apache-2.0 (S0) — yes/no. Required for any upstream port.
-2. Product name under elephant-ai — his.
-3. Guard proxy: vendor their code (MIT, fastest) vs. reimplement the pattern —
-   recommendation: vendor, isolate behind our own interface.
-4. Frontier context accounting needs the proxy in the path for frontier
-   traffic too, or an OpenClaw/elephant hook — pick the integration point at
-   S5 design.
+1. **License: keep MIT.** No upstream code absorbed; external tools installed
+   from their own repos; upstream features re-implemented from spec. (S0)
+2. **Guard proxy: external reference only.** Do not vendor. Point to
+   `github.com/hasso5703/dgx-spark-qwen38` (MIT) — it is an OpenAI-compatible
+   proxy on :30001 with keepalive/abort/start-guard semantics; we monitor and
+   operate it, we do not ship it. S4 becomes a *monitor/adaptor*, not a
+   vendoring exercise.
+3. **Product name: H.E.R.D.** within Elephant-AI — the consolidation point for
+   control and monitoring of all the pieces and parts. Acronym expansion
+   pending owner pick (candidates proposed in chat 2026-10-17).
+4. **Fleet-tab per-member models shipped** — Batch 11 (`e9a0e60`): one Models
+   row per LLM service per fleet card; multi-model lanes visible side by side.
+   This is the first Lane primitive UI.
+5. Frontier context accounting (S5) still open — integration point chosen at
+   S5 design (guard-proxy token accounting vs. OpenClaw/elephant hook).
