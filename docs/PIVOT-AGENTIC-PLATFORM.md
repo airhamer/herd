@@ -95,9 +95,9 @@ ours-only work, no upstream clock pressure.
    proxy on :30001 with keepalive/abort/start-guard semantics; we monitor and
    operate it, we do not ship it. S4 becomes a *monitor/adaptor*, not a
    vendoring exercise.
-3. **Product name: H.E.R.D.** within Elephant-AI — the consolidation point for
-   control and monitoring of all the pieces and parts. Acronym expansion
-   pending owner pick (candidates proposed in chat 2026-10-17).
+3. **Product name: H.E.R.D. — Holistic Elephant-AI Resource Dashboard**
+   (owner pick, 2026-10-17). The consolidation point for control and
+   monitoring of all the pieces and parts needed by Elephant-AI.
 4. **Fleet-tab per-member models shipped** — Batch 11 (`e9a0e60`): one Models
    row per LLM service per fleet card; multi-model lanes visible side by side.
    This is the first Lane primitive UI.
