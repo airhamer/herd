@@ -147,7 +147,7 @@ export function buildDecodeShareCard(
 
   const concurrencies = job.config?.concurrencies ?? [];
   return {
-    brand: "sparkDash",
+    brand: "H.E.R.D.",
     host: src.sparkName || "",
     title: "Decode benchmark",
     subtitle: shareCardSubtitle(src),
@@ -195,7 +195,7 @@ export function buildPrefillShareCard(
 
   const sizes = job.config?.contextSizes ?? [];
   return {
-    brand: "sparkDash",
+    brand: "H.E.R.D.",
     host: src.sparkName || "",
     title: "Prefill benchmark",
     subtitle: shareCardSubtitle(src),

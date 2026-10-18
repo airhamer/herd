@@ -39,6 +39,7 @@ Format: version sections are listed newest first.
 
 ### Changed
 
+- **Rebrand: H.E.R.D.** — the dashboard's user-facing name is now **H.E.R.D. (Holistic Elephant-AI Resource Dashboard)**: browser title, header wordmark, Settings/version label, showcase home links, dialog help copy, fleet-energy restart notice, and the benchmark share-card mark. The deployment contract is unchanged: this still lives in the `sparkDash` repo, and the npm package name, Docker image names (`airhamer/sparkdash*`, `sparkdash-node-agent`), container/deploy paths, `SPARKDASH_*` env vars, storage keys, and all internal identifiers stay `sparkDash`/`sparkdash`.
 - **Docs corrected to match the real agent API** — `docs/NODE-AGENT.md` no longer lists `/services`, `/memory`, `/requests`, `/topology` as GET routes (they are `NodeAgentSnapshot` fields on `/telemetry`); `docs/DEPLOYMENT.md` and the README document the new mounts, env vars, and switch semantics.
 
 ---

@@ -28,7 +28,7 @@ export function FleetEnergyCard({ nodeCount }: { nodeCount: number }) {
   const state = error
     ? `Energy telemetry unavailable: ${error}`
     : data?.membershipChanged
-      ? "Fleet membership changed. Restart sparkDash to establish a truthful new accounting scope."
+      ? "Fleet membership changed. Restart H.E.R.D. to establish a truthful new accounting scope."
       : !data
         ? "Loading fleet energy…"
         : data.freshNodeCount < nodeCount

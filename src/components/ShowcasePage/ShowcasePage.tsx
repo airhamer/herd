@@ -770,7 +770,7 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
       {!barVisible ? (
         <div className="showcase-config-peek">
           <div className="showcase-config__title">
-            <a href="/" className="logo-pill showcase-brand" title="sparkDash home">
+            <a href="/" className="logo-pill showcase-brand" title="H.E.R.D. home">
               <BoltIcon className="showcase-brand__bolt" />
               <span>
                 spark<span className="logo-pill-dash">Dash</span>
@@ -822,7 +822,7 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
       <div className={`showcase-config${configOpen ? "" : " is-collapsed"}`}>
         <div className="showcase-config__bar">
           <div className="showcase-config__title">
-            <a href="/" className="logo-pill showcase-brand" title="sparkDash home">
+            <a href="/" className="logo-pill showcase-brand" title="H.E.R.D. home">
               <BoltIcon className="showcase-brand__bolt" />
               <span>
                 spark<span className="logo-pill-dash">Dash</span>

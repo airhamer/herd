@@ -243,7 +243,7 @@ describe("share card painter", () => {
     const ctx = fakeContext();
     paintShareCard(ctx, card);
 
-    expect(ctx.texts).toContain("sparkDash");
+    expect(ctx.texts).toContain("H.E.R.D.");
     expect(ctx.texts).toContain("spark-38bd");
     expect(ctx.texts).toContain("Decode benchmark");
     expect(ctx.texts).toContain("Port 8888 · DeepSeek-v4.1-Flash-EXL3");

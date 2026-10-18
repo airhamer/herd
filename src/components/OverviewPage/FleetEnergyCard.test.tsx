@@ -59,7 +59,7 @@ describe("FleetEnergyCard states", () => {
     fetchEnergy.mockResolvedValue(energy({ membershipChanged: true, restartRequired: true }));
     const membership = render(<FleetEnergyCard nodeCount={2} />);
     await flush();
-    expect(membership.container.textContent).toContain("Restart sparkDash");
+    expect(membership.container.textContent).toContain("Restart H.E.R.D.");
 
     fetchEnergy.mockRejectedValue(new Error("disk write failed"));
     const failed = render(<FleetEnergyCard nodeCount={2} />);

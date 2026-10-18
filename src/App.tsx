@@ -338,9 +338,7 @@ function DashboardApp() {
             className="logo-pill"
           >
             <BoltIcon className="h-3.5 w-3.5 text-accent" />
-            <span>
-              spark<span className="logo-pill-dash">Dash</span>
-            </span>
+            <span>H.E.R.D.</span>
           </button>
           <nav
             aria-label="Views"

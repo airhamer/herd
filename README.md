@@ -1,4 +1,6 @@
-# sparkDash ⚡ — Multi-unit monitoring dashboard for NVIDIA DGX Spark
+# H.E.R.D. ⚡ — Holistic Elephant-AI Resource Dashboard
+
+> H.E.R.D. (Holistic Elephant-AI Resource Dashboard) is the user-facing name of this dashboard. It lives in the **sparkDash** repository; the package, Docker image, container, and deployment identifiers keep their `sparkdash` names.
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-arm64-2d9d78?style=flat-square" alt="Platform: ARM64">
@@ -11,11 +13,11 @@
   <a href="https://x.com/MiaAI_lab" target="_blank" style="display:inline-block;margin:0 8px;vertical-align:middle;"><img src="https://img.shields.io/badge/Follow%20me%20on%20X-000000?style=for-the-badge&logo=x&logoColor=white" alt="Follow Mia on X" height="28" style="height:28px;width:auto;vertical-align:middle;border:0;" /></a>
 </p>
 
-sparkDash is a real-time web dashboard for one or more **NVIDIA DGX Spark (GB10)** machines in a single browser window. It streams GPU, CPU, unified memory, storage, network, and local LLM metrics — and lets you add, edit, reorder, or remove Sparks from the UI without restarts or code changes.
+H.E.R.D. is a real-time web dashboard for one or more **NVIDIA DGX Spark (GB10)** machines in a single browser window. It streams GPU, CPU, unified memory, storage, network, and local LLM metrics — and lets you add, edit, reorder, or remove Sparks from the UI without restarts or code changes.
 
 It also supports **non-Spark units**: any Linux machine with an NVIDIA GPU (e.g. a workstation with a dedicated RTX/L-series card) can be added as a **dedicated GPU host** and monitored the same way via SSH and `nvidia-smi`. For these units the dashboard correctly separates **RAM** (system memory) from **VRAM** (discrete GPU memory).
 
-<img src="./assets/screenshot.jpg" alt="sparkDash Overview page with multiple DGX Spark units, GPU metrics, and LLM status">
+<img src="./assets/screenshot.jpg" alt="H.E.R.D. Overview page with multiple DGX Spark units, GPU metrics, and LLM status">
 
 ### LLM Prompt Showcase
 
