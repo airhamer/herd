@@ -41,11 +41,23 @@ elephant-os. Remote box writes limited to
 
 ## Active worker
 
-- runId: (dispatching B12c now — worker fills; orchestrator records at launch)
+- runId: `8f762b9e-a175-409d-bb2f-937c750d8353`
+- child session: `agent:main:subagent:9b64a40a-4bb9-4487-b7da-ea791341455d`
+- taskName: `b12c_recipes_fix`
 - row: B12c — fix 102c/25ed recipes.json to real engine/port/model
+- expected commit subject: `B12c: 102c/25ed recipes fixed to reality`
+  (docs/B12c-findings.md; no src changes expected)
+
+## Loop job
+
+- automation id `56bfafbc-de30-4400-8fb6-f843cbe1c673`, name
+  `herd-overnight-b12`, every 10m paced 3m–45m, session-targeted, delivery
+  none (notifications by design are sent explicitly, not by announce).
 
 ## Log
 
-- 2026-10-17 23:58 — plan+state committed; loop `herd-overnight-b12` armed
-  (every 10m, session-targeted, paced 5m–30m); B12c dispatched.
+- 2026-10-17 23:58 — plan+state committed (`a24caa4`); loop
+  `herd-overnight-b12` armed; B12c dispatched.
+- 2026-10-17 23:59 — launch complete: worker runId + loop jobId recorded
+  above. No next_check from launch turn (job-run-only action).
 </content>
