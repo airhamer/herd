@@ -1,12 +1,17 @@
 /**
- * llm.js — probe local LLM servers (sglang / vllm) over HTTP.
+ * llm.js — probe local LLM servers (sglang / ollama / vllm) over HTTP.
  *
  * LlmMetrics[] (Batch 1A working type; raw probe data, attached to the
  * snapshot as the extra `llm` property and mapped to VersionInfo[]).
  *
- * Detection order (mirrors sparkDash LlmProbe):
+ * Detection order (mirrors sparkDash LlmProbe + B12b ollama extension):
  *   1. GET /get_server_info            → sglang (native endpoint)
- *   2. GET /v1/models (OpenAI-compat)  → vllm (owned_by signal / /metrics)
+ *   2. GET /api/version (+ /api/tags, /api/ps)
+ *                                      → ollama (native API). MUST run before
+ *      the OpenAI-compat check: ollama also serves /v1/models with
+ *      owned_by=library, which would mis-detect as vllm.
+ *   3. GET /v1/models (OpenAI-compat)  → vllm (owned_by signal / /metrics)
+ * Ollama probe failure (no /api/version) falls through to the vllm path.
  * Unreachable port → entry with backend: null (one entry per port).
  *
  * Auth: some LLM servers gate their info endpoints behind an api-key
@@ -102,6 +107,10 @@ function defaultLlm(port) {
     backend: null,
     version: null,
     modelId: null,
+    // ollama only: installed model ids (/api/tags) and the loaded subset
+    // (/api/ps); null for every other backend.
+    installedModels: null,
+    loadedModels: null,
     modelPath: null,
     contextLength: null,
     gpuMemoryUtilization: null,
@@ -389,7 +398,33 @@ async function probePort(port, fetchFn, headers) {
       return m;
     }
 
-    // 2. OpenAI-compatible (vLLM)
+    // 2. Ollama native API (before the OpenAI-compat branch: ollama's
+    //    /v1/models reports owned_by=library and would mis-detect as vllm).
+    const ver = await fetchJson(fetchFn, `${base}/api/version`, headers);
+    if (
+      ver &&
+      typeof ver === "object" &&
+      !Array.isArray(ver) &&
+      typeof ver.version === "string" &&
+      ver.version.trim() !== ""
+    ) {
+      m.backend = "ollama";
+      m.version = ver.version.trim();
+      const tags = await fetchJson(fetchFn, `${base}/api/tags`, headers);
+      const ps = await fetchJson(fetchFn, `${base}/api/ps`, headers);
+      const names = (payload) =>
+        Array.isArray(payload?.models)
+          ? payload.models
+              .map((mo) => (mo && typeof mo.name === "string" ? mo.name.trim() : ""))
+              .filter(Boolean)
+          : [];
+      m.installedModels = names(tags);
+      m.loadedModels = names(ps).filter((id) => m.installedModels.includes(id));
+      m.modelId = m.loadedModels[0] ?? m.installedModels[0] ?? null;
+      return m;
+    }
+
+    // 3. OpenAI-compatible (vLLM)
     const models = await fetchJson(fetchFn, `${base}/v1/models`, headers);
     const model = models?.data?.[0];
     if (model && typeof model === "object") {

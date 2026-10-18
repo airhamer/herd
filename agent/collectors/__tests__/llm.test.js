@@ -198,3 +198,109 @@ test("llm: parseLlmAuthTokens parses port:token lists, skips malformed parts", (
   assert.deepEqual(parseLlmAuthTokens(null), {});
   assert.deepEqual(parseLlmAuthTokens("garbage,99999:nope,8080:tok"), { "8080": "tok" });
 });
+
+// ─── B12b: ollama detection (fixtures captured live off Narthex 11434) ───────
+
+import fs from "fs";
+
+const FIXTURE = (name) =>
+  fs.readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8");
+
+function mockFetchOllama({ vllmAlsoUp = false } = {}) {
+  /** @type {string[]} */
+  const urls = [];
+  const fn = async (url) => {
+    urls.push(url);
+    if (url === "http://127.0.0.1:11434/get_server_info") return http(404, "{}");
+    if (url === "http://127.0.0.1:11434/api/version") return http(200, FIXTURE("ollama-version.json"));
+    if (url === "http://127.0.0.1:11434/api/tags") return http(200, FIXTURE("ollama-tags.json"));
+    if (url === "http://127.0.0.1:11434/api/ps") return http(200, FIXTURE("ollama-ps.json"));
+    if (vllmAlsoUp && url === "http://127.0.0.1:11434/v1/models") {
+      // ollama's OpenAI-compat shim: owned_by "library" — the mis-detect trap.
+      return http(200, JSON.stringify({ object: "list", data: [{ id: "qwen38-27b-iq4xs:latest", owned_by: "library" }] }));
+    }
+    throw new Error("unexpected url: " + url);
+  };
+  fn.urls = urls;
+  return fn;
+}
+
+test("llm: detects ollama from /api/version + /api/tags + /api/ps (live fixtures)", async () => {
+  const fetchMock = mockFetchOllama();
+  const out = await collectLlm([11434], { fetch: fetchMock });
+  assert.equal(out.length, 1);
+  const l = out[0];
+  assert.equal(l.port, 11434);
+  assert.equal(l.backend, "ollama");
+  assert.equal(l.version, "0.32.1");
+  assert.deepEqual(l.installedModels, [
+    "qwen38-27b-iq4xs:latest",
+    "qwen3-embedding:4b",
+    "qwen3-embedding:8b",
+  ]);
+  assert.deepEqual(l.loadedModels, ["qwen3-embedding:4b"]);
+  // modelId = loaded model, not the first installed one
+  assert.equal(l.modelId, "qwen3-embedding:4b");
+  // the OpenAI-compat path was never consulted
+  assert.ok(!fetchMock.urls.some((u) => u.includes("/v1/models")));
+});
+
+test("llm: ollama wins over /v1/models owned_by=library mis-detect", async () => {
+  const fetchMock = mockFetchOllama({ vllmAlsoUp: true });
+  const out = await collectLlm([11434], { fetch: fetchMock });
+  assert.equal(out[0].backend, "ollama");
+  assert.equal(out[0].modelId, "qwen3-embedding:4b");
+  // the /v1/models shim is never reached once /api/version answers
+  assert.ok(!fetchMock.urls.some((u) => u.includes("/v1/models")), "vllm path must not run");
+});
+
+test("llm: ollama endpoints dead → vllm path unaffected (negative)", async () => {
+  const out = await collectLlm([11434], {
+    fetch: async (url) => {
+      if (url === "http://127.0.0.1:11434/get_server_info") return http(404, "{}");
+      if (url === "http://127.0.0.1:11434/api/version") return http(404, '{"error":"Not Found"}');
+      if (url === "http://127.0.0.1:11434/api/tags") throw new Error("ECONNREFUSED");
+      if (url === "http://127.0.0.1:11434/api/ps") throw new Error("ECONNREFUSED");
+      if (url === "http://127.0.0.1:11434/v1/models") {
+        return http(200, JSON.stringify({ data: [{ id: "qwen3.8-27b", owned_by: "vllm", max_model_len: 131072 }] }));
+      }
+      if (url === "http://127.0.0.1:11434/metrics") return http(200, VLLM_METRICS);
+      throw new Error("unexpected url: " + url);
+    },
+  });
+  assert.equal(out[0].backend, "vllm");
+  assert.equal(out[0].modelId, "qwen3.8-27b");
+  assert.equal(out[0].kvCacheUsage, 0.42);
+  assert.equal(out[0].installedModels, null); // ollama fields stay null on other backends
+  assert.equal(out[0].loadedModels, null);
+});
+
+test("llm: ollama version alive but tags/ps dead → ollama with empty sets", async () => {
+  const out = await collectLlm([11434], {
+    fetch: async (url) => {
+      if (url === "http://127.0.0.1:11434/get_server_info") return http(404, "{}");
+      if (url === "http://127.0.0.1:11434/api/version") return http(200, '{"version":"0.32.1"}');
+      if (url === "http://127.0.0.1:11434/api/tags") return http(500, "{}");
+      if (url === "http://127.0.0.1:11434/api/ps") throw new Error("ECONNRESET");
+      throw new Error("unexpected url: " + url);
+    },
+  });
+  assert.equal(out[0].backend, "ollama");
+  assert.equal(out[0].version, "0.32.1");
+  assert.deepEqual(out[0].installedModels, []);
+  assert.deepEqual(out[0].loadedModels, []);
+  assert.equal(out[0].modelId, null);
+});
+
+test("llm: sglang still wins over ollama on the same port", async () => {
+  const out = await collectLlm([11434], {
+    fetch: async (url) => {
+      if (url === "http://127.0.0.1:11434/get_server_info") {
+        return http(200, JSON.stringify({ model_path: "/models/m", version: "0.4.6" }));
+      }
+      if (url === "http://127.0.0.1:11434/v1/loads") return http(200, "[]");
+      throw new Error("unexpected url: " + url + " (ollama endpoints must not be probed)");
+    },
+  });
+  assert.equal(out[0].backend, "sglang");
+});
