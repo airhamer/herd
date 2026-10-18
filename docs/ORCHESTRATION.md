@@ -41,14 +41,16 @@ elephant-os. Remote box writes limited to
 
 ## Active worker
 
-- runId: `82fb9e55-6e2c-45a5-9ea0-ef80a479f626`
-- child session: `agent:main:subagent:0658999a-7cd6-4e75-b70c-45bd2700b614`
-- taskName: `b12b_narthex`
+- runId: `1c3e2761-94d8-4c8f-a39a-5b750371f5d2`
+- child session: `agent:main:subagent:6e8a53dd-f968-4157-a406-4d8b8f89af76`
+- taskName: `b12b2_narthex_retry` (the one retry for B12b)
 - row: B12b — ollama detection in agent/collectors/llm.js + Narthex agent
-  deploy (amd64 build, host net, :30091, LLM_PORTS=11434) + register via
-  Manage Nodes API (API only, never hand-edit nodes.json)
+  deploy + Manage Nodes API registration
 - expected commit subject: `B12b: ollama detection + Narthex joins fleet`
   (+ docs/B12b-findings.md)
+- prior run `82fb9e55` REJECTED 2026-10-18 02:40: honest INCOMPLETE (recon
+  only, no commit — verified HEAD unchanged). Recon facts folded into retry
+  brief.
 
 ## Loop job
 
@@ -76,5 +78,9 @@ elephant-os. Remote box writes limited to
   pass / tsc exit 0, ×3). Reality: 102c=head tp2-node0 vllm :8000 model
   `aeon` max-len 1M; 25ed=headless worker tp2-node1 (no local API port —
   dashboard should read head node; noted). Register row marked done.
-  B12b dispatched (`82fb9e55`). next_check 5m.
+- 2026-10-18 02:40 — B12b run 82fb9e55 REJECTED: honest INCOMPLETE report
+  (recon only), disk-verified (HEAD unchanged 4cca0a8, clean tree). Its
+  verified recon (ollama v0.32.1 fixtures, Dockerfile.node-agent path,
+  install-script contract, loopback-open API auth) folded into retry
+  b12b2_narthex_retry (runId above). next_check 5m.
 </content>
