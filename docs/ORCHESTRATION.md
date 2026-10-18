@@ -41,14 +41,15 @@ elephant-os. Remote box writes limited to
 
 ## Active worker
 
-- runId: `58d6c9cd-4a2e-46c8-93fe-7f73b9d462d5`
-- child session: `agent:main:subagent:1e1992ae-f1cb-4a43-87b7-8d756349b556`
-- taskName: `b12a_herd_rename`
-- row: B12a — rebrand UI/docs to H.E.R.D. (Holistic Elephant-AI Resource
-  Dashboard); package/image/container names unchanged (deploy contract)
-- expected commit subject: `B12a: rebrand to H.E.R.D. (Holistic Elephant-AI
-  Resource Dashboard)`
-- gate for ruling: vitest + tsc + updates + fleet (src/ touched this row)
+- runId: `b36f7305-8c2e-471f-9f7b-0d5249b75e48`
+- child session: `agent:main:subagent:6e8eb424-09a2-4697-ac7e-885b521379cc`
+- taskName: `b12d_enrollment_eval` (final register row)
+- row: B12d — research doc docs/EVAL-system-enrollment.md (upstream SSH
+  collectors as spec, Netdata/Glances/Cockpit enrollment patterns, guard-proxy
+  pattern, H.E.R.D. recommendation). No code, no live systems.
+- expected commit subject: `B12d: system-enrollment evaluation for H.E.R.D. S1`
+- register empties after this row → next wake runs step 5 (retire loop +
+  night summary).
 
 ## Loop job
 
@@ -84,4 +85,9 @@ elephant-os. Remote box writes limited to
   qwen38-27b-iq4xs; env name deviation LLM_PORTS (not NODE_AGENT_LLM_PORTS),
   arch amd64 (recon typo fixed) — both correct adaptations.
   B12a dispatched (`58d6c9cd`). next_check 5m.
+- 2026-10-18 03:20 — B12a ACCEPTED at `6198ade` (independent verify: 12-file
+  diff on main, index.html title shows H.E.R.D., zero sparkDash strings in
+  App.tsx; my gate ×3: vitest 164 passed / tsc 0 / updates 0 / fleet 0,
+  ×3). Deploy contract preserved per report (package/image/env/storage keys
+  unchanged). B12d dispatched (`b36f7305`) — last row. next_check 5m.
 </content>
