@@ -41,16 +41,14 @@ elephant-os. Remote box writes limited to
 
 ## Active worker
 
-- runId: `1c3e2761-94d8-4c8f-a39a-5b750371f5d2`
-- child session: `agent:main:subagent:6e8a53dd-f968-4157-a406-4d8b8f89af76`
-- taskName: `b12b2_narthex_retry` (the one retry for B12b)
-- row: B12b — ollama detection in agent/collectors/llm.js + Narthex agent
-  deploy + Manage Nodes API registration
-- expected commit subject: `B12b: ollama detection + Narthex joins fleet`
-  (+ docs/B12b-findings.md)
-- prior run `82fb9e55` REJECTED 2026-10-18 02:40: honest INCOMPLETE (recon
-  only, no commit — verified HEAD unchanged). Recon facts folded into retry
-  brief.
+- runId: `58d6c9cd-4a2e-46c8-93fe-7f73b9d462d5`
+- child session: `agent:main:subagent:1e1992ae-f1cb-4a43-87b7-8d756349b556`
+- taskName: `b12a_herd_rename`
+- row: B12a — rebrand UI/docs to H.E.R.D. (Holistic Elephant-AI Resource
+  Dashboard); package/image/container names unchanged (deploy contract)
+- expected commit subject: `B12a: rebrand to H.E.R.D. (Holistic Elephant-AI
+  Resource Dashboard)`
+- gate for ruling: vitest + tsc + updates + fleet (src/ touched this row)
 
 ## Loop job
 
@@ -78,9 +76,12 @@ elephant-os. Remote box writes limited to
   pass / tsc exit 0, ×3). Reality: 102c=head tp2-node0 vllm :8000 model
   `aeon` max-len 1M; 25ed=headless worker tp2-node1 (no local API port —
   dashboard should read head node; noted). Register row marked done.
-- 2026-10-18 02:40 — B12b run 82fb9e55 REJECTED: honest INCOMPLETE report
-  (recon only), disk-verified (HEAD unchanged 4cca0a8, clean tree). Its
-  verified recon (ollama v0.32.1 fixtures, Dockerfile.node-agent path,
-  install-script contract, loopback-open API auth) folded into retry
-  b12b2_narthex_retry (runId above). next_check 5m.
+- 2026-10-18 03:12 — B12b retry ACCEPTED at `514c61d` + `d202379`
+  (independent verify: commits on main; live agent Up 7m on Narthex;
+  registry contains narthex; telemetry nodeId=narthex + backend=ollama;
+  my own gate ×3: updates 0 / fleet 0 / tsc 0 / llm 0 exit codes, ×3).
+  Reality per worker: ollama v0.32.1, 3 installed models incl.
+  qwen38-27b-iq4xs; env name deviation LLM_PORTS (not NODE_AGENT_LLM_PORTS),
+  arch amd64 (recon typo fixed) — both correct adaptations.
+  B12a dispatched (`58d6c9cd`). next_check 5m.
 </content>
