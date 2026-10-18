@@ -41,15 +41,14 @@ elephant-os. Remote box writes limited to
 
 ## Active worker
 
-- runId: `ad305025-4a6e-4d5e-8363-d6c5111b7e93`
-- child session: `agent:main:subagent:be6685ef-13e0-4046-91ee-225330eea8e7`
-- taskName: `b12c2_recipes_retry` (re-dispatch of B12c, the one retry)
-- row: B12c — fix 102c/25ed recipes.json to real engine/port/model
-- expected commit subject: `B12c: 102c/25ed recipes fixed to reality`
-  (docs/B12c-findings.md; no src changes expected)
-- prior run `8f762b9e` REJECTED 2026-10-18 02:08: timeout, produced nothing
-  (no commit, no findings doc, recipes on both boxes verifiably unchanged via
-  SSH re-check).
+- runId: `82fb9e55-6e2c-45a5-9ea0-ef80a479f626`
+- child session: `agent:main:subagent:0658999a-7cd6-4e75-b70c-45bd2700b614`
+- taskName: `b12b_narthex`
+- row: B12b — ollama detection in agent/collectors/llm.js + Narthex agent
+  deploy (amd64 build, host net, :30091, LLM_PORTS=11434) + register via
+  Manage Nodes API (API only, never hand-edit nodes.json)
+- expected commit subject: `B12b: ollama detection + Narthex joins fleet`
+  (+ docs/B12b-findings.md)
 
 ## Loop job
 
@@ -72,4 +71,10 @@ elephant-os. Remote box writes limited to
   shows both boxes still carry nodeId gx10-1c2c verbatim). REJECTED.
   Re-dispatched as b12c2_recipes_retry (runId above), tighter timeboxed brief
   + commit-early rule. next_check 5m.
+- 2026-10-18 02:20 — B12c retry ACCEPTED at `db8f4c2` (independent verify:
+  commit on main, docs-only diff; my own gate ×3: updates 29 pass / fleet 127
+  pass / tsc exit 0, ×3). Reality: 102c=head tp2-node0 vllm :8000 model
+  `aeon` max-len 1M; 25ed=headless worker tp2-node1 (no local API port —
+  dashboard should read head node; noted). Register row marked done.
+  B12b dispatched (`82fb9e55`). next_check 5m.
 </content>
