@@ -64,4 +64,7 @@ elephant-os. Remote box writes limited to
   not repeated). B12c run 8f762b9e has FINISHED (status=timeout — its report
   is unreliable; ruling must verify commits on disk + gate ×3 when unpaused).
   Ruling and B12b dispatch stay paused until /compact. next_check 30m.
+- 2026-10-18 01:40 — repeat pause wake (no compact yet, 87%; recheck skipped,
+  measured 7m ago, no compaction since). No new facts; no duplicate Telegram
+  ping. Ruling queued: B12c findings + git log + gate ×3. next_check 30m.
 </content>
