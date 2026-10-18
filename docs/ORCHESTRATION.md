@@ -41,12 +41,15 @@ elephant-os. Remote box writes limited to
 
 ## Active worker
 
-- runId: `8f762b9e-a175-409d-bb2f-937c750d8353`
-- child session: `agent:main:subagent:9b64a40a-4bb9-4487-b7da-ea791341455d`
-- taskName: `b12c_recipes_fix`
+- runId: `ad305025-4a6e-4d5e-8363-d6c5111b7e93`
+- child session: `agent:main:subagent:be6685ef-13e0-4046-91ee-225330eea8e7`
+- taskName: `b12c2_recipes_retry` (re-dispatch of B12c, the one retry)
 - row: B12c — fix 102c/25ed recipes.json to real engine/port/model
 - expected commit subject: `B12c: 102c/25ed recipes fixed to reality`
   (docs/B12c-findings.md; no src changes expected)
+- prior run `8f762b9e` REJECTED 2026-10-18 02:08: timeout, produced nothing
+  (no commit, no findings doc, recipes on both boxes verifiably unchanged via
+  SSH re-check).
 
 ## Loop job
 
@@ -64,7 +67,9 @@ elephant-os. Remote box writes limited to
   not repeated). B12c run 8f762b9e has FINISHED (status=timeout — its report
   is unreliable; ruling must verify commits on disk + gate ×3 when unpaused).
   Ruling and B12b dispatch stay paused until /compact. next_check 30m.
-- 2026-10-18 01:40 — repeat pause wake (no compact yet, 87%; recheck skipped,
-  measured 7m ago, no compaction since). No new facts; no duplicate Telegram
-  ping. Ruling queued: B12c findings + git log + gate ×3. next_check 30m.
+- 2026-10-18 02:08 — unpaused by compaction (15%). DISK TRUTH: B12c run
+  8f762b9e produced NOTHING (git log clean of it; no findings doc; SSH check
+  shows both boxes still carry nodeId gx10-1c2c verbatim). REJECTED.
+  Re-dispatched as b12c2_recipes_retry (runId above), tighter timeboxed brief
+  + commit-early rule. next_check 5m.
 </content>
