@@ -60,10 +60,8 @@ elephant-os. Remote box writes limited to
   `herd-overnight-b12` armed; B12c dispatched.
 - 2026-10-17 23:59 — launch complete: worker runId + loop jobId recorded
   above. No next_check from launch turn (job-run-only action).
-- 2026-10-18 00:48 — CONTEXT PAUSE (not a fault): wake measured context 86%
-  (>70%). Dispatching/gates stop until `/compact`. B12c worker
-  (`8f762b9e`) still running — on next wake: still running → back off; if
-  finished → gate normally (worker outcomes are on disk; the pause blocks
-  rulings, not workers). Next ready after B12c: B12b (Narthex + ollama).
-  Owner notified; next_check 30m.
+- 2026-10-18 01:31 — still over budget (87%; owner ping already sent 00:48,
+  not repeated). B12c run 8f762b9e has FINISHED (status=timeout — its report
+  is unreliable; ruling must verify commits on disk + gate ×3 when unpaused).
+  Ruling and B12b dispatch stay paused until /compact. next_check 30m.
 </content>
