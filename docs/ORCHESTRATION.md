@@ -41,15 +41,8 @@ elephant-os. Remote box writes limited to
 
 ## Active worker
 
-- runId: `b36f7305-8c2e-471f-9f7b-0d5249b75e48`
-- child session: `agent:main:subagent:6e8eb424-09a2-4697-ac7e-885b521379cc`
-- taskName: `b12d_enrollment_eval` (final register row)
-- row: B12d — research doc docs/EVAL-system-enrollment.md (upstream SSH
-  collectors as spec, Netdata/Glances/Cockpit enrollment patterns, guard-proxy
-  pattern, H.E.R.D. recommendation). No code, no live systems.
-- expected commit subject: `B12d: system-enrollment evaluation for H.E.R.D. S1`
-- register empties after this row → next wake runs step 5 (retire loop +
-  night summary).
+- none — register empty; loop retired 2026-10-18 03:46 (job removed, night
+  summary sent). BATCH B12 COMPLETE 4/4.
 
 ## Loop job
 
@@ -90,4 +83,12 @@ elephant-os. Remote box writes limited to
   App.tsx; my gate ×3: vitest 164 passed / tsc 0 / updates 0 / fleet 0,
   ×3). Deploy contract preserved per report (package/image/env/storage keys
   unchanged). B12d dispatched (`b36f7305`) — last row. next_check 5m.
+- 2026-10-18 03:46 — B12d ACCEPTED at `d376b2b` (docs-only, 284 lines
+  verified on disk; tree clean; my gate ×3: updates 0 / fleet 0 / tsc 0).
+  Flagged finding worth a follow-up batch: connection.js poller sends no
+  Authorization header although the agent supports bearer tokens (evidence
+  in docs/EVAL-system-enrollment.md §recommendation).
+  REGISTER EMPTY → step 5 executed: loop herd-overnight-b12 removed, night
+  summary sent. BATCH B12 COMPLETE 4/4 (B12c db8f4c2 · B12b 514c61d+d202379
+  · B12a 6198ade · B12d d376b2b); 2 retries used, 0 halts, nothing pushed.
 </content>
