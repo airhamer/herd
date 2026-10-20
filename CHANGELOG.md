@@ -7,6 +7,14 @@ Format: version sections are listed newest first.
 
 ---
 
+## Unreleased — 2026-10-20: H.E.R.D. rename
+
+- GitHub repository renamed: `airhamer/sparkDash` → **`airhamer/herd`** (old URL redirects).
+- Dashboard image renamed: `airhamer/sparkdash` → **`airhamer/herd`**. Build both tags during transition:
+  `docker build -t airhamer/herd:latest -t airhamer/sparkdash:latest .` The live container now runs `airhamer/herd:latest`.
+- Unchanged by contract: container name `sparkdash`, node-agent image `airhamer/sparkdash-node-agent`, package/npm names, config paths.
+
+
 ## [Unreleased]
 
 ### Added
