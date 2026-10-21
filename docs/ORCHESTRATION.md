@@ -91,4 +91,13 @@ elephant-os. Remote box writes limited to
   REGISTER EMPTY → step 5 executed: loop herd-overnight-b12 removed, night
   summary sent. BATCH B12 COMPLETE 4/4 (B12c db8f4c2 · B12b 514c61d+d202379
   · B12a 6198ade · B12d d376b2b); 2 retries used, 0 halts, nothing pushed.
-</content>
+- 2026-10-20 23:25 — STALE DELIVERY ECHO CLOSED: Batch 10-A (run `cc020c1e`,
+  pre-B12 batch, worker `95774c7f`). Result suspended with no requester
+  continuation; delivery re-armed three times. Orchestrator verification:
+  `a34aadc` present and ANCESTOR of HEAD (work shipped 2026-10-15; B11/B12 +
+  rename built on top of it). Spot gate re-run at 23:22: vitest Updates
+  64/64 ×1 (worker evidence 64/64 ×3 identical) + tsc exit 0. ACCEPTED —
+  no re-dispatch; nothing to do. Batches from the pre-continuation era now
+  fully reconciled; any further 10-A echo is post-closure noise.
+- Also fixed: stray `</content>` literal at former line 94 (artifact of a
+  failed edit during B12b logging) removed in this pass.
