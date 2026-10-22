@@ -101,3 +101,42 @@ elephant-os. Remote box writes limited to
   fully reconciled; any further 10-A echo is post-closure noise.
 - Also fixed: stray `</content>` literal at former line 94 (artifact of a
   failed edit during B12b logging) removed in this pass.
+
+---
+
+# Overnight run 2026-10-21 — S-series (orchestrator state)
+
+- **Loop job:** `orchestrator-loop-herd-s` (every 5m, pacing 3m–45m, agentTurn
+  → session `agent:main:dashboard:d3982d76-ceee-43c9-8e6b-9134c205ed3e`).
+  Disable/remove when register empties (step 7).
+- **Approval (verbatim, 2026-10-21 20:55 EDT):** "Yes, Queue S1 batches to be
+  followed immediately by other S batches tonight." Scope = register in
+  docs/IMPLEMENTATION_PLAN.md (S1.1 → S5.1, sequential); sources PIVOT §3/§4 +
+  EVAL §4.4. Context at launch: 12%. Baseline gate green at plan time.
+- **Per-wake procedure:** 0 context-budget check (session_status; >70% →
+  state-to-disk + notify Steve "/compact to resume", next_check max) → 1 HALT?
+  HEARTBEAT_OK → 2 worker active? HEARTBEAT_OK, next_check min → 3 worker
+  finished? verify commit ON DISK, gate ×3 identical, accept/reject in
+  register, commit log → 4 dispatch lost? HALT + notify → 5 next ready row:
+  ONE isolated mode=run worker (reads
+  workshop-skills/orchestrated-worker/SKILL.md first action), log, next_check
+  min → 6 parked-only: next_check max → 7 register empty: disable job, report
+  summary.
+- **Stop conditions (halt + notify human):** 3 consecutive gate failures; same
+  row re-dispatched twice without accept; dispatch lost; unattributable commit
+  or dirty tree not mine; context >70% with work ready; any worker escalation
+  while another question is already parked.
+- **Human-reserved (park, never decide in-loop):** pushes to origin;
+  production `sparkdash`/GX10-agent redeploy; security-posture changes; S5
+  frontier-accounting integration point (decision §4.5); anything scope-
+  external.
+- **Speak only for:** park (once), halt, completion, >8h silence, context halt.
+  Quiet hours 23:00–08:00 EDT except halt/park-critical.
+
+## Wake log
+
+- 2026-10-21 21:1x (launch turn) — plan written+committed, loop job created,
+  S1.1 dispatched. Baseline: git clean, updates+fleet tests green, tsc 0.
+- 2026-10-21 — Batch 10-A stale echo re-armed a 4th time; post-closure noise
+  per 2026-10-20 23:25 close (`a34aadc` ancestor of HEAD, spot gate green). No
+  reply, no re-dispatch; future echoes ignored the same way.
