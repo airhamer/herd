@@ -164,3 +164,4 @@ elephant-os. Remote box writes limited to
   Possible causes: row scope too big for one bounded run, or model flakiness.
   Options: (a) orchestrator implements S1.2 in-house gate x3; (b) re-dispatch
   with UI stripped + 20m hard timebox; (c) skip S1.2 tonight, continue S2.1.
+- 2026-10-22 06:55 — wake: context 73% (>70%). All verdicts already on disk (S1.1 done 10cbfc3; S1.2 HALT 478083c; S1.3–S5.1 ready). Not starting gates/dispatches at this budget. Context-halt notice sent to Steve per protocol. next_check 45m.
