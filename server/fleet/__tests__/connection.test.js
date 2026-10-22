@@ -469,3 +469,48 @@ test("empty node list: start/stop work, getAllSnapshots() == {}", async () => {
   assert.deepEqual(conn.getAllSnapshots(), {});
   assert.equal(calls.length, 0);
 });
+
+// ─── S1.1 per-node bearer token (EVAL §4.1 gap 1) ────────────────────────
+// Consumer contract: agent/http.js authorizes iff
+// req.headers.authorization === `Bearer <NODE_AGENT_TOKEN>` (exact match).
+
+test("bearer: records with tokens → exact `Bearer <token>` Authorization header per node", async () => {
+  const nodes = [node("a", { token: "tok-aaa" }), node("b", { token: "tok-bbb" })];
+  const urls = nodes.map((n) => `http://${n.endpoint}/telemetry`);
+  const { fn, calls } = fakeFetch(
+    Object.fromEntries(nodes.map((n, i) => [urls[i], okRes(snapshot(n.id))]))
+  );
+  const conn = createFleetConnection(nodes, { fetch: fn, pollIntervalMs: 50 });
+  await conn.start(); // first poll cycle lands inside start()
+  await conn.stop();
+  assert.ok(calls.length >= nodes.length, "all nodes polled");
+  for (let i = 0; i < nodes.length; i++) {
+    const c = calls.find((x) => x.url === urls[i]);
+    assert.ok(c, `polled ${urls[i]}`);
+    assert.equal(c.init.headers.Authorization, `Bearer ${nodes[i].token}`);
+    assert.equal(c.init.headers.Accept, "application/json");
+    assert.equal(conn.isOnline(nodes[i].id), true, `${nodes[i].id} online with token`);
+  }
+});
+
+test("bearer: untokened records → NO Authorization header (absent, blank, whitespace, non-string)", async () => {
+  const nodes = [
+    node("plain"),
+    node("blank", { token: "" }),
+    node("ws", { token: "   " }),
+    node("num", { token: 42 }),
+  ];
+  const urls = nodes.map((n) => `http://${n.endpoint}/telemetry`);
+  const { fn, calls } = fakeFetch(
+    Object.fromEntries(nodes.map((n, i) => [urls[i], okRes(snapshot(n.id))]))
+  );
+  const conn = createFleetConnection(nodes, { fetch: fn, pollIntervalMs: 50 });
+  await conn.start();
+  await conn.stop();
+  assert.ok(calls.length >= nodes.length, "all nodes polled");
+  for (const c of calls) {
+    assert.ok(c.init?.headers, "headers passed to fetch");
+    assert.ok(!("Authorization" in c.init.headers), `no Authorization for ${c.url}`);
+    assert.equal(c.init.headers.Accept, "application/json"); // unchanged pre-S1.1 shape
+  }
+});

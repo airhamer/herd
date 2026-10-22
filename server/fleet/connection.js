@@ -117,11 +117,19 @@ export function createFleetConnection(nodes, opts = {}) {
     if (typeof f !== "function") {
       throw new Error("createFleetConnection: no fetch implementation available");
     }
+    // S1.1 (EVAL §4.1 gap 1): optional per-node bearer token. A registry
+    // record may carry `token` (the agent's NODE_AGENT_TOKEN); the consumer
+    // (agent/http.js) requires the header value to be exactly `Bearer <token>`.
+    // Untokened/blank records send no Authorization header — byte-identical
+    // behavior to the pre-S1.1 poller.
+    const headers = { Accept: "application/json" };
+    const token = typeof node.token === "string" ? node.token.trim() : "";
+    if (token) headers.Authorization = `Bearer ${token}`;
     let res;
     try {
       res = await f(url, {
         signal: withTimeout(timeoutMs),
-        headers: { Accept: "application/json" },
+        headers,
       });
     } catch (err) {
       return { ok: false };

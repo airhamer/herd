@@ -24,6 +24,8 @@
 //     links: RoceLink[],      // RoCE links this node participates in
 //     agentPort: number,      // 30091 (node-agent HTTP port)
 //     isLocal: boolean,       // true when the dashboard runs on this node
+//     token?: string,         // optional per-node bearer (NODE_AGENT_TOKEN,
+//                             // S1.1); poller sends Bearer <token> when set
 //   }
 
 import fs from "fs";
@@ -64,6 +66,8 @@ const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
  * @property {RoceLink[]} links
  * @property {number} agentPort
  * @property {boolean} isLocal
+ * @property {string} [token] optional per-node bearer token (S1.1); the key
+ *   is omitted when absent/blank so untokened records keep their pre-S1.1 shape
  */
 
 // ─── Module state (in-memory registry) ──────────────────────────────────────
@@ -312,7 +316,7 @@ function _normalizeRecord(raw, opts = {}) {
     Number.isInteger(agentPortRaw) && agentPortRaw >= 1 && agentPortRaw <= 65535
       ? agentPortRaw
       : AGENT_PORT_DEFAULT;
-  return {
+  const rec = {
     id,
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim() : id,
     endpoint: typeof raw.endpoint === "string" ? raw.endpoint.trim() : "",
@@ -325,6 +329,12 @@ function _normalizeRecord(raw, opts = {}) {
     agentPort,
     isLocal: Boolean(raw.isLocal),
   };
+  // S1.1 (EVAL §4.1 gap 1): optional per-node bearer token. Stored only when
+  // a non-blank string (trimmed); absent/blank → key omitted, so untokened
+  // records round-trip identical to the pre-S1.1 shape.
+  const token = typeof raw.token === "string" ? raw.token.trim() : "";
+  if (token) rec.token = token;
+  return rec;
 }
 
 /** @param {object} raw @returns {RoceLink | null} */

@@ -349,3 +349,46 @@ test("registryPath: reflects the path most recently loaded", () => {
   const p = freshNodesPath("path");
   assert.equal(registryPath(), p);
 });
+
+// ─── S1.1 optional per-node token field (EVAL §4.1 gap 1) ─────────────────
+// The Manage-Nodes API (server/index.js) passes req.body straight into
+// addNode/updateNode, so acceptance + storage is the registry's job: a
+// non-blank string token (trimmed) is stored under `token`; anything else
+// leaves the key absent, keeping untokened records byte-identical.
+
+test("token: addNode accepts + stores token (trimmed) and persists to disk", () => {
+  const p = freshNodesPath("token-add");
+  const added = addNode(record({ id: "tok-a", token: "  s3cr3t  " }));
+  assert.equal(added.token, "s3cr3t");
+  // Durable seam: survives a fresh load of the registry file.
+  const reloaded = loadNodes(p);
+  assert.equal(reloaded.find((n) => n.id === "tok-a").token, "s3cr3t");
+});
+
+test("token: absent → key omitted (untokened records keep pre-S1.1 shape)", () => {
+  const p = freshNodesPath("token-absent");
+  const added = addNode(record({ id: "plain" }));
+  assert.ok(!("token" in added), "addNode result has no token key");
+  const raw = JSON.parse(fs.readFileSync(p, "utf-8"));
+  assert.ok(!("token" in raw.nodes[0]), "persisted record has no token key");
+  assert.ok(!("token" in loadNodes(p)[0]), "reloaded record has no token key");
+});
+
+test("token: blank / non-string values are not stored", () => {
+  freshNodesPath("token-blank");
+  const bad = ["", "   ", 42, null, undefined];
+  bad.forEach((tok, i) => {
+    const rec = addNode(record({ id: `tok-bad-${i}`, token: tok }));
+    assert.ok(!("token" in rec), `token ${JSON.stringify(tok)} must not be stored`);
+  });
+});
+
+test("token: updateNode sets, re-sets, and clears (blank clears)", () => {
+  freshNodesPath("token-update");
+  addNode(record({ id: "tok-u" }));
+  assert.equal(updateNode("tok-u", { token: "one" }).token, "one");
+  assert.equal(updateNode("tok-u", { token: "two" }).token, "two");
+  const cleared = updateNode("tok-u", { token: "  " });
+  assert.ok(!("token" in cleared), "blank update clears the token");
+  assert.ok(!("token" in getNode("tok-u")), "cleared token gone from registry state");
+});
