@@ -144,3 +144,4 @@ elephant-os. Remote box writes limited to
 - 2026-10-21 21:50 — wake: worker herd-s1-1 running (~20m), no verdict yet; 10-A echo still suspended, ignored. next_check 3m.
 - 2026-10-21 21:56 — wake: herd-s1-1 still running (~25m). No verdict. next_check 3m.
 - 2026-10-21 22:07 — wake: herd-s1-1 still running (~36m). next_check 3m.
+- 2026-10-21 22:20 — wake: herd-s1-1 running ~50m (approaching 60m run timeout; if it ends next wake, gate verdict per step 3/4). next_check 3m.
