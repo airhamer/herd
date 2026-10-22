@@ -142,3 +142,4 @@ elephant-os. Remote box writes limited to
   reply, no re-dispatch; future echoes ignored the same way.
 - 2026-10-21 21:4x — wake (loop ctx 12%, no real HALT — matches are procedure text only). Worker herd-s1-1 running (S1.1, ~14m). 5th 10-A echo re-armed; ignored per close rule. next_check 3m.
 - 2026-10-21 21:50 — wake: worker herd-s1-1 running (~20m), no verdict yet; 10-A echo still suspended, ignored. next_check 3m.
+- 2026-10-21 21:56 — wake: herd-s1-1 still running (~25m). No verdict. next_check 3m.
