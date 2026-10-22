@@ -148,3 +148,19 @@ elephant-os. Remote box writes limited to
 - 2026-10-21 22:3x — wake: S1.1 worker (5f8c17fd) TIMED OUT at 59m52s, zero commits. Tree carried full impl + 6 tests; one defect fixed in-house (registry.test.js syntax guard). Orchestrator gate x3 identical: updates 29/0, fleet 133/0, tsc 0 -> ACCEPT at 10cbfc3. Timeout = run infra, not rejection; no retry counted.
 - 2026-10-21 22:4x — wake: S1.2 dispatched to run cc1cfddb (taskName herd-s1-2, timeout 2700s, ctx isolated). (First dispatch attempt failed on malformed tool_call wrapper; corrected immediately.) Worker running.
 - 2026-10-21 23:2x — wake: S1.2 worker (cc1cfddb) TIMED OUT at 45m, zero commits, clean tree, empty report -> REJECT #1 (no artifacts; unlike S1.1 there was nothing to adopt). Re-dispatch S1.2-retry with tighter timeboxed brief + commit-early-increments rule (B12 precedent). If retry rejects too: HALT per circuit breaker (same row twice).
+
+## HALT — 2026-10-22 00:00 — S1.2 rejected twice (circuit breaker)
+
+- S1.2 retry (run 68b9acf9, 2400s timebox) finished at ~00:00. Disk check:
+  HEAD still `fc16d32`, working tree CLEAN, no new commits, no diffs — zero
+  artifacts delivered for the second consecutive attempt (first attempt
+  cc1cfddb: timeout, no output, tree clean).
+- Per stop conditions: same row rejected twice = HALT + notify human.
+  No third re-dispatch without Steve's ruling.
+- Loop paused at this row. Register state: S1.1 done (10cbfc3); S1.2 HALTED;
+  S1.3–S5.1 ready but NOT dispatched while halted (sequential register).
+- Observation for the ruling: two S1.2 workers ended without committing on a
+  row that is otherwise straightforward (registry + one endpoint + tests).
+  Possible causes: row scope too big for one bounded run, or model flakiness.
+  Options: (a) orchestrator implements S1.2 in-house gate x3; (b) re-dispatch
+  with UI stripped + 20m hard timebox; (c) skip S1.2 tonight, continue S2.1.
