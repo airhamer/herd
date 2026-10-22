@@ -11,7 +11,7 @@ Prior run B12 closed 2026-10-18 (4/4) — see ORCHESTRATION.md.
 
 | id | stage | title | status | method | seam / consumers |
 |---|---|---|---|---|---|
-| S1.1 | S1 | Poller bearer-token support + per-node token registry field | ready | code | server/fleet/connection.js sends `Authorization: Bearer <node.token>` when registry record carries `token`; Manage-Nodes API accepts/stores token; agent `http.js:24` is the consumer. Unblocks token hygiene everywhere (EVAL §4.4 item 1). |
+| S1.1 | S1 | Poller bearer-token support + per-node token registry field | **done — `PLACEHOLDER`** | code | server/fleet/connection.js sends `Authorization: Bearer <node.token>` when registry record carries `token`; Manage-Nodes API accepts/stores token; agent `http.js:24` is the consumer. Unblocks token hygiene everywhere (EVAL §4.4 item 1). |
 | S1.2 | S1 | Claim token + pending/claimed node enrollment state (Netdata shape) | ready | code + ui | registry NodeRecord gains `status: pending\|claimed`, one-time claim token mint endpoint, fleet-tab enroll UI. Consumers: fleet tab, Manage Nodes flow. (EVAL §4.4 item 2.) |
 | S1.3 | S1 | SSH transport behind `protocol:"ssh"` on NodeRecord | ready | code | exec wrapper + credential store (Secrets, not files) + multiplexing; seam: transport interface consumed by S1.4–S1.6 collectors. (EVAL §4.4 item 3.) |
 | S1.4 | S1 | Linux SSH collector → normalized snapshot + capability report | ready | code | emits normalized snapshot to existing fleet data path + ephemeral-test capability report; live-verify against Narthex agentless (SSH localhost) — do NOT touch the other fleet agents. (EVAL §4.4 item 4.) |
