@@ -146,3 +146,4 @@ elephant-os. Remote box writes limited to
 - 2026-10-21 22:07 — wake: herd-s1-1 still running (~36m). next_check 3m.
 - 2026-10-21 22:20 — wake: herd-s1-1 running ~50m (approaching 60m run timeout; if it ends next wake, gate verdict per step 3/4). next_check 3m.
 - 2026-10-21 22:3x — wake: S1.1 worker (5f8c17fd) TIMED OUT at 59m52s, zero commits. Tree carried full impl + 6 tests; one defect fixed in-house (registry.test.js syntax guard). Orchestrator gate x3 identical: updates 29/0, fleet 133/0, tsc 0 -> ACCEPT at 10cbfc3. Timeout = run infra, not rejection; no retry counted.
+- 2026-10-21 22:4x — wake: S1.2 dispatched to run cc1cfddb (taskName herd-s1-2, timeout 2700s, ctx isolated). (First dispatch attempt failed on malformed tool_call wrapper; corrected immediately.) Worker running.
