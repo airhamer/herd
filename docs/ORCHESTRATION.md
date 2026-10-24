@@ -206,3 +206,4 @@ elephant-os. Remote box writes limited to
 2026-10-24 15:06 — wake: ctx halt standing (89%); prior 14:51 wake timed out pre-log (no side effects); no workers/execs, no changes; ruling open. next_check 45m.
 2026-10-24 15:52 — wake: ctx halt standing (89%); no workers/execs, no changes; ruling open. next_check 45m.
 2026-10-24 16:38 — wake: ctx halt standing (89%); no workers/execs, no changes; ruling open. next_check 45m.
+2026-10-24 16:43 — wake (duplicate-fire 5m after 16:38): ctx halt standing (89%); no workers/execs, no changes; ruling open. next_check 45m.
