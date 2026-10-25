@@ -48,6 +48,7 @@ import { testSparkConnectivity } from "./connectivity.js";
 import { inspectStartupPreflight, logStartupPreflight } from "./startupPreflight.js";
 import { randomUUID } from "node:crypto";
 import { loadNodes, listNodes, getNode, addNode, updateNode, removeNode, claimNode } from "./fleet/registry.js";
+import { hasNodeSshPassword, setNodeSshPassword, deleteNodeSshPassword } from "./fleet/nodeCredentials.js";
 import { createFleetConnection } from "./fleet/connection.js";
 import { buildTopology } from "./fleet/topology.js";
 import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
@@ -662,6 +663,33 @@ app.post("/api/fleet/nodes/:id/claim", (req, res) => {
   const node = claimNode(req.params.id, (req.body || {}).claimToken);
   if (!node) return res.status(403).json({ error: "Claim rejected: already claimed or token mismatch" });
   res.json({ success: true, node });
+});
+
+/**
+ * S1.3 SSH credential routes (EVAL §4.4 item 3): the sshTransport dials
+ * auth:"pass" records with a password resolved from the ENCRYPTED secrets
+ * store (server/fleet/nodeCredentials.js, key `node:<id>`). The value is
+ * write-only over the API — GET reveals presence only, and credentials are
+ * never stored on the record (nodes.json) nor served by any endpoint.
+ */
+app.get("/api/fleet/nodes/:id/ssh-password", (req, res) => {
+  if (!getNode(req.params.id)) return res.status(404).json({ error: "Node not found" });
+  res.json({ hasPassword: hasNodeSshPassword(req.params.id) });
+});
+
+app.put("/api/fleet/nodes/:id/ssh-password", (req, res) => {
+  if (!getNode(req.params.id)) return res.status(404).json({ error: "Node not found" });
+  try {
+    setNodeSshPassword(req.params.id, (req.body || {}).password);
+    res.json({ success: true, hasPassword: true });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+app.delete("/api/fleet/nodes/:id/ssh-password", (req, res) => {
+  if (!getNode(req.params.id)) return res.status(404).json({ error: "Node not found" });
+  res.json({ success: true, removed: deleteNodeSshPassword(req.params.id) });
 });
 
 app.put("/api/fleet/nodes/:id", (req, res) => {

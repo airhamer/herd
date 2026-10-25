@@ -64,9 +64,13 @@ export function createFleetConnection(nodes, opts = {}) {
   const fetchOverride = typeof opts.fetch === "function" ? opts.fetch : null;
 
   // Defensive: drop records without a usable string id (cache keys depend on it).
+  // S1.3: protocol:"ssh" records are agentless — they have no /telemetry
+  // endpoint. The SSH lane (server/fleet/sshTransport.js, collectors S1.4+)
+  // owns them; the HTTP poller skips exactly that set and never dials them.
   const records = [];
   for (const raw of nodes) {
     if (raw && typeof raw.id === "string" && raw.id.trim()) {
+      if (raw.protocol === "ssh") continue;
       records.push({ ...raw, id: raw.id.trim() });
     } else {
       console.warn(

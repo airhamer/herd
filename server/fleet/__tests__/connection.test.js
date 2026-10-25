@@ -514,3 +514,20 @@ test("bearer: untokened records → NO Authorization header (absent, blank, whit
     assert.equal(c.init.headers.Accept, "application/json"); // unchanged pre-S1.1 shape
   }
 });
+
+// ─── S1.3: SSH records are never HTTP-polled ────────────────────────────────
+
+test("S1.3: protocol:\"ssh\" records are excluded from the HTTP poll (SSH lane owns them)", async () => {
+  const http = node("a");
+  const ssh = { ...node("ssh-b"), protocol: "ssh", ssh: { user: "steve", auth: "key" } };
+  const urlA = `http://${http.endpoint}/telemetry`;
+  const urlSsh = `http://${ssh.endpoint}/telemetry`;
+  const { fn, calls } = fakeFetch({ [urlA]: okRes(snapshot("a")) });
+  const conn = createFleetConnection([http, ssh], { fetch: fn, pollIntervalMs: 50 });
+  // The poller's record set drops ssh records entirely (they have no agent).
+  assert.deepEqual(conn.nodes.map((n) => n.id), ["a"]);
+  await conn.start();
+  assert.ok(countFor(calls, urlA) >= 1, "HTTP node still polled");
+  assert.equal(countFor(calls, urlSsh), 0, "ssh record never dialed over HTTP");
+  await conn.stop();
+});
