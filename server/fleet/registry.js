@@ -26,6 +26,16 @@
 //     isLocal: boolean,       // true when the dashboard runs on this node
 //     token?: string,         // optional per-node bearer (NODE_AGENT_TOKEN,
 //                             // S1.1); poller sends Bearer <token> when set
+//     protocol?: "ssh",       // transport selector (S1.3); key absent = the
+//                             // HTTP/bearer node-agent poll (unchanged).
+//                             // protocol:"ssh" records are collected by the
+//                             // SSH transport (server/fleet/sshTransport.js)
+//     ssh?: {                 // SSH connection params (S1.3), stored only
+//       user: string,         //   with protocol:"ssh". Connection params
+//       host?: string,        //   ONLY — credential material is never
+//       auth?: "key"|"pass",  //   stored here; passwords live in the
+//       port?: number         //   encrypted secrets store (node:<id>)
+//     }
 //   }
 
 import fs from "fs";
@@ -49,6 +59,16 @@ const AGENT_PORT_DEFAULT = 30091;
 
 /** Id rule: 1–64 chars, starts with lowercase letter/digit (mirror SparkRegistry). */
 const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+// S1.3 SSH record constants. User rule mirrors isValidSshUser in
+// server/validate.js — inlined so the registry stays dependency-free.
+const SSH_USER_RE = /^[a-zA-Z0-9._-]{1,64}$/;
+const SSH_PORT_DEFAULT = 22;
+/** Keys that would smuggle credential material onto the record — never stored. */
+const SSH_CREDENTIAL_KEYS = Object.freeze(["password", "passphrase", "privateKey", "identity", "identityFile"]);
+
+/** Port the S1.3 transport dials. Records carry no port; non-22 is rejected. */
+const SSH_PORT_ONLY = 22;
 
 // ─── Types (JSDoc — no runtime) ─────────────────────────────────────────────
 
@@ -74,6 +94,14 @@ const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
  *   round-trip unchanged (Netdata shape per EVAL §4.1 gap 2)
  * @property {string} [claimToken] one-time enrollment token (S1.2), present
  *   only while pending; minted by addNode, consumed by claimNode
+ * @property {"ssh"} [protocol] transport selector (S1.3). The key is stored
+ *   only for an explicit "ssh"; absent means the HTTP/bearer node-agent
+ *   transport — every legacy record round-trips key-free, behavior unchanged
+ * @property {{user: string, host?: string, auth: "key" | "pass", port?: number}} [ssh]
+ *   SSH connection params (S1.3), present only with protocol:"ssh". Never
+ *   carries credential material: SSH passwords live in the encrypted secrets
+ *   store keyed `node:<id>` (server/fleet/nodeCredentials.js). host defaults
+ *   to lanIp, port to 22, auth to "key" (resolved by the transport).
  */
 
 // ─── Module state (in-memory registry) ──────────────────────────────────────
@@ -392,6 +420,60 @@ function _normalizeRecord(raw, opts = {}) {
     rec.status = "pending";
     const claimToken = typeof raw.claimToken === "string" ? raw.claimToken.trim() : "";
     if (claimToken) rec.claimToken = claimToken;
+  }
+  // S1.3 (EVAL §4.4 item 3): SSH transport selector + connection params.
+  // protocol:"ssh" is stored ONLY when explicitly set (trimmed, lowercased);
+  // every other shape — including every legacy record — round-trips key-free
+  // and keeps the HTTP/bearer agent poll byte-identical.
+  const protocol =
+    typeof raw.protocol === "string" ? raw.protocol.trim().toLowerCase() : "";
+  if (protocol === "ssh") rec.protocol = "ssh";
+  if (protocol === "ssh") {
+    const rawSsh =
+      raw.ssh && typeof raw.ssh === "object" && !Array.isArray(raw.ssh)
+        ? raw.ssh
+        : {};
+    const smuggled = SSH_CREDENTIAL_KEYS.filter(
+      (k) => rawSsh[k] !== undefined && rawSsh[k] !== ""
+    );
+    if (smuggled.length) {
+      // Credential material on a node record is a defect, never a variant to
+      // support: nodes.json is plain JSON and is served by the API.
+      if (opts.strict) {
+        throw new Error(
+          `node ${id}: ssh.${smuggled[0]} is never stored on the record — use PUT /api/fleet/nodes/${id}/ssh-password (kept encrypted at rest)`
+        );
+      }
+      console.warn(
+        `[NodeRegistry] ${id}: stripped credential material (${smuggled.join(", ")}) from the ssh record`
+      );
+    }
+    if (rawSsh.port !== undefined && Number(rawSsh.port) !== SSH_PORT_ONLY) {
+      if (opts.strict) {
+        throw new Error(
+          `node ${id}: ssh.port is not supported in S1.3 (the SSH transport dials port 22 only)`
+        );
+      }
+      console.warn(
+        `[NodeRegistry] ${id}: ssh.port is ignored (transport dials 22 only)`
+      );
+    }
+    const user = typeof rawSsh.user === "string" ? rawSsh.user.trim() : "";
+    if (!SSH_USER_RE.test(user)) {
+      if (opts.strict) {
+        throw new Error(
+          `node ${id}: protocol "ssh" requires ssh.user (OpenSSH-safe username)`
+        );
+      }
+      console.warn(
+        `[NodeRegistry] ${id}: protocol "ssh" without a valid ssh.user — record kept, SSH transport unavailable`
+      );
+    } else {
+      const ssh = { user, auth: rawSsh.auth === "pass" ? "pass" : "key" };
+      const host = typeof rawSsh.host === "string" ? rawSsh.host.trim() : "";
+      if (host) ssh.host = host;
+      rec.ssh = ssh;
+    }
   }
   return rec;
 }
