@@ -215,3 +215,4 @@ elephant-os. Remote box writes limited to
 2026-10-24 19:58 — wake: ctx halt standing (89%); no workers/execs, no changes; ruling open. next_check 45m.
 2026-10-24 20:45 — wake: ctx halt standing (89%); no workers/execs, no changes; ruling open (status briefing given to Steve 20:35, awaiting reply). next_check 45m.
 2026-10-24 21:32 — wake: OWNER RULING received 21:07 ("Implement S1.2 in-house. Compact completed.") -> HALT (S1.2, 478083c) LIFTED for S1.2; context 5% after /compact. Orchestrator implementing S1.2 in-house this turn (option a). Register: S1.1 done (10cbfc3); S1.2 in-progress-inhouse; S1.3+ queued.
+2026-10-24 22:23 — consolidated wakes 21:47/22:03/22:23: S1.2 in-house (owner ruling a, 21:07) implementation proceeding this turn — registry status+claim token, server flip wiring, fleet-tab UI. No worker active; HALT stays lifted (66aa634).
