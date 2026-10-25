@@ -222,3 +222,4 @@ elephant-os. Remote box writes limited to
 2026-10-25 03:47 — wake: context 12% post-/compact -> step-0 context halt RESOLVED. No HALT directive in force (S1.2 halt lifted 66aa634; 02:59 line was contextual). Register clean: S1.1 done 10cbfc3, S1.2 done 70b6586. Dispatching S1.3 (SSH transport) worker this wake; run id logged next commit. next_check 3m.
 2026-10-25 03:48 — dispatched S1.3 worker: run d08ffd5c-c50f-4ef8-b76e-60f301ae0ef2 (isolated, mode=run, 3600s). next_check 3m.
 2026-10-25 04:03 — wake: step 2 match. Worker d08ffd5c (S1.3) running (2m at observation; direct subagents list). No HALT in force, ctx 12%. No action; verification on completion event. next_check 3m.
+2026-10-25 04:04 — wake: step 2 match. Worker d08ffd5c (S1.3) running 3m48s (direct subagents list; injected "none" snapshot superseded by live tool output). No worker commits yet on main (HEAD a5780da, clean tree). next_check 3m.
