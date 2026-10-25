@@ -46,3 +46,41 @@ npx vitest run            # only when src/ touched
 - Local commits only; **never push to origin** (owner-gated).
 - Never redeploy/restart the production `sparkdash` container or the live node-agent containers on the GX10s without owner OK mid-run. Narthex's own node-agent may be restarted only if the row brief says so.
 - Baseline at plan time: updates+fleet tests green, `tsc` exit 0 (2026-10-21 21:05 EDT).
+
+## Retained specifications (2026-09-22 plan)
+
+The repo-root `IMPLEMENTATION_PLAN.md` was demoted as the action list on
+2026-10-25. These items were not in this register or in
+`docs/PIVOT-AGENTIC-PLATFORM.md`. They are not new S-rows. Do not delete the
+root file; it is the long design record and the DGX-updates log.
+
+- **Node-agent HTTP stays the action path.** The 2026-09-22 decision is
+  per-node agent on `:30091` for start/stop/switch and telemetry, not SSH.
+  S1.3–S1.6 add an agentless SSH *collector* transport. They do not replace
+  `agent/http.js` actions. The agent spec is `docs/NODE-AGENT.md` plus
+  `shared/types.ts`.
+- **Media catalog.** The live record is `agent/config/media-recipes.json`
+  and `agent/catalog/media.js`, not the 2026-09-22 table. That table named
+  the video image `AEON-7/aeon-movie-maker`; the json now uses
+  `AEON-7/comfyui-aeon-spark:latest` with model `ltx-2.3-22b`. Do not restore
+  the table over the json. Music/radio-drama was explicitly v2 (root plan
+  F1) and is still not an S-row.
+- **Follow-ons never copied here, still not open work:**
+  - F2 — auto-detect RoCE. v1 is manual designation.
+  - F4 — extend sparkDash `/api/fleet-energy` onto node agents.
+  - F5 — shutdown / Wake-on-LAN via the node agent.
+  - F3 (node agent on Narthex) is already stated in `docs/NODE-AGENT.md`.
+    Do not re-open it from the stale root register.
+- **Security note that existed only in the root running log (2026-10-13):**
+  node agents were seen without `NODE_AGENT_TOKEN`, bound `0.0.0.0:30091`.
+  Not an S-row. Still unresolved here. Cockpit integration was parked as a
+  Batch 8 candidate; the record is `docs/BATCH8-BRIEF.md`, not only the log.
+- **DGX update program is closed.** Specs are `docs/BATCH5-BRIEF.md`,
+  `BATCH5B-BRIEF.md`, `BATCH6-BRIEF.md`, `BATCH6C-BRIEF.md`, `BATCH7-BRIEF.md`.
+  Do not re-dispatch those batches from the root plan.
+- **Stale root register.** §3a still lists R1–R12 as Ready. They finished in
+  September 2026. D3 (PR to MiaAI-Lab) was overridden on 2026-10-17:
+  `docs/PIVOT-AGENTIC-PLATFORM.md` §4.1 keeps MIT and does not absorb upstream.
+- **Dispatch shape.** The 2026-09-22 plan allowed two workers in one batch
+  on disjoint directories. This S-series plan overrides that: one worker at
+  a time.
