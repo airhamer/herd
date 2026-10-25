@@ -251,6 +251,7 @@ export function ManageNodesDialog({ open, onClose, onChanged }: ManageNodesDialo
                             {n.role}
                             {n.rank != null ? ` · rank ${n.rank}` : ""}
                             {n.groupId ? ` · ${n.groupId}` : ""}
+                            {n.status === "pending" ? " · pending" : ""}
                           </span>
                         </div>
                         <div className="mt-0.5 font-tabular text-muted">
@@ -269,6 +270,17 @@ export function ManageNodesDialog({ open, onClose, onChanged }: ManageNodesDialo
                   <h3 className="panel-title mb-2">
                     {isNew ? "New node" : `Edit ${editing.id}`}
                   </h3>
+                  {/* S1.2 enroll UI: a pending node shows its one-time claim token. */}
+                  {editing.status === "pending" && editing.claimToken && (
+                    <div className="mb-3 rounded border border-warning/40 bg-warning/10 px-3 py-2 text-[11px]">
+                      <p className="mb-1 text-warning">Pending enrollment — one-time claim token:</p>
+                      <code className="break-all font-tabular">{editing.claimToken}</code>
+                      <p className="mt-1 text-muted">
+                        Pass it to the node's install script, or simply wait: the
+                        first successful poll claims the node automatically.
+                      </p>
+                    </div>
+                  )}
                   <div className="space-y-3">
                     <div className="grid grid-cols-2 gap-2">
                       <div>

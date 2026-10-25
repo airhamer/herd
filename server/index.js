@@ -47,7 +47,7 @@ import {
 import { testSparkConnectivity } from "./connectivity.js";
 import { inspectStartupPreflight, logStartupPreflight } from "./startupPreflight.js";
 import { randomUUID } from "node:crypto";
-import { loadNodes, listNodes, addNode, updateNode, removeNode } from "./fleet/registry.js";
+import { loadNodes, listNodes, getNode, addNode, updateNode, removeNode, claimNode } from "./fleet/registry.js";
 import { createFleetConnection } from "./fleet/connection.js";
 import { buildTopology } from "./fleet/topology.js";
 import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
@@ -319,7 +319,7 @@ const fleetEnergyRuntime = createFleetEnergyRuntime({
 // sparkdash-node-agent (default :30091) and the dashboard polls its
 // /telemetry endpoint over plain HTTP. Registry: config/nodes.json
 // (missing file → empty fleet, not an error — mirrors SparkRegistry).
-let fleetConnection = createFleetConnection(loadNodes());
+let fleetConnection = attachFleetEnrollment(createFleetConnection(loadNodes()));
 
 // ─── DGX fleet-updates layer (Batch 5, docs/SPEC-UPDATES.md) ────
 // Live plan store (config/fleet-update-plan.json, gitignored; the file
@@ -400,6 +400,7 @@ function buildFleetSnapshot() {
       nodeName: snap.nodeName || rec.name,
       lanIp,
       online: fleetConnection.isOnline(rec.id),
+      enrollment: rec.status === "pending" ? "pending" : "claimed",
       // Lookup prefers the REGISTRY lanIp: the agent's self-reported lanIp can
       // be a management/Tailscale address (live: 10.200.0.x on two boxes),
       // which never matches the Spark monitor's LAN key.
@@ -433,9 +434,26 @@ function buildFleetSnapshot() {
  * The connection manager is immutable after creation, so swap in a fresh
  * one; start/stop are both idempotent.
  */
+/**
+ * S1.2 enrollment flip (EVAL §4.1 gap 2): a successful poll IS authenticated
+ * contact (the poller presents the node's bearer token when set) — flip any
+ * still-pending registry record to claimed. Idempotent: claimed records have
+ * no status key, and updateNode re-normalization drops status + claimToken.
+ * Attached at every connection construction (boot + registry mutations).
+ */
+function attachFleetEnrollment(conn) {
+  conn.onSnapshot((nodeId) => {
+    const rec = getNode(nodeId);
+    if (rec && rec.status === "pending") {
+      updateNode(nodeId, { status: "claimed" });
+    }
+  });
+  return conn;
+}
+
 function restartFleetConnection() {
   const prev = fleetConnection;
-  fleetConnection = createFleetConnection(loadNodes());
+  fleetConnection = attachFleetEnrollment(createFleetConnection(loadNodes()));
   refreshUpdatesLayer();
   void fleetConnection
     .start()
@@ -630,6 +648,20 @@ app.post("/api/fleet/nodes", (req, res) => {
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
   }
+});
+
+/**
+ * S1.2 enrollment claim (EVAL §4.1 gap 2, Netdata shape): present a pending
+ * node's one-time claim token (minted in the POST /api/fleet/nodes response).
+ * On match the record flips pending → claimed and the token is consumed —
+ * both keys drop, so a repeat presentation can never match. 404 unknown node,
+ * 403 unknown-or-claimed or token mismatch.
+ */
+app.post("/api/fleet/nodes/:id/claim", (req, res) => {
+  if (!getNode(req.params.id)) return res.status(404).json({ error: "Node not found" });
+  const node = claimNode(req.params.id, (req.body || {}).claimToken);
+  if (!node) return res.status(403).json({ error: "Claim rejected: already claimed or token mismatch" });
+  res.json({ success: true, node });
 });
 
 app.put("/api/fleet/nodes/:id", (req, res) => {

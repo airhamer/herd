@@ -404,6 +404,13 @@ export interface NodeAgentSnapshot {
   agentVersion: string;
   /** true when the node agent is online. */
   online: boolean;
+  /**
+   * S1.2 enrollment state (registry-side, injected by the dashboard server —
+   * the agent itself never emits it): "pending" from add-until-first-
+   * authenticated-poll, then "claimed" (registered-never-seen vs
+   * claimed-offline vs online monitoring, EVAL §4.1 gap 2).
+   */
+  enrollment?: "pending" | "claimed";
   /** Uptime in seconds. null when unknown. */
   uptimeSeconds: number | null;
   /** GPU metrics. null when not available. */

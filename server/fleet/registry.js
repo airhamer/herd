@@ -30,6 +30,7 @@
 
 import fs from "fs";
 import path from "path";
+import { randomBytes, timingSafeEqual } from "crypto";
 import { fileURLToPath } from "url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -68,6 +69,11 @@ const ID_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
  * @property {boolean} isLocal
  * @property {string} [token] optional per-node bearer token (S1.1); the key
  *   is omitted when absent/blank so untokened records keep their pre-S1.1 shape
+ * @property {"pending" | "claimed"} [status] enrollment state (S1.2); the key
+ *   is present only while "pending" — absent means claimed, so legacy records
+ *   round-trip unchanged (Netdata shape per EVAL §4.1 gap 2)
+ * @property {string} [claimToken] one-time enrollment token (S1.2), present
+ *   only while pending; minted by addNode, consumed by claimNode
  */
 
 // ─── Module state (in-memory registry) ──────────────────────────────────────
@@ -182,6 +188,10 @@ export function listNodes() {
 export function addNode(record) {
   _ensureLoaded();
   const rec = _normalizeRecord(record, { strict: true });
+  // S1.2 (EVAL §4.1 gap 2): a pending add always carries a minted one-time
+  // claim token, returned to the caller exactly once (POST /api/fleet/nodes
+  // response) and consumed by claimNode.
+  if (rec.status === "pending" && !rec.claimToken) rec.claimToken = mintClaimToken();
   if (_nodes.some((n) => n.id === rec.id)) {
     throw new Error(`Node ${rec.id} already exists`);
   }
@@ -206,6 +216,47 @@ export function updateNode(id, updates) {
   const { id: _dropId, ...rest } = updates || {};
   const merged = { ...prev, ...rest, id: prev.id };
   const rec = _normalizeRecord(merged, { strict: true });
+  const next = [..._nodes];
+  next[idx] = rec;
+  _nodes = next;
+  _persist();
+  return _copy(rec);
+}
+
+/**
+ * Mint a one-time enrollment claim token (S1.2). Opaque random bytes;
+ * 32 base64url chars. Exported for tests; addNode uses it internally.
+ * @returns {string}
+ */
+export function mintClaimToken() {
+  return randomBytes(24).toString("base64url");
+}
+
+/**
+ * Consume a pending node's one-time claim token (S1.2 enrollment claim,
+ * the "first contact" the install script makes). Timing-safe compare;
+ * on match the record flips to claimed and BOTH the status and claimToken
+ * keys are dropped — a second presentation can never match (one-time).
+ * @param {string} id
+ * @param {string} claimToken presented token
+ * @returns {NodeRecord | null} the claimed record, or null when the node is
+ *   unknown, already claimed, or the token does not match (no state change)
+ */
+export function claimNode(id, claimToken) {
+  _ensureLoaded();
+  const idx = _nodes.findIndex((n) => n.id === id);
+  if (idx === -1) return null;
+  const prev = _nodes[idx];
+  if (prev.status !== "pending" || typeof prev.claimToken !== "string") return null;
+  const presented = typeof claimToken === "string" ? claimToken : "";
+  if (
+    !presented ||
+    presented.length !== prev.claimToken.length ||
+    !timingSafeEqual(Buffer.from(presented), Buffer.from(prev.claimToken))
+  ) {
+    return null;
+  }
+  const rec = _normalizeRecord({ ..._copy(prev), status: "claimed" }, { strict: true });
   const next = [..._nodes];
   next[idx] = rec;
   _nodes = next;
@@ -334,6 +385,14 @@ function _normalizeRecord(raw, opts = {}) {
   // records round-trip identical to the pre-S1.1 shape.
   const token = typeof raw.token === "string" ? raw.token.trim() : "";
   if (token) rec.token = token;
+  // S1.2 (EVAL §4.1 gap 2): enrollment state. Only an explicit "pending" is
+  // stored (with its claim token); anything else — including every legacy
+  // record — round-trips key-free, which consumers read as claimed.
+  if (raw.status === "pending") {
+    rec.status = "pending";
+    const claimToken = typeof raw.claimToken === "string" ? raw.claimToken.trim() : "";
+    if (claimToken) rec.claimToken = claimToken;
+  }
   return rec;
 }
 

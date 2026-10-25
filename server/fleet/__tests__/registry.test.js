@@ -20,6 +20,8 @@ import {
   addNode,
   updateNode,
   removeNode,
+  claimNode,
+  mintClaimToken,
   registryPath,
 } from "../registry.js";
 
@@ -391,4 +393,73 @@ test("token: updateNode sets, re-sets, and clears (blank clears)", () => {
   const cleared = updateNode("tok-u", { token: "  " });
   assert.ok(!("token" in cleared), "blank update clears the token");
   assert.ok(!("token" in getNode("tok-u")), "cleared token gone from registry state");
+});
+
+// ─── S1.2 enrollment: pending/claimed status + one-time claim token ────────
+// EVAL §4.1 gap 2 (Netdata shape): a pending add carries a minted one-time
+// claim token; claimNode consumes it (both keys drop on success). Legacy
+// records — everything without an explicit "pending" — round-trip key-free
+// and read as claimed.
+
+test("S1.2: legacy add keeps pre-S1.2 shape (no status/claimToken keys)", () => {
+  const p = freshNodesPath("s12-legacy");
+  const added = addNode(record({ id: "s12-a" }));
+  assert.ok(!("status" in added), "addNode default carries no status key");
+  assert.ok(!("claimToken" in added), "default add has no claim token");
+  assert.ok(!("status" in loadNodes(p)[0]), "reloaded record stays key-free");
+});
+
+test("S1.2: pending add mints a claim token; explicit token preserved; persists", () => {
+  const p = freshNodesPath("s12-pending");
+  const minted = addNode(record({ id: "s12-mint", status: "pending" }));
+  assert.equal(minted.status, "pending");
+  assert.match(minted.claimToken, /^[A-Za-z0-9_-]{32}$/);
+  const explicit = addNode(
+    record({ id: "s12-explicit", status: "pending", claimToken: " tok-1 " })
+  );
+  assert.equal(explicit.claimToken, "tok-1", "explicit token trimmed + stored");
+  const reloaded = Object.fromEntries(loadNodes(p).map((n) => [n.id, n]));
+  assert.equal(reloaded["s12-mint"].claimToken, minted.claimToken, "mint persisted");
+  assert.equal(reloaded["s12-explicit"].claimToken, "tok-1", "explicit persisted");
+});
+
+test("S1.2: claimNode consumes the token — flip, both keys dropped, persisted", () => {
+  const p = freshNodesPath("s12-claim");
+  const pending = addNode(record({ id: "s12-c", status: "pending", claimToken: "secret-1" }));
+  assert.equal(claimNode("nope", "secret-1"), null, "unknown id → null");
+  assert.equal(claimNode("s12-c", "wrong"), null, "wrong token → null");
+  const still = getNode("s12-c");
+  assert.equal(still.status, "pending", "failed claim leaves state untouched");
+  assert.equal(still.claimToken, "secret-1", "failed claim leaves the token");
+  const claimed = claimNode("s12-c", "secret-1");
+  assert.ok(claimed, "correct token claims");
+  assert.ok(!("status" in claimed), "claimed record drops status key");
+  assert.ok(!("claimToken" in claimed), "claimed record drops the consumed token");
+  assert.ok(!("status" in loadNodes(p)[0]), "flip persisted");
+  assert.ok(!("claimToken" in loadNodes(p)[0]), "consumption persisted");
+  assert.equal(claimNode("s12-c", "secret-1"), null, "one-time: second claim can never match");
+  assert.equal(pending.claimToken, "secret-1", "caller's copy was a snapshot");
+});
+
+test("S1.2: legacy (already-claimed) node cannot be claimed", () => {
+  freshNodesPath("s12-legacy-claim");
+  addNode(record({ id: "s12-lc" }));
+  assert.equal(claimNode("s12-lc", ""), null);
+  assert.equal(claimNode("s12-lc", "anything"), null, "no pending token → nothing to consume");
+});
+
+test("S1.2: updateNode status claimed clears pending state + token", () => {
+  freshNodesPath("s12-claim-admin");
+  addNode(record({ id: "s12-ad", status: "pending", claimToken: "t-9" }));
+  const claimed = updateNode("s12-ad", { status: "claimed" });
+  assert.ok(!("status" in claimed), "explicit claim flips to key-free claimed");
+  assert.ok(!("claimToken" in claimed), "token dropped on admin claim");
+  assert.ok(!("claimToken" in getNode("s12-ad")));
+});
+
+test("S1.2: mintClaimToken returns distinct 32-char base64url strings", () => {
+  const a = mintClaimToken();
+  const b = mintClaimToken();
+  assert.match(a, /^[A-Za-z0-9_-]{32}$/);
+  assert.notEqual(a, b, "tokens must not repeat");
 });

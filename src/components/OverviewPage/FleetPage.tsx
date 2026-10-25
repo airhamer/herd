@@ -151,6 +151,7 @@ export function FleetPage({ nodes, topology, requests, memory, onSelectNode }: F
                 rank={rank}
                 groupId={groupId}
                 online={node.online}
+                enrollment={node.enrollment}
                 gpu={node.gpu}
                 cpu={node.cpu}
                 mem={node.mem}

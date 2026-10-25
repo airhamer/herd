@@ -21,6 +21,11 @@ export interface FleetCardProps {
   rank: number | null;
   groupId: string | null;
   online: boolean;
+  /**
+   * S1.2 enrollment state (registry-side, server-injected): "pending" shows
+   * a pending chip until the node's first authenticated poll claims it.
+   */
+  enrollment?: "pending" | "claimed";
   gpu: GpuMetrics | null;
   cpu: CpuMetrics | null;
   mem: MemMetrics | null;
@@ -135,6 +140,7 @@ export function FleetCard(props: FleetCardProps) {
     rank,
     groupId,
     online,
+    enrollment,
     gpu,
     cpu,
     mem,
@@ -238,8 +244,12 @@ export function FleetCard(props: FleetCardProps) {
             DGX update available
           </button>
         )}
-        <span className="text-[10px] uppercase tracking-wide text-muted" data-testid="fleet-card-status">
-          {online ? "online" : "offline"}
+        <span
+          className={`text-[10px] uppercase tracking-wide ${enrollment === "pending" ? "text-warning" : "text-muted"}`}
+          data-testid="fleet-card-status"
+          title={enrollment === "pending" ? "Registered, never polled — present the claim token or let the first poll claim it" : undefined}
+        >
+          {enrollment === "pending" ? "pending" : online ? "online" : "offline"}
         </span>
       </div>
 

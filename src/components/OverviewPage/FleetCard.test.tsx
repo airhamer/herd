@@ -213,6 +213,11 @@ describe("FleetCard", () => {
     expect(container.textContent).not.toContain("45W / 90W");
   });
 
+  it("shows pending enrollment state (S1.2)", () => {
+    const { container } = render(<FleetCard {...makeCard({ online: false, enrollment: "pending" })} />);
+    expect(container.querySelector('[data-testid="fleet-card-status"]')?.textContent).toBe("pending");
+  });
+
   it("renders the role badge for each role", () => {
     const head = render(<FleetCard {...makeCard({ role: "head" as NodeRole })} />);
     expect(head.container.textContent).toContain("Head");

@@ -519,6 +519,17 @@ export interface NodeRecord {
   links: NodeLink[];
   agentPort: number;
   isLocal: boolean;
+  /**
+   * S1.2 enrollment state. "pending" until the node's first authenticated
+   * poll or claim-token presentation flips it to "claimed"; legacy records
+   * omit the key (read as claimed).
+   */
+  status?: "pending" | "claimed";
+  /**
+   * One-time enrollment claim token (S1.2), present while status is
+   * "pending"; minted server-side on add, consumed by the claim endpoint.
+   */
+  claimToken?: string;
 }
 
 /** List all registered fleet nodes. */
