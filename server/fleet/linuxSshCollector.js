@@ -45,12 +45,18 @@ const round = (v, dp) => {
 };
 
 
-/** Split the sample into { NAME: [lines] } on `===NAME===` markers. */
+/** Split the sample into { NAME: [lines] } on `===NAME===` markers.
+ *  Markers are recognized ANYWHERE in a line, not only as whole lines: the
+ *  OS section's `tr '\n' ' '` swallows its own newline, gluing the next
+ *  marker onto the OS data line (proved live on the localhost sshd, 2026-10-26). */
 function splitSections(text) {
   const sections = {};
   if (typeof text !== "string" || !text) return sections;
   let current = null;
-  for (const raw of text.split("\n")) {
+  const lines = text
+    .replace(/(===[A-Z0-9_]+===)/g, "\n$1\n")
+    .split("\n");
+  for (const raw of lines) {
     const line = raw.trim();
     const m = /^===([A-Z0-9_]+)===$/.exec(line);
     if (m) {

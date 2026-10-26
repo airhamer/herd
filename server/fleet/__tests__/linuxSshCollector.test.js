@@ -297,6 +297,20 @@ test("fleet survives a misconfigured record (transportFactory throws) — node r
   assert.equal(fleet.getSnapshot("bad").online, false);
 });
 
+test("markers glued onto a data line are honored (live OS-section bug)", () => {
+  // Live localhost sshd, 2026-10-26: the OS section's `tr '\n' ' '` swallows
+  // the newline before the NEXT marker, so "===UPTIME===" arrives on the same
+  // line as the os-release text. A whole-line-only parser lost uptime here
+  // (snapshot showed uptimeSeconds:null against a host with 84 days uptime).
+  const glued =
+    "===OS=== NAME=\"Ubuntu\" VERSION=\"24.04 LTS\" ===UPTIME===\n" +
+    "7257890.12 3000000\n" +
+    "===CPU1===\ncpu 100 20 30 800 40 10 5 3 0 0\n===END===";
+  const parsed = parseLinuxSample(glued, {}, 1000);
+  assert.equal(parsed.uptimeSeconds, 7257890);
+  assert.ok(parsed.cpu); // sections after the glued one still parse
+});
+
 test("LINUX_SAMPLE_CMD covers the nonstandard-kernel glob (/sys/cl*ss/) and ends with ===END===", () => {
   assert.ok(LINUX_SAMPLE_CMD.includes("/sys/cl*ss/thermal/thermal_zone*"));
   assert.ok(LINUX_SAMPLE_CMD.includes("/sys/cl*ss/powercap/intel-rapl:"));
