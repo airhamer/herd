@@ -52,6 +52,7 @@ import { hasNodeSshPassword, setNodeSshPassword, deleteNodeSshPassword } from ".
 import { createFleetConnection } from "./fleet/connection.js";
 import { createLinuxSshFleet } from "./fleet/linuxSshCollector.js";
 import { createMacosSshFleet } from "./fleet/macosSshCollector.js";
+import { createWindowsFleet } from "./fleet/windowsSshCollector.js";
 import { buildTopology } from "./fleet/topology.js";
 import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
 import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
@@ -332,6 +333,11 @@ const sshFleet = createLinuxSshFleet({ nodes: loadNodes() });
 // Built once at boot like sshFleet; registry-mutation rebuild stays out of
 // scope (same documented limitation as S1.4).
 const macosSshFleet = createMacosSshFleet({ nodes: loadNodes() });
+// S1.6: the agentless-Windows (PowerShell -EncodedCommand) SSH lane — same
+// 7-method surface, scoped to protocol:"ssh" records whose platform is
+// exactly "windows". Built once at boot like sshFleet; registry-mutation
+// rebuild stays out of scope (same documented limitation as S1.4/S1.5).
+const windowsFleet = createWindowsFleet({ nodes: loadNodes() });
 
 // ─── DGX fleet-updates layer (Batch 5, docs/SPEC-UPDATES.md) ────
 // Live plan store (config/fleet-update-plan.json, gitignored; the file
@@ -409,6 +415,7 @@ function buildFleetSnapshot() {
       fleetConnection.getSnapshot(rec.id) ??
       sshFleet.getSnapshot(rec.id) ??
       macosSshFleet.getSnapshot(rec.id) ??
+      windowsFleet.getSnapshot(rec.id) ??
       emptyNodeSnapshot(rec);
     const lanIp = snap.lanIp || rec.lanIp;
     return {
@@ -418,7 +425,8 @@ function buildFleetSnapshot() {
       online:
         fleetConnection.isOnline(rec.id) ||
         sshFleet.isOnline(rec.id) ||
-        macosSshFleet.isOnline(rec.id),
+        macosSshFleet.isOnline(rec.id) ||
+        windowsFleet.isOnline(rec.id),
       enrollment: rec.status === "pending" ? "pending" : "claimed",
       // Lookup prefers the REGISTRY lanIp: the agent's self-reported lanIp can
       // be a management/Tailscale address (live: 10.200.0.x on two boxes),
@@ -2212,6 +2220,7 @@ if (!startupPreflight.fatal) {
       .catch((err) => console.error("[fleet] initial poll failed:", err.message));
     sshFleet.start();
     macosSshFleet.start();
+    windowsFleet.start();
   });
 } else {
   process.exitCode = 1;
@@ -2269,6 +2278,11 @@ async function shutdown(signal) {
     await macosSshFleet.stop();
   } catch (err) {
     console.error("[sparkDash] macos ssh fleet stop error:", err.message);
+  }
+  try {
+    await windowsFleet.stop();
+  } catch (err) {
+    console.error("[sparkDash] windows ssh fleet stop error:", err.message);
   }
   // Tell WS clients the server is going away, then close the server.
   try {
