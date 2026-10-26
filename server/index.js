@@ -50,6 +50,7 @@ import { randomUUID } from "node:crypto";
 import { loadNodes, listNodes, getNode, addNode, updateNode, removeNode, claimNode } from "./fleet/registry.js";
 import { hasNodeSshPassword, setNodeSshPassword, deleteNodeSshPassword } from "./fleet/nodeCredentials.js";
 import { createFleetConnection } from "./fleet/connection.js";
+import { createLinuxSshFleet } from "./fleet/linuxSshCollector.js";
 import { buildTopology } from "./fleet/topology.js";
 import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
 import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
@@ -321,6 +322,10 @@ const fleetEnergyRuntime = createFleetEnergyRuntime({
 // /telemetry endpoint over plain HTTP. Registry: config/nodes.json
 // (missing file → empty fleet, not an error — mirrors SparkRegistry).
 let fleetConnection = attachFleetEnrollment(createFleetConnection(loadNodes()));
+// S1.4: the agentless-Linux SSH lane — same 7-method surface, scoped to
+// protocol:"ssh" records (the HTTP poller above skips exactly those). Built
+// once at boot; a registry-mutation rebuild is S1.4 follow-up scope.
+const sshFleet = createLinuxSshFleet({ nodes: loadNodes() });
 
 // ─── DGX fleet-updates layer (Batch 5, docs/SPEC-UPDATES.md) ────
 // Live plan store (config/fleet-update-plan.json, gitignored; the file
@@ -394,13 +399,13 @@ function buildFleetSnapshot() {
     }
   }
   const nodeSnaps = nodes.map((rec) => {
-    const snap = fleetConnection.getSnapshot(rec.id) ?? emptyNodeSnapshot(rec);
+    const snap = fleetConnection.getSnapshot(rec.id) ?? sshFleet.getSnapshot(rec.id) ?? emptyNodeSnapshot(rec);
     const lanIp = snap.lanIp || rec.lanIp;
     return {
       ...snap,
       nodeName: snap.nodeName || rec.name,
       lanIp,
-      online: fleetConnection.isOnline(rec.id),
+      online: fleetConnection.isOnline(rec.id) || sshFleet.isOnline(rec.id),
       enrollment: rec.status === "pending" ? "pending" : "claimed",
       // Lookup prefers the REGISTRY lanIp: the agent's self-reported lanIp can
       // be a management/Tailscale address (live: 10.200.0.x on two boxes),
@@ -2192,6 +2197,7 @@ if (!startupPreflight.fatal) {
     void fleetConnection
       .start()
       .catch((err) => console.error("[fleet] initial poll failed:", err.message));
+    sshFleet.start();
   });
 } else {
   process.exitCode = 1;
@@ -2239,6 +2245,11 @@ async function shutdown(signal) {
     await fleetConnection.stop();
   } catch (err) {
     console.error("[sparkDash] fleet stop error:", err.message);
+  }
+  try {
+    await sshFleet.stop();
+  } catch (err) {
+    console.error("[sparkDash] ssh fleet stop error:", err.message);
   }
   // Tell WS clients the server is going away, then close the server.
   try {
