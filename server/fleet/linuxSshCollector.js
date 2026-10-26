@@ -370,6 +370,9 @@ export function createLinuxSshFleet({ nodes, transportFactory = createSshTranspo
   const collectors = new Map();
   for (const node of Array.isArray(nodes) ? nodes : []) {
     if (!isSshNode(node)) continue;
+    // S1.5 split: a platform-tagged record belongs to its own lane; the
+    // Linux lane collects platform:"linux" and legacy platform-less records.
+    if (node.platform && node.platform !== "linux") continue;
     let exec;
     try {
       exec = transportFactory(node).exec;

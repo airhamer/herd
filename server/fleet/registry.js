@@ -97,6 +97,11 @@ const SSH_PORT_ONLY = 22;
  * @property {"ssh"} [protocol] transport selector (S1.3). The key is stored
  *   only for an explicit "ssh"; absent means the HTTP/bearer node-agent
  *   transport — every legacy record round-trips key-free, behavior unchanged
+ * @property {"linux" | "macos" | "windows"} [platform] OS tag (S1.5) used to
+ *   route protocol:"ssh" records to the matching collector lane. Stored only
+ *   when it is one of the three known values (trimmed, lowercased); any other
+ *   shape — including every legacy record — round-trips key-free, and the
+ *   Linux SSH lane keeps collecting platform-less records unchanged
  * @property {{user: string, host?: string, auth: "key" | "pass", port?: number}} [ssh]
  *   SSH connection params (S1.3), present only with protocol:"ssh". Never
  *   carries credential material: SSH passwords live in the encrypted secrets
@@ -428,6 +433,15 @@ function _normalizeRecord(raw, opts = {}) {
   const protocol =
     typeof raw.protocol === "string" ? raw.protocol.trim().toLowerCase() : "";
   if (protocol === "ssh") rec.protocol = "ssh";
+  // S1.5: optional OS tag routing ssh records to the matching collector lane.
+  // Stored ONLY for one of the three known values (trimmed, lowercased);
+  // anything else — including every legacy record — round-trips key-free and
+  // keeps the pre-S1.5 shape (the linuxSshCollector lane owns those).
+  const platform =
+    typeof raw.platform === "string" ? raw.platform.trim().toLowerCase() : "";
+  if (platform === "linux" || platform === "macos" || platform === "windows") {
+    rec.platform = platform;
+  }
   if (protocol === "ssh") {
     const rawSsh =
       raw.ssh && typeof raw.ssh === "object" && !Array.isArray(raw.ssh)

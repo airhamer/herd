@@ -242,6 +242,24 @@ test("getSnapshot is node-scoped; idempotent start/stop", async () => {
   assert.ok(collector.getAllSnapshots()["linux1"]);
 });
 
+test("S1.5 split: platform-tagged ssh records route by lane (macos skipped, legacy + linux collected)", async () => {
+  const legacy = { id: "lin", name: "Lin", protocol: "ssh", ssh: { user: "u" } }; // no platform
+  const tagged = { id: "lnx", name: "Lnx", protocol: "ssh", platform: "linux", ssh: { user: "u" } };
+  const mac = { id: "mac", name: "Mac", protocol: "ssh", platform: "macos", ssh: { user: "u" } };
+  const fleet = createLinuxSshFleet({
+    nodes: [legacy, tagged, mac],
+    transportFactory: () => ({ exec: async () => HAPPY }),
+    pollIntervalMs: 60000,
+  });
+  fleet.start();
+  await new Promise((r) => setTimeout(r, 30));
+  fleet.stop();
+  assert.equal(fleet.getSnapshot("mac"), null); // macos lane owns it
+  assert.equal(fleet.isOnline("mac"), false);
+  assert.equal(fleet.isOnline("lin"), true); // legacy round-trips unchanged
+  assert.equal(fleet.isOnline("lnx"), true);
+});
+
 test("createLinuxSshFleet filters non-ssh nodes; getAllSnapshots keys by id; unsubscribe removes callbacks", async () => {
   const sshNode = { id: "a", name: "A", lanIp: "192.0.2.20", protocol: "ssh", ssh: { user: "u" } };
   const agentNode = { id: "b", name: "B", lanIp: "192.0.2.21" }; // no protocol:"ssh"
