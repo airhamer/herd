@@ -712,6 +712,34 @@ export interface FleetEnergy {
   hourlyWatts24h: Array<number | null>;
 }
 
+/** One UTC month of the permanent energy roll-up. */
+export interface MonthlyEnergyMonth {
+  /** "YYYY-MM" (UTC). */
+  month: string;
+  startMs: number;
+  /** Exclusive end of the month. */
+  endMs: number;
+  /** False while the month is still the current one. */
+  closed: boolean;
+  /** Nodes that reported in this month (the scope at the time). */
+  nodeIds: string[];
+  nodes: Record<string, { wh: number; coverageMs: number }>;
+  totalWh: number;
+  fleetWh: number;
+  fleetCoverageMs: number;
+  outputTokens: number;
+  coveredOutputTokens: number;
+  whPerOutputToken: number | null;
+}
+
+export interface MonthlyEnergy {
+  estimated: boolean;
+  generatedAt: number;
+  foldedThroughMs: number;
+  /** Oldest first. */
+  months: MonthlyEnergyMonth[];
+}
+
 // ─── API responses ────────────────────────────────────────
 export interface Settings {
   pollIntervalMs: number;

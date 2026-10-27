@@ -7,6 +7,7 @@ import { MetricBar } from "../ui/MetricBar";
 import { HealthChips } from "../ui/HealthFindings";
 import { Tag } from "../ui/Tag";
 import { FleetEnergyCard } from "./FleetEnergyCard";
+import { MonthlyEnergy } from "./MonthlyEnergy";
 import { FleetAlertStrip } from "./FleetAlertStrip";
 import { ActivityIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
 
@@ -209,6 +210,11 @@ function SparkCard({
       </div>
 
       {online ? <HealthChips findings={spark.health} /> : null}
+      {online && gpu?.throttle?.clockCapMHz != null ? (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Tag title="GPU clock locked with nvidia-smi -lgc">Cap {(gpu.throttle.clockCapMHz / 1000).toFixed(1)} GHz</Tag>
+        </div>
+      ) : null}
 
       {!online || !gpu ? (
         <div className="flex h-[120px] items-center justify-center">
@@ -580,7 +586,12 @@ export function OverviewPage({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-overview-rhythm)" }}>
-      {showFleetEnergy ? <FleetEnergyCard nodeCount={sparks.length} /> : null}
+      {showFleetEnergy ? (
+        <div>
+          <FleetEnergyCard nodeCount={sparks.length} />
+          <MonthlyEnergy />
+        </div>
+      ) : null}
       <FleetAlertStrip
         sparks={sparks}
         onSelect={onSelectSpark}
