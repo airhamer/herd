@@ -4,6 +4,7 @@ import { isWorkerSpark, resolveSparkRole } from "../../api/sparkRole";
 import { shutdownAllSparks, updateAllHermes, wakeAllSparks } from "../../api/client";
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { MetricBar } from "../ui/MetricBar";
+import { HealthChips } from "../ui/HealthFindings";
 import { FleetEnergyCard } from "./FleetEnergyCard";
 import { FleetAlertStrip } from "./FleetAlertStrip";
 import { ActivityIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
@@ -197,6 +198,8 @@ function SparkCard({
           {online ? "online" : "offline"}
         </span>
       </div>
+
+      {online ? <HealthChips findings={spark.health} /> : null}
 
       {!online || !gpu ? (
         <div className="flex h-[120px] items-center justify-center">

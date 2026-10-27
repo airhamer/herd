@@ -191,6 +191,15 @@ export interface GpuThrottle {
   detail: string;
 }
 
+/** One health finding for a Spark (server rules in server/health/HealthEvaluator.js). */
+export interface HealthFinding {
+  id: "thermal" | "low-power" | "memory" | "xid" | "oom" | "concurrency" | "link-speed";
+  severity: "warn" | "critical";
+  title: string;
+  detail: string;
+  hint: string;
+}
+
 export interface GpuMetrics {
   temperature: number;
   usage: number;
@@ -213,6 +222,8 @@ export interface GpuMetrics {
   throttle?: GpuThrottle | null;
   /** Kernel NVRM NV_ERR_NO_MEMORY count since boot (cached ~60s). */
   nvErrNoMemory?: number;
+  /** Kernel Xid errors and OOM-killer kills since boot (cached ~60s). null when the journal is unreadable. */
+  kernelErrors?: { xid: number; oomKills: number; lastXid: string | null } | null;
 }
 
 // ─── CPU metrics ─────────────────────────────────────────
@@ -470,6 +481,8 @@ export interface SparkMetrics {
 // ─── Spark snapshot (server pushes this) ──────────────────
 export interface SparkSnapshot {
   id: string;
+  /** Active health findings, most important first is not guaranteed; sort with sortFindings. */
+  health?: HealthFinding[];
   name: string;
   /** Unit type: spark (DGX Spark) or host (dedicated GPU Linux box). */
   kind?: "spark" | "host";

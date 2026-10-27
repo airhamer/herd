@@ -3,6 +3,7 @@ import type { SparkSnapshot } from "../../api/types";
 import { isLlmMonitoringEnabled } from "../../api/sparkRole";
 import { updateSpark, refreshSparkMetric, addLlmPort, removeLlmPort } from "../../api/client";
 import { SparkHeader } from "./SparkHeader";
+import { HealthList } from "../ui/HealthFindings";
 import { SparkActions } from "./SparkActions";
 import { GpuPanel } from "./GpuPanel";
 import { RamPanel } from "./RamPanel";
@@ -229,6 +230,7 @@ export function SparkPage({
         onEdit={onEdit}
         className="flex flex-wrap items-center justify-end gap-2 px-1 py-1 sm:hidden"
       />
+      {spark.online ? <HealthList findings={spark.health} /> : null}
       <div className="spark-page grid grid-cols-1 md:grid-cols-2" style={{ gap: "var(--density-page-gap)" }}>
         <SectionHeading
           title="Resources"

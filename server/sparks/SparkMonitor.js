@@ -9,6 +9,7 @@ import { ComfyProbe } from "../collectors/ComfyProbe.js";
 import { HermesProbe } from "../collectors/HermesProbe.js";
 import { TailscaleProbe } from "../collectors/TailscaleProbe.js";
 import { llmDaily } from "../collectors/LlmDaily.js";
+import { HealthEvaluator } from "../health/HealthEvaluator.js";
 import { sshExec } from "../collectors/ssh.js";
 import {
   POLL_INTERVAL_GPU,
@@ -108,6 +109,9 @@ export class SparkMonitor {
     };
     this._lastUpdate = {};
     this._metricCollectionSuccessful = { gpu: false, cpu: false };
+    /** Health rules + their sample-streak state; findings go out in snapshot().health. */
+    this._healthEval = new HealthEvaluator();
+    this._health = [];
 
     // Hardware summary: kind "spark" uses the static DGX Spark specs; kind
     // "host" (dedicated GPU Linux box) detects real hardware once in the
@@ -442,6 +446,27 @@ export class SparkMonitor {
     console.log(`[SparkMonitor] ${this.spark.id} stopped`);
   }
 
+  /**
+   * Re-run the health rules over the latest metrics. Findings ride the
+   * snapshot (WS push); this fork has no server-side activity bus, so the
+   * upstream event emission for rule changes is intentionally skipped.
+   */
+  _updateHealth(domain = "other") {
+    try {
+      this._health = this._healthEval.evaluate(
+        {
+          gpu: this._metrics.gpu,
+          unifiedMemory: this._metrics.unifiedMemory,
+          network: this._metrics.network,
+          llm: this._metrics.llm,
+        },
+        domain
+      );
+    } catch (err) {
+      console.error(`[SparkMonitor] ${this.spark.id} health error:`, err?.message);
+    }
+  }
+
   /** Return a full snapshot of this Spark's metrics. */
   snapshot() {
     const ports = this._llmMonitoringEnabled() ? this._llmPorts() : [];
@@ -477,6 +502,7 @@ export class SparkMonitor {
       comfyPort: this._comfyPort(),
       tailscaleMonitoring: tailscaleOn,
       hermes: this._hermes,
+      health: this._health,
       hardware: this._hardwareSummary,
       metrics: {
         // NOTE: no `timestamp` here on purpose. The broadcast path skips
@@ -638,6 +664,7 @@ export class SparkMonitor {
         case "gpu":
           this._metrics.gpu = result;
           this._metricCollectionSuccessful.gpu = collectionWasSuccessful(result);
+          this._updateHealth("gpu");
           break;
         case "cpu":
           this._metrics.cpu = result;
@@ -648,6 +675,7 @@ export class SparkMonitor {
           break;
         case "network":
           this._metrics.network = result;
+          this._updateHealth();
           if (result?.wolMac && this._onWolMac) {
             try {
               this._onWolMac(this.spark.id, result.wolMac);
@@ -661,9 +689,11 @@ export class SparkMonitor {
           break;
         case "memory":
           this._metrics.unifiedMemory = result;
+          this._updateHealth();
           break;
         case "llm":
           this._metrics.llm = result;
+          this._updateHealth();
           {
             const probes = Array.from(this.llmProbes.values());
             for (let i = 0; i < result.length; i++) {

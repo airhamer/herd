@@ -2580,3 +2580,77 @@ html {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-muted);
 }
+/* ── Health findings (cards + Spark page) ───────────────── */
+/* Ported from upstream overview.css/.shell.css blocks (c4558d0). */
+.health-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: -4px 0 10px;
+  position: relative;
+  z-index: auto;
+}
+.health-list {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 14px;
+}
+.health-item {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-warning) 45%, transparent);
+  background: color-mix(in srgb, var(--color-warning) 9%, var(--surface, transparent));
+}
+.health-item--critical {
+  border-color: color-mix(in srgb, var(--color-danger) 55%, transparent);
+  background: color-mix(in srgb, var(--color-danger) 10%, var(--surface, transparent));
+}
+.health-item__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+.health-item__detail {
+  margin-top: 6px;
+  font-size: 13px;
+}
+.health-item__hint {
+  margin-top: 4px;
+  font-size: 12.5px;
+  opacity: 0.75;
+}
+
+/* Tag pill (upstream shell.css — used by HealthFindings chips/list) */
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 99px;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  background: var(--color-surface-hover);
+  color: var(--color-muted-strong);
+}
+.tag--good {
+  background: color-mix(in srgb, var(--color-success) 14%, transparent);
+  color: var(--color-success);
+}
+.tag--warn {
+  background: color-mix(in srgb, var(--color-warning) 14%, transparent);
+  color: var(--color-warning);
+}
+.tag--bad {
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+  color: var(--color-danger);
+}
+.tag--acc {
+  background: var(--color-accent-soft);
+  color: var(--color-accent-text, var(--color-accent));
+}
+.tag--info {
+  background: color-mix(in srgb, var(--color-info, var(--color-accent)) 14%, transparent);
+  color: var(--color-info, var(--color-accent));
+}
