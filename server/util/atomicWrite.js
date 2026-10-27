@@ -70,4 +70,17 @@ export function atomicWrite(filePath, contents, mode = 0o600) {
   }
 }
 
+/** Move an unreadable JSON file aside so the next load starts fresh (upstream port). */
+export function quarantineCorrupt(filePath, label, err) {
+  try {
+    const dest = `${filePath}.corrupt-${Date.now()}`;
+    fs.renameSync(filePath, dest);
+    console.error(`[${label}] ${filePath} is unreadable (${err?.message ?? "parse error"}); moved to ${dest}`);
+    return dest;
+  } catch (e) {
+    console.error(`[${label}] ${filePath} is unreadable and could not be quarantined: ${e?.message}`);
+    return null;
+  }
+}
+
 export default atomicWrite;

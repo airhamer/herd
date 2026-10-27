@@ -28,6 +28,12 @@ const DEFAULTS = Object.freeze({
   /** Overview search + status filter row. Off by default. */
   showOverviewSearch: false,
   /**
+   * Alert notifications (Settings → Alerts). Off by default: while off nothing
+   * is evaluated or sent, and the alert config / test routes refuse (409).
+   * (Upstream default block placement adapted — this fork has no metricsHistory.)
+   */
+  alertsEnabled: false,
+  /**
    * Benchmark dialogs offer the share-card format. On by default: the extra
    * control is one caret next to a button that already copies, and anyone who
    * does not want it can turn it off here (see the README's settings table).
@@ -56,6 +62,7 @@ function _clampSettings(settings) {
   s.showFleetEnergy = Boolean(s.showFleetEnergy);
   s.showFleetExceptions = Boolean(s.showFleetExceptions);
   s.showOverviewSearch = Boolean(s.showOverviewSearch);
+  s.alertsEnabled = Boolean(s.alertsEnabled);
   // Ensure temperatureUnit is valid
   if (s.temperatureUnit !== "celsius" && s.temperatureUnit !== "fahrenheit") {
     s.temperatureUnit = DEFAULTS.temperatureUnit;

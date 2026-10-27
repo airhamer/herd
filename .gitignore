@@ -45,3 +45,11 @@ agent/config/dgx.json
 agent/config/schedules.json
 agent/config/update-events.json
 agent/config/update-snapshot.json
+
+# Alert runtime state (rule switches + firing set; URLs live in the secrets store)
+config/alerts.json
+config/alerts.json.*
+# Event log persistence (alert delivery records)
+config/events.json
+config/events.json.*
+.tmp/

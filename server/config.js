@@ -21,6 +21,9 @@ const LLM_DAILY_JSON_PATH =
 /** Rolling fleet energy estimates (gitignored; written atomically at mode 0600). */
 const FLEET_ENERGY_JSON_PATH =
   process.env.FLEET_ENERGY_JSON_PATH || path.join(ROOT, "config", "fleet-energy.json");
+/** Alert rule switches, channel settings (no URLs — those are in the secrets store) and the firing set; mode 0600. */
+const ALERTS_JSON_PATH =
+  process.env.ALERTS_JSON_PATH || path.join(ROOT, "config", "alerts.json");
 
 // ─── LLM / Comfy probe timeouts ──────────────────────────
 const LLM_PROBE_TIMEOUT_MS = 3000;
@@ -110,6 +113,7 @@ export {
   SECRETS_KEY_PATH,
   LLM_DAILY_JSON_PATH,
   FLEET_ENERGY_JSON_PATH,
+  ALERTS_JSON_PATH,
   LLM_PROBE_TIMEOUT_MS,
   COMFY_PROBE_TIMEOUT_MS,
   TAILSCALE_PROBE_TIMEOUT_MS,

@@ -38,7 +38,9 @@ import { formatLlmBaseUrl, parseLlmTargetInput } from "../src/shared/llmTarget.j
 import { llmDaily } from "./collectors/LlmDaily.js";
 import { closeLlmStreamAgent } from "./collectors/LlmStreaming.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
-import { FLEET_ENERGY_JSON_PATH } from "./config.js";
+import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH } from "./config.js";
+import { createAlertsRuntime, registerAlertRoutes } from "./alerts/runtime.js";
+import { EventLog } from "./events/EventLog.js";
 import { FleetEnergyTracker } from "./energy/FleetEnergyTracker.js";
 import {
   createFleetEnergyRuntime,
@@ -319,6 +321,32 @@ const fleetEnergyRuntime = createFleetEnergyRuntime({
   monitors,
 });
 
+// ─── Event log (alert delivery records) ───────────────────
+// This fork has no Activity page yet; the log exists so every alert send,
+// delivered or failed, is recorded (upstream invariant) and browsable on disk.
+const eventLog = new EventLog({
+  file: process.env.EVENTS_JSON_PATH || path.join(ROOT, "config", "events.json"),
+  max: 2000,
+});
+
+/** Record an event; never throws (callers sit in poll loops and routes). */
+function recordEvent(event) {
+  try {
+    return eventLog.record(event);
+  } catch {
+    return null;
+  }
+}
+
+// Alert notifications over the Health findings and the Overview strip's exceptions.
+// Opt-in (settings.alertsEnabled): while off nothing is evaluated or sent, and
+// the config and test routes refuse. Every send is recorded in the event log.
+const alertsRuntime = createAlertsRuntime({
+  filePath: ALERTS_JSON_PATH,
+  isEnabled: () => getSettings().alertsEnabled === true,
+  recordEvent,
+});
+
 // ─── Fleet (node-agent) layer ────────────────────────────
 // Separate from the SSH-based Spark monitors above: each fleet node runs
 // sparkdash-node-agent (default :30091) and the dashboard polls its
@@ -506,6 +534,7 @@ function clientKey(req) {
 
 // ─── REST API ────────────────────────────────────────────
 registerFleetEnergyRoute(app, fleetEnergyTracker);
+registerAlertRoutes(app, alertsRuntime);
 
 // Never return SSH passwords in any response
 app.get("/api/sparks", (_req, res) => {
@@ -2139,13 +2168,17 @@ let broadcastTimer = null;
 let _lastBroadcastPayload = null;
 
 /** Build the snapshot payload string. Centralized so broadcast + refresh share it. */
-function buildSnapshotPayload() {
-  return JSON.stringify({
+function buildSnapshotPayload(sparks = orderedSnapshots()) {
+  const payload = {
     type: "snapshot",
     generatedAt: Date.now(),
-    sparks: orderedSnapshots(),
+    sparks,
     refreshInterval: getSettings().pollIntervalMs,
-  });
+  };
+  // Only while alerts are on: the key's absence tells the UI to derive its own.
+  const alerts = alertsRuntime.snapshotBlock();
+  if (alerts) payload.alerts = alerts;
+  return JSON.stringify(payload);
 }
 
 /**
@@ -2187,7 +2220,11 @@ function forceBroadcast() {
 function startBroadcast() {
   const interval = getSettings().pollIntervalMs;
   broadcastTimer = setInterval(() => {
-    const payload = buildSnapshotPayload();
+    const sparks = orderedSnapshots();
+    // Alerts are evaluated once per fleet snapshot, before it goes out, so the
+    // payload carries the alerts this very snapshot produced.
+    alertsRuntime.tick(sparks);
+    const payload = buildSnapshotPayload(sparks);
     // Skip the broadcast entirely when nothing changed since the last tick.
     // A 1s poll that produces identical snapshots becomes free for idle tabs.
     if (_lastBroadcastPayload !== null && payload === _lastBroadcastPayload) return;
@@ -2222,6 +2259,7 @@ if (!startupPreflight.fatal) {
       console.warn("[sparkDash] WARNING: remote bind without SPARKDASH_TOKEN — mutations and telemetry will fail closed until a token is set.");
     }
     startAllMonitors();
+    alertsRuntime.start();
     fleetEnergyRuntime.start();
     void fleetConnection
       .start()
