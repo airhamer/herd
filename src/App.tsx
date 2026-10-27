@@ -1,5 +1,7 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { useSnapshot } from "./hooks/useSnapshot";
+import { useFleetAlerts } from "./hooks/useFleetAlerts";
+import { useBrowserAlerts } from "./hooks/useBrowserAlerts";
 import { useAppRoute, useRoute, useFleetRoute, type FleetView } from "./hooks/useRoute";
 import { fetchSparks, reorderSparks, fetchSettings, sendNodeAction } from "./api/client";
 import { useFleetData } from "./hooks/useFleet";
@@ -143,6 +145,7 @@ function DashboardApp() {
     lastValidSnapshotAt,
     snapshotError,
     refreshInterval,
+    serverAlerts,
   } = useSnapshot();
   const [telemetryNow, setTelemetryNow] = useState(Date.now());
   const navigate = useRoute(setActiveId);
@@ -243,6 +246,17 @@ function DashboardApp() {
   const handleSettingsSaved = useCallback((s: Settings) => {
     setSettings(s);
   }, []);
+
+  // Tab badge + desktop notifications (both opt-in, per browser): the strip's own
+  // list. Live snapshots only — placeholders from the REST fallback are all "offline".
+  const fleetAlerts = useFleetAlerts({
+    sparks,
+    alertsEnabled: settings?.alertsEnabled ?? false,
+    serverAlerts,
+    showExceptions: settings?.showFleetExceptions ?? false,
+    temperatureUnit: settings?.temperatureUnit ?? "celsius",
+  });
+  useBrowserAlerts(fleetAlerts.rows, fleetAlerts.ready && settings != null, fleetAlerts.source);
 
   // Apply layout density (comfortable/compact) from persisted settings.
   useEffect(() => {
@@ -418,6 +432,8 @@ function DashboardApp() {
               hideWorkers={hideWorkers}
               showFleetEnergy={settings?.showFleetEnergy ?? false}
               showFleetExceptions={settings?.showFleetExceptions ?? false}
+              alertsEnabled={settings?.alertsEnabled ?? false}
+              serverAlerts={serverAlerts}
               showOverviewSearch={settings?.showOverviewSearch ?? false}
               temperatureUnit={settings?.temperatureUnit ?? "celsius"}
               onSelectSpark={goSpark}

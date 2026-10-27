@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { fetchSettings, updateSettings } from "../api/client";
 import type { Settings } from "../api/types";
 import { useModalPresence } from "../hooks/useModalPresence";
+import { AlertsDialog } from "./AlertsDialog";
+import { BrowserAlertsSettings } from "./BrowserAlertsSettings";
 import packageJson from "../../package.json";
 
 interface SettingsDialogProps {
@@ -33,11 +35,17 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const [showAlerts, setShowAlerts] = useState(false);
 
-  useEscape(onClose);
+  // While the Alerts dialog is open on top, Escape belongs to it alone.
+  const closeOnEscape = useCallback(() => {
+    if (!showAlerts) onClose();
+  }, [showAlerts, onClose]);
+  useEscape(closeOnEscape);
 
   useEffect(() => {
     if (!open) {
+      setShowAlerts(false);
       setSettings(null);
       setError(null);
       setDirty(false);
@@ -65,6 +73,13 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
   const update = (patch: Partial<Settings>) => {
     setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
     setDirty(true);
+  };
+
+  // The Alerts dialog saves its switch itself; mirror it here without marking
+  // Settings dirty, so a later Save does not undo it.
+  const handleAlertsSettings = (saved: Settings) => {
+    setSettings((prev) => (prev ? { ...prev, alertsEnabled: saved.alertsEnabled } : prev));
+    onSaved(saved);
   };
 
   const handleSave = async () => {
@@ -309,6 +324,33 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
               </label>
             </div>
 
+            {/* Alert notifications */}
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <span>
+                  <span className="block text-text">Alert notifications</span>
+                  <span className="mt-0.5 block text-[10px] leading-sn text-muted">
+                    Send Health findings and Overview exceptions to ntfy, Discord, Slack or a
+                    webhook once they hold for a while, and when they clear. Off by default.
+                  </span>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <span className={`text-[10px] ${settings.alertsEnabled ? "text-accent" : "text-muted"}`} data-testid="alerts-state">
+                    {settings.alertsEnabled ? "On" : "Off"}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowAlerts(true)}
+                    className="min-h-8 rounded border border-border bg-surface-elevated px-2 py-1 text-[10px] text-muted hover:bg-surface-hover"
+                  >
+                    Configure…
+                  </button>
+                </span>
+              </div>
+            </div>
+
+            <BrowserAlertsSettings />
+
             {/* Benchmark debug traces */}
             <div>
               <label className="flex items-start gap-3 text-xs text-muted">
@@ -449,6 +491,8 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
           </button>
         </div>
       </div>
+
+      <AlertsDialog open={showAlerts} onClose={() => setShowAlerts(false)} onSettingsSaved={handleAlertsSettings} />
     </div>
   );
 }

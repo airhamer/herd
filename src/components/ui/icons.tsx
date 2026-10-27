@@ -253,3 +253,33 @@ export function CompactIcon({ className = "" }: { className?: string }) {
     </svg>
   );
 }
+
+/** Close / dismiss. */
+export function XIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+/** Warning triangle (alerts, exceptions). */
+export function AlertTriangleIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <path d="m21.73 18-8-14a2 2 0 0 0-3.46 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </svg>
+  );
+}
+
+/** Chevron pointing right (list-row affordance). */
+export function ChevronRightIcon({ className }: IconProps) {
+  return (
+    <svg {...baseProps(className)}>
+      <path d="m9 18 6-6-6-6" />
+    </svg>
+  );
+}
