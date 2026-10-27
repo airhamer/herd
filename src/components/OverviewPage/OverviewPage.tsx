@@ -5,6 +5,7 @@ import { shutdownAllSparks, updateAllHermes, wakeAllSparks } from "../../api/cli
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { MetricBar } from "../ui/MetricBar";
 import { HealthChips } from "../ui/HealthFindings";
+import { Tag } from "../ui/Tag";
 import { FleetEnergyCard } from "./FleetEnergyCard";
 import { FleetAlertStrip } from "./FleetAlertStrip";
 import { ActivityIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
@@ -196,6 +197,11 @@ function SparkCard({
                   ? `Comfy · ${spark.metrics.comfy.queuePending}q`
                   : "Comfy · idle"}
           </span>
+        ) : null}
+        {online && gpu?.throttle?.clockCapMHz != null ? (
+          <Tag title="GPU clock locked with nvidia-smi -lgc">
+            Cap {(gpu.throttle.clockCapMHz / 1000).toFixed(1)} GHz
+          </Tag>
         ) : null}
         <span className="text-[10px] uppercase tracking-wide text-muted">
           {online ? "online" : "offline"}
