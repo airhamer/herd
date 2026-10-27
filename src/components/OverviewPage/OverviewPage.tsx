@@ -210,11 +210,6 @@ function SparkCard({
       </div>
 
       {online ? <HealthChips findings={spark.health} /> : null}
-      {online && gpu?.throttle?.clockCapMHz != null ? (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <Tag title="GPU clock locked with nvidia-smi -lgc">Cap {(gpu.throttle.clockCapMHz / 1000).toFixed(1)} GHz</Tag>
-        </div>
-      ) : null}
 
       {!online || !gpu ? (
         <div className="flex h-[120px] items-center justify-center">
