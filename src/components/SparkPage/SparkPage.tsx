@@ -9,6 +9,7 @@ import { GpuPanel } from "./GpuPanel";
 import { RamPanel } from "./RamPanel";
 import { StoragePanel } from "./StoragePanel";
 import { NetworkPanel } from "./NetworkPanel";
+import { RocePanel } from "./RocePanel";
 import { TailscalePanel } from "./TailscalePanel";
 import { LlmPanel } from "./LlmPanel";
 import { ComfyPanel } from "./ComfyPanel";
@@ -261,6 +262,7 @@ export function SparkPage({
                   disabledInterfaces={disabledInterfaces}
                   onDisabledChange={setDisabledInterfaces}
                 />
+                {metrics.roce ? <RocePanel roce={metrics.roce} /> : null}
                 <StoragePanel
                   storage={metrics.storage}
                   sparkId={spark.id}
@@ -295,6 +297,7 @@ export function SparkPage({
                   disabledInterfaces={disabledInterfaces}
                   onDisabledChange={setDisabledInterfaces}
                 />
+                {metrics.roce ? <RocePanel roce={metrics.roce} /> : null}
                 {tailscaleOn && <TailscalePanel tailscale={metrics.tailscale ?? null} />}
               </>
             )}
