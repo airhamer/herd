@@ -32,6 +32,38 @@ export function parseKernelErrors(raw) {
   return { xid, oomKills, lastXid };
 }
 
+// nvidia-smi / NVML cannot read back a `nvidia-smi -lgc` lock (no getter
+// exists; clocks.max.* is the hardware max). Whoever sets the lock drops a
+// one-line marker "<maxMHz> [<boot_id>]" so the dashboard can show it. A
+// boot_id that no longer matches means the box rebooted and the lock is gone.
+// DISPLAY ONLY in this fork: the fleet collectors stay read-only; the setter
+// (upstream 6de1082/de0866e/d94450b/b54c5dd) is deliberately NOT ported.
+export const CLOCK_CAP_FILES = [
+  "/run/sparkdash/gpu-clock-cap",
+  "$HOME/.config/sparkdash/gpu-clock-cap",
+];
+const CLOCK_CAP_CMD =
+  `cat ${CLOCK_CAP_FILES.join(" ")} 2>/dev/null | head -1; cat /proc/sys/kernel/random/boot_id 2>/dev/null || true`;
+
+/**
+ * Parse CLOCK_CAP_CMD output (marker line, then the current boot_id).
+ * Exported for tests. Returns the locked max graphics clock in MHz, or null.
+ * @param {unknown} raw
+ * @returns {number|null}
+ */
+export function parseClockCap(raw) {
+  const lines = String(raw ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const capLine = lines.find((l) => /^\d+(\s|$)/.test(l)); // first token must be wholly numeric — a bare boot_id line (e.g. "139dcc9e-…") starts with digits and must NOT parse as a cap
+  if (!capLine) return null;
+  const [mhzRaw, markerBoot] = capLine.split(/\s+/);
+  const mhz = Number.parseInt(mhzRaw, 10);
+  if (!Number.isFinite(mhz) || mhz <= 0) return null;
+  const currentBoot = lines.filter((l) => uuid.test(l)).pop();
+  if (markerBoot && currentBoot && markerBoot.toLowerCase() !== currentBoot.toLowerCase()) return null;
+  return mhz;
+}
+
 /**
  * Parse `grep -c` stdout into a non-negative integer. Exported for tests.
  * @param {unknown} raw
@@ -243,6 +275,7 @@ export class SystemCollector {
       "--query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,clocks.current.sm,clocks.max.sm,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_slowdown,clocks_throttle_reasons.sw_power_cap --format=csv,noheader,nounits"
     );
     const gpu = this._parseGpuLine(gpuOut);
+    this._applyClockCap(gpu.throttle, await this._readLocalClockCap().catch(() => null));
     const vram = await this._queryNvidiaVram();
 
     // Estimate total system power: GPU draw + CPU draw + ~20W CX7/peripherals
@@ -500,8 +533,37 @@ export class SystemCollector {
       smClockMHz,
       smClockMaxMHz,
       smClockPct,
+      clockCapMHz: null,
       detail: details.length ? details.join(" · ") : "Clocks not limited",
     };
+  }
+
+  /** Stamp a `nvidia-smi -lgc` cap (MHz or null) onto a throttle object. */
+  _applyClockCap(throttle, capMHz) {
+    if (capMHz == null || !throttle) return;
+    throttle.clockCapMHz = capMHz;
+    const note = `Clock locked ≤ ${capMHz} MHz`;
+    throttle.detail =
+      throttle.detail === "Clocks not limited" ? note : `${throttle.detail} · ${note}`;
+  }
+
+  /** Local-host twin of CLOCK_CAP_CMD: read the marker and boot_id directly. */
+  async _readLocalClockCap() {
+    const home = process.env.HOME || "";
+    const files = CLOCK_CAP_FILES.map((f) => f.replace("$HOME", home));
+    let marker = "";
+    for (const f of files) {
+      try {
+        marker = (await fs.promises.readFile(f, "utf8")).split("\n")[0];
+        if (marker.trim()) break;
+      } catch {}
+    }
+    if (!marker.trim()) return null;
+    let boot = "";
+    try {
+      boot = await fs.promises.readFile("/proc/sys/kernel/random/boot_id", "utf8");
+    } catch {}
+    return parseClockCap(`${marker}\n${boot}`);
   }
 
   _defaultThrottle() {
@@ -1030,7 +1092,7 @@ export class SystemCollector {
   }
 
   // ─── Remote collection via SSH ────────────────────────────
-  async _getRemoteGpu() {
+  async _getRemoteGpu(executor = sshExec) {
     try {
       const cmd = [
         "nvidia-smi --query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,clocks.current.sm,clocks.max.sm,clocks_throttle_reasons.hw_thermal_slowdown,clocks_throttle_reasons.sw_thermal_slowdown,clocks_throttle_reasons.hw_slowdown,clocks_throttle_reasons.sw_power_cap --format=csv,noheader,nounits 2>/dev/null",
@@ -1040,9 +1102,11 @@ export class SystemCollector {
         "nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory --format=csv,noheader,nounits 2>/dev/null",
         "echo '---'",
         "grep -E 'MemTotal|MemAvailable' /proc/meminfo 2>/dev/null",
+        "echo '---'",
+        CLOCK_CAP_CMD,
       ].join("; ");
 
-      const output = await sshExec(this.spark, cmd);
+      const output = await executor(this.spark, cmd);
       const sections = output.split("---");
       const gpuOut = sections[0]?.trim() || "";
       const memFields = sections[1]?.trim() || "";
@@ -1050,6 +1114,7 @@ export class SystemCollector {
       const meminfoOut = sections[3]?.trim() || "";
 
       const gpu = this._parseGpuLine(gpuOut);
+      this._applyClockCap(gpu.throttle, parseClockCap(sections[4] ?? ""));
 
       // Parse memory.used / memory.total from nvidia-smi (may be [N/A] on GB10)
       let used = null;
