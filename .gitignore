@@ -13,6 +13,10 @@ config/showcase-history.json
 config/llm-daily.json
 config/fleet-energy.json
 config/fleet-energy-monthly.json*
+config/gpu-history.json
+config/gpu-history-long.json
+config/metrics-history.json
+config/metrics-history.json.corrupt-*
 config/fleet-update-plan.json
 config/.fleet-energy.json.*.tmp
 config/gpu-memory.json

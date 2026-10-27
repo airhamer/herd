@@ -38,10 +38,15 @@ import { formatLlmBaseUrl, parseLlmTargetInput } from "../src/shared/llmTarget.j
 import { llmDaily } from "./collectors/LlmDaily.js";
 import { closeLlmStreamAgent } from "./collectors/LlmStreaming.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
-import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH } from "./config.js";
+import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH, METRICS_HISTORY_JSON_PATH } from "./config.js";
 import { createAlertsRuntime, registerAlertRoutes } from "./alerts/runtime.js";
 import { EventLog } from "./events/EventLog.js";
 import { FleetEnergyTracker } from "./energy/FleetEnergyTracker.js";
+import { UnitHistory } from "./metrics/UnitHistory.js";
+import {
+  createUnitHistoryRuntime,
+  registerUnitHistoryRoutes,
+} from "./metrics/UnitHistoryRuntime.js";
 import {
   createFleetEnergyRuntime,
   registerFleetEnergyRoute,
@@ -321,6 +326,26 @@ const fleetEnergyRuntime = createFleetEnergyRuntime({
   orderedSnapshots,
   monitors,
 });
+
+// ─── Unit history (so a fresh page can draw the last hours at once) ────
+// GPU: a dense ~2 s series for 8 h, always on. The 48 h / 30 d bucketed tiers
+// only with Settings → metricsHistory on (read every tick, so no restart).
+const metricsHistoryEnabled = () => getSettings().metricsHistory === true;
+const unitHistory = new UnitHistory({
+  file: process.env.GPU_HISTORY_JSON_PATH || path.join(ROOT, "config", "gpu-history.json"),
+  longFile:
+    process.env.GPU_HISTORY_LONG_JSON_PATH || path.join(ROOT, "config", "gpu-history-long.json"),
+  tiersFile: METRICS_HISTORY_JSON_PATH,
+  tiersEnabled: metricsHistoryEnabled,
+});
+
+const unitHistoryRuntime = createUnitHistoryRuntime({
+  store: unitHistory,
+  orderedSnapshots,
+  monitors,
+  isEnabled: metricsHistoryEnabled,
+});
+unitHistoryRuntime.start();
 
 // ─── Event log (alert delivery records) ───────────────────
 // This fork has no Activity page yet; the log exists so every alert send,
@@ -665,6 +690,7 @@ app.delete("/api/sparks/:id", (req, res) => {
     if (!removed) return res.status(404).json({ error: "Spark not found" });
     fleetEnergyTracker.invalidateMembership(registry.sparkIds);
     stopMonitor(req.params.id);
+    unitHistory.remove(req.params.id);
     res.json({ success: true, removed });
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
@@ -1007,6 +1033,14 @@ app.put("/api/settings", (req, res) => {
   } catch (err) {
     res.status(400).json({ error: err.message });
   }
+});
+
+// GET /api/sparks/:id/gpu-history (GPU raw tier, newest last) and /api/sparks/:id/history
+// (bucketed tiers, whitelisted ranges). Registered before the generic :id/metrics route.
+registerUnitHistoryRoutes(app, {
+  store: unitHistory,
+  hasUnit: (id) => Boolean(registry.getSpark(id)),
+  isEnabled: metricsHistoryEnabled,
 });
 
 app.get("/api/sparks/:id/metrics", (req, res) => {
@@ -2297,6 +2331,11 @@ async function shutdown(signal) {
     console.error("[sparkDash] failed to flush LLM daily history:", err.message);
   }
   const energyPersistenceSucceeded = fleetEnergyRuntime.stop();
+  try {
+    unitHistoryRuntime.stop();
+  } catch (err) {
+    console.error("[sparkDash] failed to flush unit history:", err.message);
+  }
   const streamAgentClosedGracefully = await closeLlmStreamAgent();
   if (!streamAgentClosedGracefully) {
     console.warn("[sparkDash] LLM dispatcher close timed out; destroyed open sockets");

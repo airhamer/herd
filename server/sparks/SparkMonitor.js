@@ -30,6 +30,23 @@ import {
 const ONLINE_GRACE_MS = 10000;
 
 /**
+ * Cadence per polled domain, mirroring this fork's start() scheduling. Kept as a map so
+ * pollIntervalMs() and the UnitHistory freshness rule see one source of truth.
+ */
+const DOMAIN_POLL_INTERVAL_MS = {
+  gpu: POLL_INTERVAL_GPU,
+  cpu: POLL_INTERVAL_CPU,
+  ram: POLL_INTERVAL_CPU,
+  network: POLL_INTERVAL_NETWORK,
+  storage: POLL_INTERVAL_STORAGE,
+  memory: POLL_INTERVAL_BANDWIDTH,
+  llm: POLL_INTERVAL_LLM,
+  comfy: POLL_INTERVAL_COMFY,
+  tailscale: POLL_INTERVAL_TAILSCALE,
+  hermes: POLL_INTERVAL_HERMES,
+};
+
+/**
  * SparkMonitor — one per Spark. Owns collectors + rate state + poll loop.
  * Exposes snapshot() for WebSocket pushed payload.
  */
@@ -109,6 +126,8 @@ export class SparkMonitor {
       tailscale: null,
     };
     this._lastUpdate = {};
+    /** Per domain: timestamp of the last poll that returned real data (UnitHistory freshness). */
+    this._lastSuccess = {};
     this._metricCollectionSuccessful = { gpu: false, cpu: false };
     /** Health rules + their sample-streak state; findings go out in snapshot().health. */
     this._healthEval = new HealthEvaluator();
@@ -469,6 +488,52 @@ export class SparkMonitor {
     }
   }
 
+  /** Whether a poll result carries real data for its domain (not a default/zero-filled stub). */
+  _domainSucceeded(domain, result) {
+    switch (domain) {
+      case "gpu":
+      case "cpu":
+        return collectionWasSuccessful(result);
+      case "ram":
+      case "memory":
+        return Number(result?.total) > 0;
+      case "network":
+        return Array.isArray(result?.interfaces) && result.interfaces.length > 0;
+      case "storage":
+        return Array.isArray(result) && result.length > 0;
+      case "llm":
+        return Array.isArray(result); // an engine that is down is still a successful probe
+      default:
+        return false;
+    }
+  }
+
+  /** Epoch ms of the last poll of `domain` that returned real data, or null (never, or not polled). */
+  lastCollectedAt(domain) {
+    const at = this._lastSuccess[domain];
+    return Number.isFinite(at) ? at : null;
+  }
+
+  /**
+   * Whether the latest completed poll of `domain` returned real data. A failed GPU/CPU read is
+   * zero-filled and every other domain keeps its previous value, so "the poll ran" is not enough.
+   */
+  collectionOk(domain) {
+    if (domain === "gpu" || domain === "cpu") return this._metricCollectionSuccessful[domain] === true;
+    const at = this._lastSuccess[domain];
+    return Number.isFinite(at) && at === this._lastUpdate[domain];
+  }
+
+  /**
+   * Current cadence (ms) of a polled domain. Fork note: this fork schedules collectors on the
+   * fixed POLL_INTERVAL_* constants (no Settings → Poll interval plumbing yet), so this reads
+   * those; null for domains this monitor does not schedule.
+   */
+  pollIntervalMs(domain) {
+    const ms = DOMAIN_POLL_INTERVAL_MS[domain];
+    return Number.isFinite(ms) && ms > 0 ? ms : null;
+  }
+
   /** Return a full snapshot of this Spark's metrics. */
   snapshot() {
     const ports = this._llmMonitoringEnabled() ? this._llmPorts() : [];
@@ -725,6 +790,8 @@ export class SparkMonitor {
           break;
       }
       this._lastUpdate[domain] = Date.now();
+      if (this._domainSucceeded(domain, result)) this._lastSuccess[domain] = this._lastUpdate[domain];
+      if (domain === "network" && roce?.sampledAt) this._lastSuccess.roce = roce.sampledAt;
     } catch (err) {
       if (
         this._running &&
@@ -753,6 +820,7 @@ export class SparkMonitor {
       if (!this._running || this._runGeneration !== runGeneration) return;
       this._metrics.storage = result;
       this._lastUpdate[domain] = Date.now();
+      if (this._domainSucceeded(domain, result)) this._lastSuccess[domain] = this._lastUpdate[domain];
     } catch (err) {
       console.error(`[SparkMonitor] ${this.spark.id} ${domain} refresh error:`, err.message);
     } finally {

@@ -39,6 +39,12 @@ const DEFAULTS = Object.freeze({
    * does not want it can turn it off here (see the README's settings table).
    */
   benchShareImage: true,
+  /**
+   * Keep 48 h of 1-minute and 30 days of 15-minute history per unit (GPU, memory
+   * headroom, CPU, RAM, network, LLM tok/s and KV) for the unit page. Off by
+   * default: nothing is recorded and config/metrics-history.json is never written.
+   */
+  metricsHistory: false,
 });
 
 /** @type {typeof DEFAULTS} */
@@ -57,6 +63,7 @@ function _clampSettings(settings) {
   // Ensure autoHideOffline is boolean
   s.autoHideOffline = Boolean(s.autoHideOffline);
   s.hideWorkers = Boolean(s.hideWorkers);
+  s.metricsHistory = Boolean(s.metricsHistory);
   // Ensure benchDebugTraces is boolean
   s.benchDebugTraces = Boolean(s.benchDebugTraces);
   s.showFleetEnergy = Boolean(s.showFleetEnergy);

@@ -237,3 +237,36 @@ test("a storage refresh from an earlier run cannot commit or clear a restarted r
   assert.equal(monitor._inflight.storage, false);
   monitor.stop();
 });
+
+// Fork-adapted from upstream 04c7560: this fork schedules on the fixed
+// POLL_INTERVAL_* constants (no pollIntervalMs option / setPollInterval), so the
+// cadence assertions read the constants.
+test("public freshness accessors: last real collection, latest poll ok, current cadence", async () => {
+  const monitor = new SparkMonitor(spark());
+  assert.equal(monitor.lastCollectedAt("gpu"), null);
+  assert.equal(monitor.collectionOk("gpu"), false);
+  assert.equal(monitor.collectionOk("ram"), false);
+  assert.equal(monitor.pollIntervalMs("gpu"), 2000);
+  assert.equal(monitor.pollIntervalMs("bogus-domain"), null, "not a scheduled domain");
+  monitor._running = true;
+
+  monitor.collector.collectGpu = async () => tagged(validGpu());
+  monitor.collector.collectRam = async () => ({ used: 10, total: 100, percentage: 10 });
+  await monitor._pollDomain("gpu");
+  await monitor._pollDomain("ram");
+  const at = monitor.lastCollectedAt("ram");
+  assert.ok(at > 0 && monitor.lastCollectedAt("gpu") > 0);
+  assert.equal(monitor.collectionOk("gpu"), true);
+  assert.equal(monitor.collectionOk("ram"), true);
+
+  // A failed poll: the previous value stays in the snapshot, but it is no longer "ok".
+  await new Promise((r) => setTimeout(r, 5));
+  monitor.collector.collectGpu = async () => validGpu();
+  monitor.collector.collectRam = async () => ({ used: 0, total: 0, percentage: 0 });
+  await monitor._pollDomain("gpu");
+  await monitor._pollDomain("ram");
+  assert.equal(monitor.collectionOk("gpu"), false);
+  assert.equal(monitor.collectionOk("ram"), false);
+  assert.equal(monitor.lastCollectedAt("ram"), at, "only real data moves it");
+  monitor._running = false;
+});

@@ -25,6 +25,10 @@ const FLEET_ENERGY_JSON_PATH =
 const FLEET_ENERGY_MONTHLY_JSON_PATH =
   process.env.FLEET_ENERGY_MONTHLY_JSON_PATH ||
   path.join(ROOT, "config", "fleet-energy-monthly.json");
+// Opt-in 48 h / 30 d unit history (Settings → metricsHistory); never written while it is off.
+const METRICS_HISTORY_JSON_PATH =
+  process.env.METRICS_HISTORY_JSON_PATH ||
+  path.join(ROOT, "config", "metrics-history.json");
 /** Alert rule switches, channel settings (no URLs — those are in the secrets store) and the firing set; mode 0600. */
 const ALERTS_JSON_PATH =
   process.env.ALERTS_JSON_PATH || path.join(ROOT, "config", "alerts.json");
@@ -118,6 +122,7 @@ export {
   LLM_DAILY_JSON_PATH,
   FLEET_ENERGY_JSON_PATH,
   FLEET_ENERGY_MONTHLY_JSON_PATH,
+  METRICS_HISTORY_JSON_PATH,
   ALERTS_JSON_PATH,
   LLM_PROBE_TIMEOUT_MS,
   COMFY_PROBE_TIMEOUT_MS,
