@@ -3,6 +3,7 @@ import path from "path";
 import { HOST_PATHS, GPU_MEMORY_JSON_PATH, DGX_SPARK, HARDWARE_DEFAULTS, POLL_INTERVAL_NVERR } from "../config.js";
 import { normalizeMac, WOL_INTERFACE } from "../wol.js";
 import { sshExec } from "./ssh.js";
+import { RoceSampler } from "./roce.js";
 
 const NVERR_JOURNAL_CMD =
   'journalctl -k --no-pager -q --grep=NV_ERR_NO_MEMORY 2>/dev/null | grep -c NV_ERR_NO_MEMORY || true';
@@ -255,6 +256,28 @@ export class SystemCollector {
     } catch (err) {
       console.error(`[SystemCollector] Network error for ${this.spark.id}:`, err.message);
       return this._defaultNetwork();
+    }
+  }
+
+  /**
+   * RoCE / RDMA state of this unit (see roce.js), or null when it has no RDMA devices
+   * (or is a Windows / macOS unit). Throttled internally: calling it every poll is fine.
+   */
+  async collectRoce() {
+    if (this.isWindows || this.isMac) return null;
+    this._roceSampler ??= new RoceSampler({
+      run: (script) =>
+        this.spark.isLocal
+          ? this._hasHostProc()
+            ? this._execOnHost(script)
+            : this._exec(script)
+          : sshExec(this.spark, script, { timeoutMs: 8000 }),
+    });
+    try {
+      return await this._roceSampler.sample();
+    } catch (err) {
+      console.error(`[SystemCollector] RoCE error for ${this.spark.id}:`, err.message);
+      return undefined; // could not read: the caller keeps its previous value
     }
   }
 

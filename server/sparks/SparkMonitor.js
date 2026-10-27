@@ -102,6 +102,7 @@ export class SparkMonitor {
       ram: this.collector._defaultRam(),
       storage: [],
       network: this.collector._defaultNetwork(),
+      roce: null,
       unifiedMemory: this.collector._defaultUnifiedMemory(),
       llm: [],
       comfy: null,
@@ -458,6 +459,7 @@ export class SparkMonitor {
           gpu: this._metrics.gpu,
           unifiedMemory: this._metrics.unifiedMemory,
           network: this._metrics.network,
+          roce: this._metrics.roce,
           llm: this._metrics.llm,
         },
         domain
@@ -517,6 +519,7 @@ export class SparkMonitor {
         ram: this._metrics.ram,
         storage: this._metrics.storage,
         network: this._metrics.network,
+        roce: this._metrics.roce ?? null,
         unifiedMemory: this._metrics.unifiedMemory,
         llm: this._metrics.llm,
         comfy: comfyOn ? this._metrics.comfy : null,
@@ -619,6 +622,7 @@ export class SparkMonitor {
     this._inflight[domain] = pollToken;
     try {
       let result;
+      let roce;
       switch (domain) {
         case "gpu":
           result = await this.collector.collectGpu();
@@ -631,6 +635,13 @@ export class SparkMonitor {
           break;
         case "network":
           result = await this.collector.collectNetwork();
+          // RoCE rides the network tick: it throttles itself, never fails the poll and never
+          // holds the network result for more than a moment (a wedged NIC can stall ethtool).
+          // `undefined` = could not read this time: keep the previous value.
+          roce = await Promise.race([
+            this.collector.collectRoce().catch(() => undefined),
+            new Promise((resolve) => setTimeout(() => resolve(undefined), 3000).unref?.()),
+          ]);
           break;
         case "storage":
           result = await this.collector.collectStorage();
@@ -675,6 +686,7 @@ export class SparkMonitor {
           break;
         case "network":
           this._metrics.network = result;
+          if (roce !== undefined) this._metrics.roce = roce;
           this._updateHealth();
           if (result?.wolMac && this._onWolMac) {
             try {
