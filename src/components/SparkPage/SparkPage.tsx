@@ -10,6 +10,7 @@ import { RamPanel } from "./RamPanel";
 import { StoragePanel } from "./StoragePanel";
 import { NetworkPanel } from "./NetworkPanel";
 import { RocePanel } from "./RocePanel";
+import { HistoryPanel } from "./HistoryPanel";
 import { TailscalePanel } from "./TailscalePanel";
 import { LlmPanel } from "./LlmPanel";
 import { ComfyPanel } from "./ComfyPanel";
@@ -397,6 +398,7 @@ export function SparkPage({
           </>
         )}
       </div>
+      <HistoryPanel sparkId={spark.id} kind={spark.kind} temperatureUnit={temperatureUnit} />
     </div>
   );
 }

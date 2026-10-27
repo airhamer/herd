@@ -1196,3 +1196,67 @@ export interface ScheduleUpdateRequest {
   cron?: string;
   mirrorCron?: boolean;
 }
+// ─── Unit history (GET /api/sparks/:id/history) ──────────
+export type MetricsHistoryRange = "1h" | "6h" | "24h" | "7d" | "30d";
+
+/** One series in one bucket. `min` only on memFreeMB (headroom's low point). */
+export interface HistoryStat {
+  avg: number;
+  max: number;
+  min?: number;
+}
+
+/** Unit-level series: %, °C, W, MB, bytes/s. */
+export type HistoryUnitSeries =
+  | "gpuUtil"
+  | "gpuTemp"
+  | "gpuPower"
+  | "memUsedMB"
+  | "memFreeMB"
+  | "cpuUtil"
+  | "cpuTemp"
+  | "ramUsedMB"
+  | "netRx"
+  | "netTx";
+
+/** Per LLM endpoint: tok/s, and the KV pool fill as 0–1. */
+export type HistoryLlmSeries = "genTps" | "prefillTps" | "kvUsage";
+
+/** A bucket; a series the unit did not report in it is absent (a gap). */
+export type HistoryPoint = { t: number } & Partial<Record<HistoryUnitSeries, HistoryStat>>;
+export type HistoryLlmPoint = { t: number } & Partial<Record<HistoryLlmSeries, HistoryStat>>;
+
+export interface MetricsHistoryData {
+  enabled: true;
+  range: MetricsHistoryRange;
+  /** Bucket width of the points; a jump larger than this is a gap. */
+  stepMs: number;
+  /** Window the range covers (epoch ms); the x-axis spans exactly this. */
+  from: number;
+  to: number;
+  points: HistoryPoint[];
+  llm: Array<{ port: number; points: HistoryLlmPoint[] }>;
+}
+
+export type MetricsHistoryResponse = MetricsHistoryData | { enabled: false };
+
+// ─── GPU raw history (GET /api/sparks/:id/gpu-history) ───
+/**
+ * Parallel arrays, newest last. `p` may hold nulls (power unknown). `gpus`
+ * lists the cards of a multi-GPU host, each with arrays parallel to `t`.
+ */
+export interface GpuHistoryDevice {
+  index: number;
+  name: string | null;
+  u: Array<number | null>;
+  c: Array<number | null>;
+  p: Array<number | null>;
+}
+
+export interface GpuHistoryResponse {
+  t: number[];
+  u: number[];
+  c: number[];
+  p: Array<number | null>;
+  gpus: GpuHistoryDevice[];
+}

@@ -11,11 +11,14 @@ import type {
   MonthlyEnergy,
   FleetPlanResponse,
   FleetSnapshot,
+  GpuHistoryResponse,
   FleetUpdatesResponse,
   HermesBatchUpdateResponse,
   HermesUpdatesResponse,
   LlmMetrics,
   LlmDailyResponse,
+  MetricsHistoryRange,
+  MetricsHistoryResponse,
   SavePlanResponse,
   ScheduleUpdateRequest,
   Settings,
@@ -665,4 +668,18 @@ export function fetchUpdatePlan(): Promise<FleetPlanResponse> {
 /** Abandon the plan. Rejects with ApiError status 409 while a wave is in flight. */
 export function abandonUpdatePlan(): Promise<AbandonPlanResponse> {
   return apiFetch("/api/fleet/updates/plan", { method: "DELETE" });
+}
+
+// ─── Unit history (S2.3a routes; names mirrored exactly) ──
+
+/** The 48 h / 30 d bucketed unit history (`{ enabled: false }` while the server setting is off). */
+export function getUnitHistory(sparkId: string, range: MetricsHistoryRange): Promise<MetricsHistoryResponse> {
+  return apiFetch<MetricsHistoryResponse>(`/api/sparks/${encodeURIComponent(sparkId)}/history?range=${range}`);
+}
+
+/** The dense GPU raw series (parallel arrays, newest last); default window server-side. */
+export function getGpuHistory(sparkId: string, windowMs?: number): Promise<GpuHistoryResponse> {
+  return apiFetch<GpuHistoryResponse>(
+    `/api/sparks/${encodeURIComponent(sparkId)}/gpu-history${windowMs != null ? `?windowMs=${windowMs}` : ""}`,
+  );
 }
