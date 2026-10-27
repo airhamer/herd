@@ -55,6 +55,7 @@ import { createMacosSshFleet } from "./fleet/macosSshCollector.js";
 import { createWindowsFleet } from "./fleet/windowsSshCollector.js";
 import { buildTopology } from "./fleet/topology.js";
 import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
+import { renderFleetMetrics } from "./fleet/metrics.js";
 import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
 import { createWaveSequencer } from "./fleet/waveSequencer.js";
 
@@ -661,6 +662,13 @@ app.put("/api/sparks/order", (req, res) => {
 
 app.get("/api/fleet", (_req, res) => {
   res.json(buildFleetSnapshot());
+});
+
+// S2.1: Prometheus text exposition twin of GET /api/fleet. Root path per
+// Prometheus convention (BEFORE the static/SPA fallback); same exposure
+// class as /api/fleet — no auth, no caching. renderFleetMetrics is pure.
+app.get("/metrics", (_req, res) => {
+  res.type("text/plain; version=0.0.4; charset=utf-8").send(renderFleetMetrics(buildFleetSnapshot()));
 });
 
 app.get("/api/fleet/nodes", (_req, res) => {
