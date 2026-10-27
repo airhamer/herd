@@ -38,7 +38,7 @@ import { formatLlmBaseUrl, parseLlmTargetInput } from "../src/shared/llmTarget.j
 import { llmDaily } from "./collectors/LlmDaily.js";
 import { closeLlmStreamAgent } from "./collectors/LlmStreaming.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
-import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH } from "./config.js";
+import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH } from "./config.js";
 import { createAlertsRuntime, registerAlertRoutes } from "./alerts/runtime.js";
 import { EventLog } from "./events/EventLog.js";
 import { FleetEnergyTracker } from "./energy/FleetEnergyTracker.js";
@@ -264,6 +264,7 @@ const registry = new SparkRegistry();
 const fleetEnergyTracker = new FleetEnergyTracker({
   nodeIds: registry.sparkIds,
   filePath: FLEET_ENERGY_JSON_PATH,
+  monthlyFilePath: FLEET_ENERGY_MONTHLY_JSON_PATH,
 });
 
 // ─── Monitor map ─────────────────────────────────────────

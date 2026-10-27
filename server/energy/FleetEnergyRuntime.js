@@ -1,3 +1,5 @@
+import { monthRange } from "./FleetEnergyMonthly.js";
+
 const MAX_POWER_TELEMETRY_AGE_MS = 10_000;
 const ENERGY_SAMPLE_INTERVAL_MS = 2_000;
 
@@ -74,8 +76,26 @@ export function createFleetEnergyHandler(tracker) {
   return (_req, res) => res.json(tracker.snapshot());
 }
 
-/** Register the read-only fleet-energy endpoint. */
+/** Register the read-only fleet-energy endpoints (plus explicit monthly-history maintenance). */
 export function registerFleetEnergyRoute(app, tracker) {
+  // Permanent monthly roll-up. Survives window resets; clearing it is a separate, explicit call.
+  app.get("/api/fleet-energy/monthly", (_req, res) => res.json(tracker.monthlySnapshot()));
+  // Query: month=YYYY-MM (one month) or all=true&confirm=delete-all-history (everything). One is required.
+  app.delete("/api/fleet-energy/monthly", (req, res) => {
+    const { month, all, confirm } = req.query ?? {};
+    if (all === "true" && month == null) {
+      if (confirm !== "delete-all-history") {
+        return res
+          .status(400)
+          .json({ error: "deleting all permanent history needs confirm=delete-all-history" });
+      }
+      return res.json({ removed: tracker.clearMonthly({ all: true }) });
+    }
+    if (typeof month === "string" && monthRange(month) && all == null) {
+      return res.json({ removed: tracker.clearMonthly({ month }) });
+    }
+    return res.status(400).json({ error: "pass month=YYYY-MM, or all=true&confirm=delete-all-history" });
+  });
   return app.get("/api/fleet-energy", createFleetEnergyHandler(tracker));
 }
 
