@@ -158,3 +158,4 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   listing-staleness class as S3.1-a2; sessions_list+history remain the
   authority for liveness. Not lost-dispatch. No gate work this wake.
   Next wake 4m.
+- 2026-10-28 ~09:23 EDT — Wake: S3.2b M1+M2 committed (9789429 + 0db70c7, HEAD, tree clean, 2 commits = spec cap; M2 briefly messaged "x" — worker self-caught and amended locally, honest, no push). Worker running its own gate battery ×3 (test procs live, transcript ~1 min fresh). No completion report yet. No orchestrator gating while worker mid-gates. Next wake 4m for report + verify-and-gate.
