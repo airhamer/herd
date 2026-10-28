@@ -144,8 +144,8 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   narrative claimed a 22:4x dispatch that never existed; the one line above is
   disk truth. Baselines in force: fleet 205 / server 478 / agent 271 /
   vitest 229 / tsc 0 (grow-only).
-- S3.2b — dispatched 2026-10-28 ~08:35 EDT, spec docs/S3.2b-SPEC.md (Lane
-  Budget panel + minimal lanes wiring; one component). Baselines in force:
+- S3.2b — run e902d027-9fa1-40fe-bad4-acf01c61b802 (session 7a9427cd),
+  dispatched 2026-10-28 ~08:40 EDT (tracker-verified accepted), spec
+  docs/S3.2b-SPEC.md (Lane Budget panel + minimal lanes wiring; one
+  component), timeout 7200s, completion target parent. Baselines in force:
   fleet 205 / server 478 / agent 271 / vitest 238 / tsc 0 (grow-only).
-  Run id recorded next wake if this turn's spawn result is lost (never
-  re-dispatch without confirming the prior attempt terminal).
