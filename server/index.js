@@ -19,6 +19,7 @@ import {
 } from "./validate.js";
 import { authorizeUpgrade, configuredToken, createAuthMiddleware, requireRemoteAuth } from "./auth.js";
 import { inspectHealth } from "./health.js";
+import { probeAll } from "./health/guardProbe.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
 import {
@@ -552,6 +553,22 @@ app.use(createAuthMiddleware());
 
 app.get("/api/health", (_req, res) => {
   res.json(inspectHealth(process.env.BIND_HOST || "127.0.0.1"));
+});
+
+// S4.1a guard probe: read-only, settings-tolerant. No .guard config (or
+// entries without a string baseUrl) is the graceful "not present" state —
+// the route then answers {guards:[]}. The panel (S4.1b) owns presentation.
+app.get("/api/guard", async (_req, res) => {
+  try {
+    const configured = getSettings()?.guard?.endpoints;
+    const endpoints = (Array.isArray(configured) ? configured : []).filter(
+      (e) => typeof e?.baseUrl === "string" && e.baseUrl
+    );
+    const guards = await probeAll(endpoints, { fetchImpl: globalThis.fetch });
+    res.json({ guards });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 function clientKey(req) {
