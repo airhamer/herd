@@ -64,10 +64,13 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 
 ## Active worker
 
-- S3.1 — (set at dispatch; launch turn writes runId immediately after spawn)
+- S3.1 — run `5faf7359-974f-47bd-a0b2-be11939e6821` (session 6112af77), dispatched ~20:44 EDT via micro-brief pointing at docs/S3.1-SPEC.md; timeout 5400s; completion target parent.
 
 ## Running log
 
 - 2026-10-27 ~20:20 EDT — Loop launched. HEAD `d6322d7` (S2.3 closed). Approval
   quoted above. Gate baselines recorded (incl. agent 247/0). First row S3.1
   (agent lane schema + lifecycle) spec = docs/S3.1-SPEC.md.
+- 2026-10-27 ~20:45 EDT — Launch turn complete: job `herd-remaining-s-loop`
+  (57e0aaf4) live, S3.1 worker dispatched, HEAD `117e020`. Owner notified loop
+  is live; /compact requested as budget hygiene (session ~80%).
