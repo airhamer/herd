@@ -110,3 +110,16 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   Next wake 4m for report/fresh-commits.
 - 2026-10-27 ~22:47 EDT — **HALT.** Attempt-2 lost dispatch confirmed (4-channel forensic above); no report anywhere (cron pendingInputs empty, dashboard parent idle since 21:50). Full 5-gate battery GREEN on committed work — fleet 205/0, server 478/0, vitest 229/0, tsc 0, agent 271/0. Owner notified with A/B/C decision ask. Loop halted; wakes idle on 45m backoff until owner rules. Wake context budget OK (fresh cron run).
 - 2026-10-28 ~07:55 EDT — **RULING A EXECUTED + RECORD CORRECTED.** Owner "A and continue" 07:22. Forensic correction: a late-22:4x turn summary narrated the close-out as done (claimed commit 057343b + S3.2a dispatch) — NONE of it hit disk: 057343b absent from object store, reflog linear at e745ae2, no docs/S3.2a spec, no subagent dispatch in tracker (recent=720m shows only S3.1-a1 + N4), loop job disabled. Narration-≠-execution, same class as S3.1 attempt 1 — now defended against: this session's own summaries are treated as claims, verified against disk before acting (rule updated below). Real close-out now: gates ×3 re-run THIS morning at e745ae2 (identical: fleet 205 / server 478 / agent 271 / vitest 229 / tsc 0, session fast-reef), plan row S3.1 **done** on real commits 93e551e+dce9943, new baselines fleet 205/agent 271, docs/S3.2a-SPEC.md written (engine kind integration + lane-coexistence pure fn; UI deferred to S3.2b), loop job re-enabled, S3.2a dispatched this turn.
+
+## Dispatch log
+
+- S3.1 — attempt 1 run 5faf7359 (~20:44 EDT 10-27): REJECTED, phantom-tree
+  confabulation. Attempt 2 run d855827f (~21:58): produced real commits
+  93e551e+dce9943, lost dispatch (no report). CLOSED via owner ruling A — no
+  attempt 3.
+- S3.2a — run 2c87e2c5-fd47-4059-a560-affddd5ff32e (session c8d1d423),
+  dispatched 2026-10-28 ~08:0x EDT, real dispatch (tracker-verified), spec
+  docs/S3.2a-SPEC.md, timeout 5400s, completion target parent. NOTE: a prior
+  narrative claimed a 22:4x dispatch that never existed; the one line above is
+  disk truth. Baselines in force: fleet 205 / server 478 / agent 271 /
+  vitest 229 / tsc 0 (grow-only).
