@@ -70,8 +70,29 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 
 ## Active worker
 
-- **S5.1a ACCEPTED 2026-10-28 ~11:1x EDT; S5.1b dispatched this wake** — LAST
-  DISPATCH OF THE RUN. Worker 27bac012 (run 9c1488f8, transcript 0a4587a4)
+- **RUN COMPLETE 2026-10-28 ~11:4x EDT — S5.1b ACCEPTED, S5.1 CLOSED, REGISTER
+  EMPTY.** Loop job `herd-remaining-s-loop` disabled at this wake; plan rows
+  S4.1 + S5.1 corrected to done (S4.1 row had been left stale at accept —
+  closeout hygiene lesson: update the plan row IN the accepting wake).
+  S5.1b worker (session b26e227f / transcript a3756c68, run 4e10cf2b) completed
+  honestly ~11:30:52 EDT (cleanup-delete 15:30:52Z = completion instant;
+  .zst transcript held full report — 6th CONSECUTIVE honest report). Disk
+  cross-check exact: M1 `8ee47fd` (types +26 / client +8 / panel +188 / tests
+  +177 · 15 tests grep-confirmed) + M2 `aa15d48` (NodeDetail +4 mount) — both
+  ancestors of HEAD, 5 files = spec allow-list exactly, tree clean, 2 commits
+  = cap, no amends, 171 commits still unpushed (NEVER-push held all run).
+  Orchestrator battery: run 1 server 508/1 — ROOT-CAUSED FLAKE,
+  `LlmProbe.sglang.test.js:668` hardcodes elapsed=2000ms then divides by the
+  real internal elapsed (got 100/2.0008=49.98 ≠ 50); file last touched
+  `754f40a`, provable ancestor of loop-launch `d6322d7`; zero S5.1b server
+  touches → environmental timing flake, not a regression. Runs 2/3/4 IDENTICAL
+  GREEN at aa15d48: fleet 205 / server 509 / agent 271 / vitest 274 / tsc 0 —
+  matches worker table to the digit. **Final baselines: fleet 205 / server 509
+  / agent 271 / vitest 274 / tsc 0.** Flaky-test advisory for owner: assert on
+  a fixed elapsed (inject clock) or use tolerance band; NOT fixed in-run —
+  out of every S-row allow-list.
+- Prior: **S5.1a ACCEPTED 2026-10-28 ~11:1x EDT; S5.1b dispatched that wake** —
+  last dispatch of the run. Worker 27bac012 (run 9c1488f8, transcript 0a4587a4)
   completed honestly ~11:00 EDT (cleanup-delete at 15:00:13.614Z = completion
   instant; transcript recovered from .zst — full report, 5th CONSECUTIVE honest
   report). Disk cross-check exact: M1 `293468b` (memoryProbe.js +172, tests +198
@@ -171,6 +192,14 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 
 ## Running log
 
+- 2026-10-28 ~11:35 EDT — Wake: **S5.1b VERIFIED-AND-GATED; S5.1 CLOSED; RUN
+  COMPLETE; JOB DISABLED; OWNER NOTIFIED.** Completion shape = accepted
+  pattern (6th honest report). Battery run 1 hit the pre-existing timing flake
+  (root-caused, pre-loop file); runs 2–4 identical green 205/509/271/274/tsc0.
+  Final vitest baseline 274. Plan rows S4.1/S5.1 corrected to done. Register
+  empty → loop terminated. Parked human-reserved items remain parked (live
+  sends, clock-cap setter, prod redeploy, frontier accounting) — they were
+  never in any S-row.
 - 2026-10-28 ~11:1x EDT — Wake: **S5.1a VERIFIED-AND-GATED; S5.1b DISPATCHED
   (final dispatch of the run).** Completion shape = accepted pattern (tracker
   empty + session gone, cleanup-delete 15:00:13Z = completion instant, .zst
