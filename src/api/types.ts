@@ -1266,3 +1266,33 @@ export interface GpuHistoryResponse {
   p: Array<number | null>;
   gpus: GpuHistoryDevice[];
 }
+
+// ─── Guard proxy (GET /api/guard) ─────────────────────────
+
+/** Normalized guard status; anything the probe cannot classify is "unknown". */
+export type GuardStatus = "running" | "degraded" | "stopped" | "unknown";
+
+/** One crash-timeline entry; a null field means the guard reported none. */
+export interface GuardTimelineEntry {
+  at: string | null;
+  kind: string | null;
+  detail: string | null;
+}
+
+/**
+ * One probed guard-proxy. Field names mirror the server JSDoc in
+ * server/health/guardProbe.js exactly (S4.1b).
+ */
+export interface GuardResult {
+  id: string | null;
+  label: string | null;
+  present: boolean;
+  status: GuardStatus;
+  /** Held requests in the guard's queue; null when absent or malformed. */
+  heldRequests: number | null;
+  crashTimeline: GuardTimelineEntry[];
+  /** ISO timestamp of when the probe ran. */
+  checkedAt: string;
+  /** null when present; else "unreachable" | "timeout" | "malformed" | "http-<code>". */
+  reason: string | null;
+}

@@ -12,6 +12,7 @@ import type {
   FleetPlanResponse,
   FleetSnapshot,
   GpuHistoryResponse,
+  GuardResult,
   FleetUpdatesResponse,
   HermesBatchUpdateResponse,
   HermesUpdatesResponse,
@@ -682,4 +683,11 @@ export function getGpuHistory(sparkId: string, windowMs?: number): Promise<GpuHi
   return apiFetch<GpuHistoryResponse>(
     `/api/sparks/${encodeURIComponent(sparkId)}/gpu-history${windowMs != null ? `?windowMs=${windowMs}` : ""}`,
   );
+}
+
+// ─── Guard proxy (S4.1b) ──────────────────────────────────
+
+/** Fleet-level guard-proxy status; `guards: []` means nothing is configured. */
+export function fetchGuard(): Promise<{ guards: GuardResult[] }> {
+  return apiFetch("/api/guard");
 }
