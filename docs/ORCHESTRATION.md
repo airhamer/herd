@@ -20,7 +20,7 @@ S1.1–S2.3 are done (verdicts in plan/git). Everything else out of scope.
 | fleet | `node --test server/fleet/__tests__/*.test.js` | 205 pass / 0 fail (grew from 202 at S3.1) |
 | (note) | vitest summary carries ANSI escapes around the digits: strip first (`sed 's/\x1b\[[0-9;]*m//g'`) before grepping; a blank grep is NOT a pass (orchestrator lesson 2026-10-28 S4.1b gate) | — |
 | (note) | grep node --test output with `grep -aE '(pass|fail) [0-9]+'` — reporter lines start with an info glyph; plain `grep -E '^# pass'` silently matches nothing (orchestrator lesson 2026-10-28) | — |
-| server | `npm run test:server` equivalent: `node --test server/collectors/__tests__/*.test.js server/sparks/__tests__/*.test.js server/health/__tests__/*.test.js server/alerts/__tests__/*.test.js server/events/__tests__/*.test.js server/metrics/__tests__/*.test.js` | 492 / 0 (grew from 478 at S4.1a) |
+| server | `npm run test:server` equivalent: `node --test server/collectors/__tests__/*.test.js server/sparks/__tests__/*.test.js server/health/__tests__/*.test.js server/alerts/__tests__/*.test.js server/events/__tests__/*.test.js server/metrics/__tests__/*.test.js` | 509 / 0 (grew from 492 at S5.1a) |
 | vitest | `npx vitest run` | 259 / 0 (grew from 246 at S4.1b; grow-only; record new totals) |
 | tsc | `npx tsc --noEmit` as package.json scripts.test:typecheck runs it | exit 0 |
 | agent | `node --test agent/main.test.js agent/http.test.js agent/catalog/__tests__/*.test.js agent/actions/__tests__/*.test.js agent/collectors/__tests__/*.test.js` | 271 / 0 (grew from 247 at S3.1) |
@@ -70,8 +70,31 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 
 ## Active worker
 
-- **S4.1b ACCEPTED + S4.1 CLOSED 2026-10-28 ~10:4x EDT; S5.1a dispatched this
-  wake** — FINAL REGISTER ROW. Worker d7d207a9 (run c5706575) completed
+- **S5.1a ACCEPTED 2026-10-28 ~11:1x EDT; S5.1b dispatched this wake** — LAST
+  DISPATCH OF THE RUN. Worker 27bac012 (run 9c1488f8, transcript 0a4587a4)
+  completed honestly ~11:00 EDT (cleanup-delete at 15:00:13.614Z = completion
+  instant; transcript recovered from .zst — full report, 5th CONSECUTIVE honest
+  report). Disk cross-check exact: M1 `293468b` (memoryProbe.js +172, tests +198
+  ·17 tests grep-confirmed) + M2 `d161665` (index.js +18 route) — both ancestors
+  of HEAD, 3 files = spec allow-list exactly, distinct export names
+  (normalizeMemoryStatus/probeMemoryService/probeAllMemoryServices — no probeAll
+  collision), tree clean, 2 commits = cap, no placeholder commits. Orchestrator
+  battery ×3 at HEAD d161665 IDENTICAL: fleet 205/server 509/agent 271/vitest 259
+  (rc 0 ×3)/tsc 0 — worker table agrees to the digit. **New server baseline 509.**
+  Deviations worker-disclosed, all adjudicated OK: M1 parent = loop-state 36d21fa
+  (shared-main artifact, same class as S4.1a/S4.1b, unavoidable); /v1/models
+  array-data strictness + clamp-via-fallthrough (spec ambiguity, common-sense
+  reading); status-vocab edge split (non-string→ok per spec sentence 2, bad
+  string→unknown) — both spec sentences held; 17 tests vs 12-minimum (extra
+  coverage, allowed). Limitations noted: no route-level smoke test (spec defined
+  unit gates); settings default has no memoryHealth key (spec-forced).
+  Active: **S5.1b (MemoryHealthPanel UI, final dispatch)** — spec
+  docs/S5.1b-SPEC.md committed bc61969 (GuardPanel sibling shape; vocab
+  ok/degraded/unknown ≠ guard vocab; allow-list 5 files; M1 panel+tests, M2
+  NodeDetail mount); dispatched run 4e10cf2b (session b26e227f) this wake. After S5.1b accept: REGISTER EMPTY → disable loop job +
+  owner completion summary.
+- Prior: **S4.1b ACCEPTED + S4.1 CLOSED 2026-10-28 ~10:4x EDT; S5.1a dispatched
+  this wake** — FINAL REGISTER ROW. Worker d7d207a9 (run c5706575) completed
   honestly ~10:31 (cleanup-delete at 14:31:36Z = completion instant; transcript
   recovered from .zst — full report present, 4th consecutive honest report).
   Disk cross-check exact: M1 `bf1a614` (4 files +402: types/client/GuardPanel
@@ -148,6 +171,23 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 
 ## Running log
 
+- 2026-10-28 ~11:1x EDT — Wake: **S5.1a VERIFIED-AND-GATED; S5.1b DISPATCHED
+  (final dispatch of the run).** Completion shape = accepted pattern (tracker
+  empty + session gone, cleanup-delete 15:00:13Z = completion instant, .zst
+  transcript held full report — NOT lost-dispatch). Commits 293468b+d161665
+  ancestor-verified; 3 files/deltas exact vs worker table; 17 tests
+  grep-confirmed; export names spec-distinct; tree clean; 2 commits. Battery ×3
+  at d161665 IDENTICAL: fleet 205/server 509/agent 271/vitest 259/tsc 0 —
+  matches honest worker table to the digit (5th consecutive). **Server baseline
+  492→509.** S5.1b recon: mount = NodeDetail.tsx:509 after `<GuardPanel />`;
+  GuardPanel.tsx adopted whole as shape model (poll 30s, Panel, inline-SVG,
+  STATUS_BADGE, header count badge); result shape read from memoryProbe.js
+  JSDoc (id/label/kind/present/status/version/modelCount/checkedAt/reason).
+  Spec docs/S5.1b-SPEC.md committed bc61969 (force-add; ≥10 render tests,
+  vitest ≥269 expectation, server/fleet/agent must NOT change), dispatched run
+  4e10cf2b (session b26e227f) this wake, timeout 7200, cleanup delete.
+  Next wake 4-5m: worker-active check. After accept → register
+  empty → disable job + owner summary.
 - 2026-10-28 ~10:44 EDT — Wake: **S4.1b VERIFIED-AND-GATED; S4.1 CLOSED.**
   Worker completed ~10:31 (tracker empty + session gone — cleanup-delete at
   14:31:36Z matched completion instant, .zst transcript held full report;
@@ -267,12 +307,19 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   docs/S4.1b-SPEC.md commit 75856f9, timeout 7200s, cleanup delete,
   completion target parent. COMPLETED ~10:31 EDT — accepted, S4.1 CLOSED,
   vitest baseline now 259.
-- S5.1a — run 9c1488f8-aa05-481c-840e-fb58a43f430d (session 27bac012),
-  dispatched 2026-10-28 ~10:44 EDT (accepted), spec docs/S5.1a-SPEC.md commit
-  de9adc1, timeout 7200s, cleanup delete, completion target parent. Baselines
-  in force: fleet 205 / server 492 / agent 271 / vitest 259 / tsc 0
-  (grow-only; server expected ≥504 after probe tests; vitest must NOT change
-  — no src/ files in scope; fleet/agent unchanged).
+- S5.1a — run 9c1488f8-aa05-481c-840e-fb58a43f430d (session 27bac012 /
+  transcript 0a4587a4), dispatched 2026-10-28 ~10:44 EDT (accepted), spec
+  docs/S5.1a-SPEC.md commit de9adc1, timeout 7200s, cleanup delete, completion
+  target parent. COMPLETED ~11:00 EDT — accepted; gates ×3 identical
+  (205/509/271/259/0); server baseline 492→509.
+- S5.1b — run 4e10cf2b-6197-455a-8951-48768bf0e227 (session b26e227f),
+  dispatched 2026-10-28 ~11:16 EDT (accepted), spec docs/S5.1b-SPEC.md commit
+  bc61969, timeout 7200s, cleanup delete,
+  completion target parent, model vllm/qwen3.8-27b, context isolated. Baselines
+  in force: fleet 205 / server 509 / agent 271 / vitest 259 / tsc 0 (grow-only;
+  vitest expected ≥269 after ≥10 render tests; server/fleet/agent must NOT
+  change — no server/agent files in scope). FINAL DISPATCH — on accept, close
+  S5.1, register is EMPTY: disable job herd-remaining-s-loop + owner summary.
 - 2026-10-28 ~09:16 EDT — Wake: S3.2b WORKER ACTIVE and legit. Session 7a9427cd
   status=running, transcript live (~2 min stale at check), seq 59, mid-recon:
   verified buildFleetSnapshot spreads lanes (M2 = web-only wiring), reading
