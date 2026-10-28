@@ -19,7 +19,7 @@ S1.1–S2.3 are done (verdicts in plan/git). Everything else out of scope.
 |---|---|---|
 | fleet | `node --test server/fleet/__tests__/*.test.js` | 205 pass / 0 fail (grew from 202 at S3.1) |
 | server | `npm run test:server` equivalent: `node --test server/collectors/__tests__/*.test.js server/sparks/__tests__/*.test.js server/health/__tests__/*.test.js server/alerts/__tests__/*.test.js server/events/__tests__/*.test.js server/metrics/__tests__/*.test.js` | 478 / 0 |
-| vitest | `npx vitest run` | 238 / 0 (grew from 229 at S3.2a; grow-only; record new totals) |
+| vitest | `npx vitest run` | 246 / 0 (grew from 238 at S3.2b; grow-only; record new totals) |
 | tsc | `npx tsc --noEmit` as package.json scripts.test:typecheck runs it | exit 0 |
 | agent | `node --test agent/main.test.js agent/http.test.js agent/catalog/__tests__/*.test.js agent/actions/__tests__/*.test.js agent/collectors/__tests__/*.test.js` | 271 / 0 (grew from 247 at S3.1) |
 
@@ -68,7 +68,24 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 
 ## Active worker
 
-- **S3.2a ACCEPTED 2026-10-28 08:3x EDT; S3.2b dispatched this wake.** Worker
+- **S3.2b ACCEPTED + S3.2 CLOSED 2026-10-28 ~09:4x EDT; S4.1a dispatched this
+  wake.** Worker b3277000 (run 6d22d43f, spec docs/S4.1a-SPEC.md committed
+  08a38d1) = guard-proxy probe: server/health/guardProbe.js pure module +
+  tolerant GET /api/guard; NO vendoring (decision §4.2), NO UI (S4.1b owns
+  GuardPanel). Timeout 7200s, completion target parent.
+  S3.2b verification: worker e902d027/7a9427cd completed honestly (~09:26 EDT,
+  session cleanup-deleted; transcript recovered from .zst — report present,
+  self-gates ×3). Commits `9789429` M1 (LaneBudgetPanel + 8 render tests,
+  277L, unwired) + `0db70c7` M2 (NodeDetail lanes prop + App passthrough,
+  17L) — both ancestors of main, 4 files, zero phantom/frozen touches, tree
+  clean. Orchestrator gate battery ×3 IDENTICAL at HEAD: fleet 205/server 478/
+  agent 271/vitest 246/tsc 0 — worker self-report matches exactly (second
+  consecutive honest report). **New vitest baseline 246.** Deviations
+  worker-disclosed, all adjudicated OK: spec path ellipsis → chose
+  src/components/SparkPage/ (sibling of consumer); M2 web-only (lanes already
+  flow server-side — spec sanctioned that branch); placeholder-commit amend
+  self-disclosed.
+- Prior: **S3.2a ACCEPTED 2026-10-28 08:3x EDT.** Worker
   c8d1d423 (run 2c87e2c5) completed honestly: commits `a29fd29` M1 + `c3bde49`
   M2 verified ancestors of main at HEAD c3bde49, phantom-file count 0, tree
   clean. Orchestrator gate battery ×3 identical: fleet 205/server 478/agent
@@ -149,6 +166,12 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   docs/S3.2b-SPEC.md (Lane Budget panel + minimal lanes wiring; one
   component), timeout 7200s, completion target parent. Baselines in force:
   fleet 205 / server 478 / agent 271 / vitest 238 / tsc 0 (grow-only).
+  COMPLETED ~09:26 EDT — accepted, S3.2 CLOSED, vitest baseline now 246.
+- S4.1a — run 6d22d43f-d6bb-4a48-901c-542cd4686d9e (session b3277000),
+  dispatched 2026-10-28 ~09:4x EDT (accepted), spec docs/S4.1a-SPEC.md
+  (commit 08a38d1), timeout 7200s, cleanup delete, completion target parent.
+  Baselines in force: fleet 205 / server 478 / agent 271 / vitest 246 / tsc 0
+  (grow-only; server bucket expected to grow ≥+10).
 - 2026-10-28 ~09:16 EDT — Wake: S3.2b WORKER ACTIVE and legit. Session 7a9427cd
   status=running, transcript live (~2 min stale at check), seq 59, mid-recon:
   verified buildFleetSnapshot spreads lanes (M2 = web-only wiring), reading
@@ -159,3 +182,4 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   authority for liveness. Not lost-dispatch. No gate work this wake.
   Next wake 4m.
 - 2026-10-28 ~09:23 EDT — Wake: S3.2b M1+M2 committed (9789429 + 0db70c7, HEAD, tree clean, 2 commits = spec cap; M2 briefly messaged "x" — worker self-caught and amended locally, honest, no push). Worker running its own gate battery ×3 (test procs live, transcript ~1 min fresh). No completion report yet. No orchestrator gating while worker mid-gates. Next wake 4m for report + verify-and-gate.
+- 2026-10-28 ~09:4x EDT — **S3.2b VERIFIED-AND-GATED; S3.2 CLOSED.** Worker completed ~09:26 EDT (transcript cleanup-deleted; recovered via .zst — full honest report with self-gates ×3). Disk cross-check exact: 4 files, deltas match, zero phantoms/frozen, tree clean. Orchestrator battery ×3 identical: 205/478/271/246/tsc 0 — agrees with worker to the digit. Vitest baseline 238→246. S4.1 recon: decision §4.2 = monitor/adaptor only, no vendoring; no lane page exists — guard mounts in NodeDetail later (S4.1b). Spec S4.1a = server-side probe (server/health/guardProbe.js — module placed inside server gate glob; tolerant GET /api/guard, settings-read, empty-list = graceful not-present). Dispatched this wake, run 6d22d43f. Next wake 4m: worker-active check.
