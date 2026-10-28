@@ -20,6 +20,7 @@ import {
 import { authorizeUpgrade, configuredToken, createAuthMiddleware, requireRemoteAuth } from "./auth.js";
 import { inspectHealth } from "./health.js";
 import { probeAll } from "./health/guardProbe.js";
+import { probeAllMemoryServices } from "./health/memoryProbe.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
 import {
@@ -566,6 +567,23 @@ app.get("/api/guard", async (_req, res) => {
     );
     const guards = await probeAll(endpoints, { fetchImpl: globalThis.fetch });
     res.json({ guards });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// S5.1a memory-health probe: read-only, settings-tolerant. No .memoryHealth
+// config (or entries without a string baseUrl) is the graceful "not present"
+// state — the route then answers {services:[]}. The panel (S5.1b) owns
+// presentation.
+app.get("/api/memory-health", async (_req, res) => {
+  try {
+    const configured = getSettings()?.memoryHealth?.endpoints;
+    const endpoints = (Array.isArray(configured) ? configured : []).filter(
+      (e) => typeof e?.baseUrl === "string" && e.baseUrl
+    );
+    const services = await probeAllMemoryServices(endpoints, { fetchImpl: globalThis.fetch });
+    res.json({ services });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
