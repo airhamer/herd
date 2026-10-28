@@ -25,6 +25,7 @@ import {
 } from "../ui/icons";
 import { formatAgo } from "../OverviewPage/FleetCard";
 import { LaneBudgetPanel } from "./LaneBudgetPanel";
+import { GuardPanel } from "./GuardPanel";
 
 export interface NodeDetailProps {
   nodeId: string;
@@ -503,6 +504,9 @@ export function NodeDetail(props: NodeDetailProps) {
           poolTotalMB={gpu?.vramTotalMB ?? null}
           recipeFootprints={recipeFootprints}
         />
+
+        {/* Guard proxy status (S4.1b) — fleet-level; the panel self-fetches */}
+        <GuardPanel />
 
         {/* Topology */}
         <Panel title="Topology" icon={<NetworkIcon />} bodyClassName="space-y-2">
