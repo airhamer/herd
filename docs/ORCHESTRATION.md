@@ -88,3 +88,17 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   spot-check green (fleet 202/0, agent 247/0, shape asserts OK @ a83ccb0).
   S3.1 attempt 2 dispatched, run `d855827f`. Next wake: worker-active check,
   verify-and-gate on completion report.
+- 2026-10-27 ~22:40 EDT — Wake: attempt 2 WORKING and legit. Two milestone
+  commits verified on main: `93e551e` M1 (recipes validator + JSON schema +
+  shared/types.ts seam) and `dce9943` M2+M3 (lanes.js, http.js /lanes,
+  dispatch lane-audit, connection.js passthrough, src/api/types.ts) — 16 files,
+  ~1021 insertions, ALL real fork-shape files, zero phantom-file touches
+  (attempt-1 failure mode explicitly checked: fleet.ts/nodeAgent.js count 0).
+  No completion report in parent yet (last parent turn 21:56); no test
+  processes running at wake instant — worker between commands or finishing
+  gates. NOTE: attempt-2 subagent session absent from sessions_list despite
+  fresh commits — listing staleness suspected, NOT dispatch-lost (it is
+  producing artifacts). Breaker stays armed: if a wake finds NO new commits
+  AND no report AND session still unlisted → treat as lost dispatch per
+  breaker. No re-dispatch, no adjudication this wake. Budget OK (parent ~61%).
+  Next wake 4m for report/fresh-commits.
