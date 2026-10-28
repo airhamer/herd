@@ -18,9 +18,10 @@ S1.1–S2.3 are done (verdicts in plan/git). Everything else out of scope.
 | Gate | Command | Baseline |
 |---|---|---|
 | fleet | `node --test server/fleet/__tests__/*.test.js` | 205 pass / 0 fail (grew from 202 at S3.1) |
+| (note) | vitest summary carries ANSI escapes around the digits: strip first (`sed 's/\x1b\[[0-9;]*m//g'`) before grepping; a blank grep is NOT a pass (orchestrator lesson 2026-10-28 S4.1b gate) | — |
 | (note) | grep node --test output with `grep -aE '(pass|fail) [0-9]+'` — reporter lines start with an info glyph; plain `grep -E '^# pass'` silently matches nothing (orchestrator lesson 2026-10-28) | — |
 | server | `npm run test:server` equivalent: `node --test server/collectors/__tests__/*.test.js server/sparks/__tests__/*.test.js server/health/__tests__/*.test.js server/alerts/__tests__/*.test.js server/events/__tests__/*.test.js server/metrics/__tests__/*.test.js` | 492 / 0 (grew from 478 at S4.1a) |
-| vitest | `npx vitest run` | 246 / 0 (grew from 238 at S3.2b; grow-only; record new totals) |
+| vitest | `npx vitest run` | 259 / 0 (grew from 246 at S4.1b; grow-only; record new totals) |
 | tsc | `npx tsc --noEmit` as package.json scripts.test:typecheck runs it | exit 0 |
 | agent | `node --test agent/main.test.js agent/http.test.js agent/catalog/__tests__/*.test.js agent/actions/__tests__/*.test.js agent/collectors/__tests__/*.test.js` | 271 / 0 (grew from 247 at S3.1) |
 
@@ -69,7 +70,31 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 
 ## Active worker
 
-- **S4.1a ACCEPTED 2026-10-28 ~10:1x EDT; S4.1b dispatched this wake.**
+- **S4.1b ACCEPTED + S4.1 CLOSED 2026-10-28 ~10:4x EDT; S5.1a dispatched this
+  wake** — FINAL REGISTER ROW. Worker d7d207a9 (run c5706575) completed
+  honestly ~10:31 (cleanup-delete at 14:31:36Z = completion instant; transcript
+  recovered from .zst — full report present, 4th consecutive honest report).
+  Disk cross-check exact: M1 `bf1a614` (4 files +402: types/client/GuardPanel
+  204L/tests 160L·13 tests) + M2 `a00bc90` (NodeDetail +4 mount) — both
+  ancestors of main, 5 files = spec allow-list exactly, 13 tests grep-confirmed,
+  tree clean, 2 commits = cap. Orchestrator battery ×3 at HEAD: fleet
+  205/server 492/agent 271 IDENTICAL ×3; tsc 0 ×3; vitest 259 passed ×3
+  identical (+4th run) — worker table agrees to the digit. **New vitest
+  baseline 259.** Deviations worker-disclosed, all adjudicated OK: M1 parent =
+  fresh loop-state commit b419ed5 (shared-main artifact, as anticipated);
+  placeholder-x amend self-disclosed (third sighting, honest idiom); gate-table
+  parsed from saved raw logs after its own tr-flag bug blanked live output
+  (self-caught, no re-measure — honest extraction); idiom extras inside spec
+  latitude (stale-line, timeline data-attr, header badge). Limitations noted:
+  no route-level smoke test; 30s cadence constant-asserted only; stale-line
+  untested; per-NodeDetail self-poll (spec-sanctioned no-props decision).
+  Active: **S5.1a (memory-health probe)** — spec docs/S5.1a-SPEC.md committed
+  de9adc1 (via -f; docs/ is gitignored but specs force-added per repo
+  convention), dispatched this wake. Naming forced to memory-health/
+  MemoryService idioms: fleet snapshot's existing `memory` field = node RAM —
+  collision deliberately avoided. Register after S5.1a: S5.1b (panel UI, last
+  dispatch of the run).
+- Prior: **S4.1a ACCEPTED 2026-10-28 ~10:1x EDT; S4.1b dispatched this wake.**
   Worker b3277000 (session e497847a, run 6d22d43f) completed honestly ~09:58
   EDT (cleanup-delete at 13:58:12Z; transcript recovered from .zst — full
   report present). Disk cross-check exact: M1 `6ac8a6c` (guardProbe.js +163,
@@ -123,6 +148,26 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 
 ## Running log
 
+- 2026-10-28 ~10:44 EDT — Wake: **S4.1b VERIFIED-AND-GATED; S4.1 CLOSED.**
+  Worker completed ~10:31 (tracker empty + session gone — cleanup-delete at
+  14:31:36Z matched completion instant, .zst transcript held full report;
+  same accepted pattern as S3.2b/S4.1a, NOT lost-dispatch). Commits bf1a614
+  +a00bc90 ancestor-verified, files = spec allow-list, 13 tests confirmed, 2
+  commits, tree clean. Battery ×3 at HEAD cfa308d (docs-only atop a00bc90):
+  fleet 205/server 492/agent 271 ×3 IDENTICAL; tsc 0 ×3; vitest first-pass
+  grep went blank — ANSI-escape class (same as worker's tr bug; note added to
+  Gate table), re-ran: 259 passed ×3 identical + exit 0 ×3 (plus 3 earlier
+  rc=0 rounds). Worker's self-table matches exactly — 4th consecutive honest
+  report. **Vitest baseline 246→259.** S5.1 recon: plan row excludes frontier
+  accounting (parked §4.5); collision check — fleet snapshot `memory` = node
+  RAM, so new names use memory-health idioms; guardProbe.js adopted as shape
+  model (guardProbe exports `probeAll` — S5.1a spec forces distinct export
+  names). Spec S5.1a = server/health/memoryProbe.js (kinds qdrant/embedder,
+  DI fetch, lenient) + tolerant GET /api/memory-health; UI = S5.1b. Spec
+  committed de9adc1, dispatched run 9c1488f8 (session 27bac012) this wake,
+  timeout 7200, cleanup delete. LAST REGISTER ROW: after S5.1a accept →
+  S5.1b dispatch → register empty → disable loop + owner summary. Next wake
+  4-5m: worker-active check.
 - 2026-10-28 ~10:30 EDT — Wake: S4.1b WORKER ACTIVE and legit. Session
   d7d207a9 status=running, transcript live (<1 min stale, seq 52) — worker
   extracted gate digits from its 9 saved logs after its own `tr` quoting bug
@@ -220,9 +265,14 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 - S4.1b — run c5706575-d307-42ce-b672-52fb2e82321e (session d7d207a9),
   dispatched 2026-10-28 ~10:1x EDT (accepted, tracker-visible), spec
   docs/S4.1b-SPEC.md commit 75856f9, timeout 7200s, cleanup delete,
-  completion target parent. Baselines in force: fleet 205 / server 492 /
-  agent 271 / vitest 246 / tsc 0 (grow-only; vitest expected ≥254 after
-  panel tests; server must NOT change — no server files in scope).
+  completion target parent. COMPLETED ~10:31 EDT — accepted, S4.1 CLOSED,
+  vitest baseline now 259.
+- S5.1a — run 9c1488f8-aa05-481c-840e-fb58a43f430d (session 27bac012),
+  dispatched 2026-10-28 ~10:44 EDT (accepted), spec docs/S5.1a-SPEC.md commit
+  de9adc1, timeout 7200s, cleanup delete, completion target parent. Baselines
+  in force: fleet 205 / server 492 / agent 271 / vitest 259 / tsc 0
+  (grow-only; server expected ≥504 after probe tests; vitest must NOT change
+  — no src/ files in scope; fleet/agent unchanged).
 - 2026-10-28 ~09:16 EDT — Wake: S3.2b WORKER ACTIVE and legit. Session 7a9427cd
   status=running, transcript live (~2 min stale at check), seq 59, mid-recon:
   verified buildFleetSnapshot spreads lanes (M2 = web-only wiring), reading
