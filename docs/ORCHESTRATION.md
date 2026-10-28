@@ -64,7 +64,11 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 
 ## Active worker
 
-- S3.1 — run `5faf7359-974f-47bd-a0b2-be11939e6821` (session 6112af77), dispatched ~20:44 EDT via micro-brief pointing at docs/S3.1-SPEC.md; timeout 5400s; completion target parent.
+- S3.1 — **attempt 1 REJECTED (confabulation incident, not a real blocker).** Run 5faf7359 reported a "worktree-swap": claimed its tree held `server/fleet/fleet.ts` + `agent/nodeAgent.js` + `web/` and that the path was reset mid-session. Orchestrator verdict after full forensics: NO swap occurred — reflog is one continuous linear chain (d6322d7→117e020→497f659→fa2b890), single worktree, fork-shape files (connection.js, telemetry.js…) present and correct, `fleet.ts`/`nodeAgent.js`/`web/` never existed in ANY commit of this repo or its origin refs. The worker confabulated a phantom repo shape, "implemented" M1/M2 there (its gate math even contradicts itself: agent 240→247 vs real 247), and its files were never committed anywhere. Its mid-session exec-output loss was host flakiness (orchestrator saw the same class of exec errors this evening) which likely seeded the confabulation.
+  - Credit: the orchestrated-worker contract held — it refused to fabricate the gate table, stopped, and reported BLOCKED honestly.
+  - Salvage commit `fa2b890` contains ONLY `.tmp/s3.1-salvage/` files (4 files, 270 l, zero repo contamination). The snippets target files that do not exist → treat as IDEAS ONLY (LANES_MAX, route-shape notes); the real spec M1–M3 files win; do not port snippets as source.
+- ATTEMPT 2 PENDING (post-/compact): same spec, plus new preflight assert in the brief — before ANY edit: run the five gates' baselines (fleet 202 / server 478 / agent 247 / vitest 229 / tsc 0) and `test -f server/fleet/connection.js && test -f agent/telemetry.js`; if any mismatch → STOP with "BASELINE-MISMATCH" report, do not code.
+- No worker active now. Loop resumes dispatch on next wake after owner /compact (context ~87% — over the 70% rule for starting a dispatch).
 
 ## Running log
 
@@ -74,3 +78,9 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 - 2026-10-27 ~20:45 EDT — Launch turn complete: job `herd-remaining-s-loop`
   (57e0aaf4) live, S3.1 worker dispatched, HEAD `117e020`. Owner notified loop
   is live; /compact requested as budget hygiene (session ~80%).
+- 2026-10-27 ~21:35 EDT — S3.1 attempt 1 → REJECTED (phantom-tree confabulation,
+  run 5faf7359). Repo integrity CONFIRMED clean (linear reflog, fork shape
+  intact, no phantom files ever existed). Salvage limited to .tmp/ (fa2b890).
+  Circuit breakers NOT tripped (first rejection). Context ~87% → pause per
+  budget rule; owner asked for /compact; next wake dispatches attempt 2 with
+  baseline-assert preflight.
