@@ -1296,3 +1296,29 @@ export interface GuardResult {
   /** null when present; else "unreachable" | "timeout" | "malformed" | "http-<code>". */
   reason: string | null;
 }
+
+// ─── Memory health (GET /api/memory-health) ───────────────────────
+
+/** Normalized memory-service status; anything outside ok/degraded is "unknown". */
+export type MemoryStatus = "ok" | "degraded" | "unknown";
+
+/**
+ * One probed AI-memory service (Qdrant store or embedder). Field names mirror
+ * the server JSDoc in server/health/memoryProbe.js exactly (S5.1b).
+ */
+export interface MemoryServiceResult {
+  id: string | null;
+  label: string | null;
+  /** "qdrant" | "embedder" | any other string the config carries. */
+  kind: string | null;
+  /** true only for usable JSON with reason null. */
+  present: boolean;
+  status: MemoryStatus;
+  version: string | null;
+  /** /v1/models data length, else null. */
+  modelCount: number | null;
+  /** ISO timestamp of when the probe ran. */
+  checkedAt: string;
+  /** null when present; else "unreachable" | "timeout" | "malformed" | "http-<code>". */
+  reason: string | null;
+}

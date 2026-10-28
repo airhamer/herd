@@ -13,6 +13,7 @@ import type {
   FleetSnapshot,
   GpuHistoryResponse,
   GuardResult,
+  MemoryServiceResult,
   FleetUpdatesResponse,
   HermesBatchUpdateResponse,
   HermesUpdatesResponse,
@@ -690,4 +691,11 @@ export function getGpuHistory(sparkId: string, windowMs?: number): Promise<GpuHi
 /** Fleet-level guard-proxy status; `guards: []` means nothing is configured. */
 export function fetchGuard(): Promise<{ guards: GuardResult[] }> {
   return apiFetch("/api/guard");
+}
+
+// ─── Memory health (S5.1b) ─────────────────────────────────
+
+/** Fleet-level AI-memory service health; `services: []` means nothing is configured. */
+export function fetchMemoryHealth(): Promise<{ services: MemoryServiceResult[] }> {
+  return apiFetch("/api/memory-health");
 }
