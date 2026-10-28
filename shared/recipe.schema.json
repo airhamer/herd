@@ -19,7 +19,7 @@
       "properties": {
         "name": { "type": "string", "description": "Unique service name, e.g. 'llm-tp1', 'comfyui', 'tts'.", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
         "kind": { "type": "string", "enum": ["llm", "image", "video", "tts", "stt", "voice", "other"] },
-        "engine": { "type": "string", "description": "Engine: sglang / vllm / comfyui / qwen3-tts / qwen3-asr / matrix-voip / other." },
+        "engine": { "type": "string", "description": "Engine: sglang / vllm / lightllm / comfyui / qwen3-tts / qwen3-asr / matrix-voip / other." },
         "port": { "type": "number", "minimum": 1, "maximum": 65535, "description": "Port this service listens on." },
         "image": { "type": "string", "description": "Docker image reference, e.g. 'lmsysorg/sglang:v1.2.0'." },
         "imageDigest": { "type": ["string", "null"], "description": "Optional pinned digest (sha256:...).", "pattern": "^sha256:[a-f0-9]{64}$" },

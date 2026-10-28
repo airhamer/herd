@@ -41,7 +41,7 @@ function isNullishString(v) {
  * @typedef {object} Recipe
  * @property {string} name unique service name
  * @property {"llm"|"image"|"video"|"tts"|"stt"|"voice"|"other"} kind
- * @property {string} engine sglang / vllm / comfyui / qwen3-tts / qwen3-asr / matrix-voip / other
+ * @property {string} engine sglang / vllm / lightllm / comfyui / qwen3-tts / qwen3-asr / matrix-voip / other
  * @property {number} port 1–65535
  * @property {string} image docker image reference
  * @property {string|null} [imageDigest] pinned sha256 digest

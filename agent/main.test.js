@@ -53,10 +53,10 @@ test("resolveRecipesPath: explicit RECIPES_PATH always wins", () => {
 test("loadCatalog: loads example, memoizes, reset clears", () => {
   resetCatalog();
   const a = loadCatalog({});
-  assert.equal(a.recipes.length, 3);
+  assert.equal(a.recipes.length, 4);
   assert.deepEqual(
     a.recipes.map((r) => r.name),
-    ["llm-tp1", "llm-tp2", "comfyui"]
+    ["llm-tp1", "llm-tp2", "llm-lightllm", "comfyui"]
   );
   assert.equal(loadCatalog({}), a); // memoized
   resetCatalog();
@@ -257,10 +257,10 @@ test("createNodeAgent: catalog seam works end-to-end", () => {
   const c = agent.catalog;
   assert.equal(c.getRecipe("llm-tp1").engine, "sglang");
   assert.equal(c.getRecipe("nope"), null);
-  assert.equal(c.listRecipes().length, 3);
+  assert.equal(c.listRecipes().length, 4);
 
   const services = c.listServices({ 8080: { running: true, modelId: "qwen3.8-27b" } });
-  assert.equal(services.length, 3);
+  assert.equal(services.length, 4);
   const llm = services.find((s) => s.name === "llm-tp1");
   assert.equal(llm.status, "running");
   assert.equal(llm.active, true);
