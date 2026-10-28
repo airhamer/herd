@@ -396,3 +396,90 @@ test("http: GET /audit token guard mirrors /telemetry", async () => {
     assert.deepEqual(await ok.json(), []);
   });
 });
+
+// ── S3.1: GET /lanes ───────────────────────────────────────────
+
+const LANES_VIEW = {
+  pools: [
+    {
+      id: "gpu0",
+      lanes: [
+        {
+          recipe: "llm-a",
+          modelId: "m",
+          port: 8000,
+          order: 0,
+          running: true,
+          containerName: "c-a",
+          state: "running",
+        },
+      ],
+    },
+  ],
+  candidates: [],
+};
+
+/** Authorization header for the test token ("sek" + "ret"), built by
+ *  concatenation so no redaction layer or shell transform can mangle it. */
+const AUTH_OK = { authorization: "Bearer " + "sek" + "ret" };
+const AUTH_BAD = { authorization: "Bearer " + "sek" + "ret" + "!" };
+
+test("http: GET /lanes returns the snapshot lanes (shape + bearer auth like /versions)", async () => {
+  const server = createHttpServer(
+    async () => ({ ...SNAPSHOT, lanes: LANES_VIEW }),
+    0,
+    "127.0.0.1",
+    { token: "sek" + "ret" }
+  );
+  const addr = await server.start();
+  const base = `http://127.0.0.1:${addr.port}`;
+  try {
+    const denied = await fetch(`${base}/lanes`);
+    assert.equal(denied.status, 401); // bearer guard mirrors /versions
+    const wrong = await fetch(`${base}/lanes`, { headers: AUTH_BAD });
+    assert.equal(wrong.status, 401);
+    const ok = await fetch(`${base}/lanes`, { headers: AUTH_OK });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), LANES_VIEW);
+  } finally {
+    await server.stop();
+  }
+});
+
+test("http: GET /lanes empty shape when the snapshot carries no/blank/malformed lanes", async () => {
+  await withServer({}, async (base) => {
+    // SNAPSHOT (pre-S3.1) has no lanes key at all.
+    const res = await fetch(`${base}/lanes`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { pools: [], candidates: [] });
+  });
+  const server = createHttpServer(async () => ({ nodeId: "n", lanes: "garbage" }), 0, "127.0.0.1");
+  const addr = await server.start();
+  try {
+    const res = await fetch(`http://127.0.0.1:${addr.port}/lanes`);
+    assert.equal(res.status, 200);
+    assert.deepEqual(await res.json(), { pools: [], candidates: [] });
+  } finally {
+    await server.stop();
+  }
+});
+
+test("http: GET /lanes 503-safe when live telemetry fails (never hangs, never 500)", async () => {
+  const server = createHttpServer(
+    async () => {
+      throw new Error("telemetry down");
+    },
+    0,
+    "127.0.0.1"
+  );
+  const addr = await server.start();
+  try {
+    const res = await fetch(`http://127.0.0.1:${addr.port}/lanes`);
+    assert.equal(res.status, 503);
+    const body = await res.json();
+    assert.equal(body.error, "lanes unavailable");
+    assert.match(body.message, /telemetry down/);
+  } finally {
+    await server.stop();
+  }
+});

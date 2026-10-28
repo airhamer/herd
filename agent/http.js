@@ -7,6 +7,9 @@
  *   GET  /telemetry   → full NodeAgentSnapshot (calls snapshotFn live)
  *   GET  /versions    → snapshot.versions
  *   GET  /containers  → snapshot.containers
+ *   GET  /lanes       → snapshot.lanes (S3.1 lane view: pools + advisory
+ *                       candidates; empty shape when the snapshot carries
+ *                       none, 503 JSON when live telemetry fails)
  *   POST /actions     → execute one ActionRequest via the action layer
  *                       (agent/actions/dispatch.js, recipe-catalog mapped);
  *                       body = ActionRequest (shared/types.ts),
@@ -34,6 +37,24 @@ import { readAudit, DEFAULT_READ_LIMIT } from "./actions/audit.js";
 const ACTION_BODY_MAX_BYTES = 64 * 1024;
 /** Hard cap on /audit ?limit= (bounds the response payload). */
 const AUDIT_LIMIT_MAX = 1000;
+
+/**
+ * Normalize a snapshot's lanes field for GET /lanes: pass through a
+ * well-formed NodeLanes, else the empty shape (absence is never an error).
+ * @param {unknown} lanes
+ * @returns {{pools: object[], candidates: object[]}}
+ */
+function normalizeLanesBody(lanes) {
+  if (
+    lanes &&
+    typeof lanes === "object" &&
+    !Array.isArray(lanes) &&
+    Array.isArray(lanes.pools)
+  ) {
+    return { pools: lanes.pools, candidates: Array.isArray(lanes.candidates) ? lanes.candidates : [] };
+  }
+  return { pools: [], candidates: [] };
+}
 
 function json(res, status, payload) {
   const body = JSON.stringify(payload);
@@ -203,6 +224,21 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
               message: String(err?.message || err),
             });
           });
+        return;
+      }
+
+      if (pathname === "/lanes") {
+        // S3.1, 503-safe shape: snapshot failure answers with JSON; the
+        // empty shape answers when the snapshot carries no lanes.
+        Promise.resolve()
+          .then(() => snapshotFn())
+          .then((snap) => json(res, 200, normalizeLanesBody(snap?.lanes)))
+          .catch((err) =>
+            json(res, 503, {
+              error: "lanes unavailable",
+              message: String(err?.message || err),
+            })
+          );
         return;
       }
 

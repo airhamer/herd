@@ -129,9 +129,12 @@ export async function dispatchAction(request, deps = {}) {
 
   /** @type {object} */
   let response;
+  // S3.1: dispatchSwitch reports a same-pool lane take-turn here (audit-only;
+  // the switch mechanics stay port-based). Stays null for every other case.
+  const laneOut = {};
 
   if (type === "switch") {
-    response = await dispatchSwitch(request, recipe, d, { actionId, timeoutMs });
+    response = await dispatchSwitch(request, recipe, d, { actionId, timeoutMs, laneOut });
   } else {
     // start / stop / restart: resolve the handle through the recipe catalog.
     if (typeof recipe.containerName === "string" && recipe.containerName !== "") {
@@ -158,7 +161,8 @@ export async function dispatchAction(request, deps = {}) {
   }
 
   // Audit: record what actually happened (status/message come from the action
-  // result). appendAudit is side-effect-only and never throws.
+  // result). appendAudit is side-effect-only and never throws. The lane key
+  // is present only for same-pool lane take-turn switches (S3.1).
   await appendAudit(
     {
       action: type,
@@ -175,6 +179,7 @@ export async function dispatchAction(request, deps = {}) {
       status: response.status,
       message: response.message,
       durationMs: response.durationMs ?? null,
+      ...(laneOut.lane ? { lane: laneOut.lane } : {}),
     },
     { path: typeof d.auditPath === "string" && d.auditPath !== "" ? d.auditPath : undefined }
   );
@@ -240,9 +245,11 @@ async function dispatchDgxAction(request, d) {
  * @param {object} request
  * @param {object} recipe target recipe (already looked up)
  * @param {object} d deps
- * @param {{actionId: string, timeoutMs?: number}} ids
+ * @param {{actionId: string, timeoutMs?: number, laneOut?: object}} ids
+ *   laneOut: mutable reporting bag — set to { lane: { pool, order } } when
+ *   old and new recipe share one lane pool (same-pool take-turn, S3.1).
  */
-async function dispatchSwitch(request, recipe, d, { actionId, timeoutMs }) {
+async function dispatchSwitch(request, recipe, d, { actionId, timeoutMs, laneOut = {} }) {
   const serviceName = request.serviceName.trim();
   const newPort = validPort(request.port) ? Number(request.port) : recipe.port;
   if (!validPort(newPort)) {
@@ -297,6 +304,19 @@ async function dispatchSwitch(request, recipe, d, { actionId, timeoutMs }) {
     oldRecipe && typeof oldRecipe.systemdUnit === "string" && oldRecipe.systemdUnit !== ""
       ? oldRecipe.systemdUnit
       : null;
+
+  // S3.1: same-pool lane take-turn (audit annotation only — the switch
+  // mechanics stay exactly as above). Reported when both recipes carry a
+  // valid lane on the SAME pool; the incoming lane's order wins.
+  const laneSlot = (r) =>
+    r && r.kind === "llm" && r.lane && typeof r.lane === "object" && !Array.isArray(r.lane)
+      ? r.lane
+      : null;
+  const newLane = laneSlot(recipe);
+  const oldLane = laneSlot(oldRecipe);
+  if (newLane && oldLane && newLane.pool === oldLane.pool) {
+    laneOut.lane = { pool: newLane.pool, order: newLane.order };
+  }
 
   // Canary-probe fetch: test seam (d.fetch) wins; otherwise per-port bearer
   // wrapping when tokens are configured; otherwise the global fetch.

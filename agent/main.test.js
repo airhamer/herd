@@ -275,3 +275,54 @@ test("createNodeAgent: catalog seam works end-to-end", () => {
 
   resetCatalog();
 });
+
+// ── S3.1: enrichSnapshot lane join ────────────────────────────
+
+test("enrichSnapshot: lanes derived from recipes + live containers/versions", () => {
+  const snap = {
+    nodeId: "gx10-test",
+    containers: [{ name: "lane-b", image: "sglang:1", status: "running", ports: ["8001:8001"] }],
+    versions: [{ kind: "llm", port: 8000, state: "running", modelId: "served-a" }],
+    llm: [],
+    comfy: null,
+    mem: null,
+    polledAt: 1,
+  };
+  const recipes = [
+    {
+      name: "llm-a",
+      kind: "llm",
+      engine: "vllm",
+      port: 8000,
+      image: "vllm:1",
+      footprintMB: 1,
+      modelId: "model-a",
+      containerName: "lane-a",
+      lane: { pool: "gpu0", order: 0 },
+    },
+    {
+      name: "llm-b",
+      kind: "llm",
+      engine: "sglang",
+      port: 8001,
+      image: "sglang:1",
+      footprintMB: 1,
+      containerName: "lane-b",
+      lane: { pool: "gpu0", order: 1 },
+    },
+  ];
+  const out = enrichSnapshot(snap, { nodeId: "gx10-test", recipes });
+  assert.equal(out.lanes.pools.length, 1);
+  assert.equal(out.lanes.pools[0].id, "gpu0");
+  assert.deepEqual(out.lanes.pools[0].lanes.map((l) => l.recipe), ["llm-a", "llm-b"]);
+  assert.equal(out.lanes.pools[0].lanes[0].running, true); // via live version
+  assert.equal(out.lanes.pools[0].lanes[0].modelId, "served-a"); // live wins
+  assert.equal(out.lanes.pools[0].lanes[1].running, true); // via container name
+  // Other enrichment sections keep working alongside lanes.
+  assert.equal(out.requests, null);
+});
+
+test("enrichSnapshot: no recipes / pre-S3.1 snapshot → empty lanes shape, never a throw", () => {
+  const out = enrichSnapshot({ nodeId: "n", containers: [], versions: [], llm: [], mem: null, polledAt: 1 }, {});
+  assert.deepEqual(out.lanes, { pools: [], candidates: [] });
+});

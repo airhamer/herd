@@ -153,7 +153,15 @@ export function createFleetConnection(nodes, opts = {}) {
         `[FleetConnection] ${url} reported nodeId ${body.nodeId}, expected ${node.id}`
       );
     }
-    return { ok: true, snapshot: /** @type {NodeAgentSnapshot} */ (body) };
+    // S3.1 best-effort lanes read: like every additive snapshot field, a
+    // missing lanes key is left untouched (old agents simply omit it, the
+    // consumer treats lanes ?? null as "no lanes"); a PRESENT but malformed
+    // value is normalized to null so downstream never sees broken shapes.
+    let snapshot = body;
+    if ("lanes" in body) {
+      snapshot = { ...body, lanes: normalizeLanes(body.lanes) };
+    }
+    return { ok: true, snapshot: /** @type {NodeAgentSnapshot} */ (snapshot) };
   }
 
   /** One poll cycle across all nodes (never rejects). @returns {Promise<void>} */
@@ -292,6 +300,22 @@ export function createFleetConnection(nodes, opts = {}) {
     isOnline,
     onSnapshot,
     onStatus,
+  };
+}
+
+/**
+ * Best-effort lanes validation for the snapshot passthrough (S3.1).
+ * Well-formed NodeLanes (object with pools[] + candidates[]) passes through;
+ * anything else present in the body becomes null ("lanes present but bad").
+ * @param {unknown} value
+ * @returns {object | null}
+ */
+function normalizeLanes(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (!Array.isArray(value.pools)) return null;
+  return {
+    pools: value.pools,
+    candidates: Array.isArray(value.candidates) ? value.candidates : [],
   };
 }
 

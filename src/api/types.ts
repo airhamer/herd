@@ -1123,6 +1123,12 @@ export type {
   TopologyInfo,
   VersionInfo,
   ContainerInfo,
+  // S3.1 lane seam types (types only — no component reads them yet; S3.2 owns the UI).
+  RecipeLane,
+  LaneEntry,
+  LanePool,
+  LaneCandidate,
+  NodeLanes,
 } from "../../shared/types";
 
 // ─── Fleet updates (docs/SPEC-UPDATES.md §6/§9) ────

@@ -142,6 +142,7 @@ export function assembleSnapshot({
     memory: null, // Batch 1B: agent/catalog/memory.js
     requests: null, // Batch 1B: agent/catalog/services.js
     topology: null, // registry-owned (manual designation, E11)
+    lanes: null, // S3.1: catalog join in main.js enrichSnapshot (deriveLanes)
     polledAt: nowMs,
     // Batch 1A extras (additive; schema permits additional properties):
     llm,

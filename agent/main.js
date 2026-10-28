@@ -51,6 +51,7 @@ import {
 } from "./catalog/recipes.js";
 import { computeMemoryBudget } from "./catalog/memory.js";
 import { listServices } from "./catalog/services.js";
+import { deriveLanes } from "./catalog/lanes.js";
 import { createHttpServer } from "./http.js";
 import { collectTelemetry, AGENT_VERSION } from "./telemetry.js";
 import { parseLlmAuthTokens } from "./collectors/llm.js";
@@ -286,6 +287,10 @@ export function buildLiveState(recipes, live = {}) {
  *    ComfyUI probe, built from the probe's running/waiting counters and the
  *    vLLM finished counter (vllm:request_success_total). No live engines →
  *    null.
+ *  - lanes: deriveLanes({ listRecipes: recipes, containers: snap.containers,
+ *    versions: snap.versions }) — the S3.1 lane view (pools + advisory
+ *    candidates). Catalog join like services/memory: telemetry.js itself
+ *    stays catalog-agnostic and ships lanes: null.
  *
  * Every section degrades to []/null on bad input — enrichment never breaks
  * the snapshot the collectors already produced.
@@ -365,6 +370,19 @@ export function enrichSnapshot(snapshot, opts = {}) {
     });
   }
   snap.requests = stats.length > 0 ? { nodeId, stats, polledAt: snap.polledAt } : null;
+
+  // S3.1: lane view from the recipe catalog + live containers/versions.
+  // deriveLanes is total (never throws); the guard keeps enrichment
+  // fail-safe like the sections above — a throw surfaces as lanes: null.
+  try {
+    snap.lanes = deriveLanes({
+      listRecipes: recipes,
+      containers: snap.containers,
+      versions: snap.versions,
+    });
+  } catch {
+    snap.lanes = null;
+  }
 
   return snap;
 }

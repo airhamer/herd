@@ -531,3 +531,56 @@ test("S1.3: protocol:\"ssh\" records are excluded from the HTTP poll (SSH lane o
   assert.equal(countFor(calls, urlSsh), 0, "ssh record never dialed over HTTP");
   await conn.stop();
 });
+
+// ─── S3.1: best-effort lanes passthrough ─────────────────────────────
+// The agent ships snapshot.lanes inside /telemetry (agent/catalog/lanes.js
+// via main.js enrichSnapshot). The poller never dials a second endpoint:
+// present-and-well-formed passes through (candidates defaulted),
+// present-but-malformed becomes null, absent is left absent (old agents —
+// consumers read lanes ?? null).
+
+const LANES_BODY = {
+  pools: [
+    {
+      id: "gpu0",
+      lanes: [
+        { recipe: "llm-a", modelId: "m", port: 8000, order: 0, running: true, containerName: "c-a", state: "running" },
+      ],
+    },
+  ],
+  candidates: [{ containerName: "vllm-stray", image: "vllm:1", ports: ["9000:9000"], reason: "lane-like container name" }],
+};
+
+async function pollOnce(bodyFactory) {
+  const nodes = [node("a")];
+  const url = `http://${nodes[0].endpoint}/telemetry`;
+  const { fn } = fakeFetch({ [url]: okRes(bodyFactory()) });
+  const conn = createFleetConnection(nodes, { fetch: fn });
+  await conn.start();
+  await conn.stop();
+  return conn.getSnapshot("a");
+}
+
+test("lanes passthrough: well-formed lanes → cached parsed (candidates defaulted when missing)", async () => {
+  const snap = await pollOnce(() => ({ ...snapshot("a"), lanes: LANES_BODY }));
+  assert.deepEqual(snap.lanes, LANES_BODY);
+  const { pools, ...rest } = snap.lanes;
+  assert.deepEqual(Object.keys(rest), ["candidates"]);
+  const noCand = await pollOnce(() => ({ ...snapshot("a"), lanes: { pools: [{ id: "gpu0", lanes: [] }] } }));
+  assert.deepEqual(noCand.lanes, { pools: [{ id: "gpu0", lanes: [] }], candidates: [] });
+});
+
+test("lanes passthrough: malformed lanes present → null, poll still succeeds (node online)", async () => {
+  for (const bad of ["nope", 42, [1, 2], { pools: "nope" }, null]) {
+    const snap = await pollOnce(() => ({ ...snapshot("a"), lanes: bad }));
+    assert.equal(snap.lanes, null, `lanes=${JSON.stringify(bad)} → null`);
+    assert.equal(snap.nodeId, "a", "rest of the snapshot intact");
+  }
+});
+
+test("lanes passthrough: absent → key left absent (nullish for consumers), snapshot byte-stable", async () => {
+  const payload = snapshot("a");
+  const snap = await pollOnce(() => payload);
+  assert.equal(snap.lanes ?? null, null);
+  assert.deepEqual(snap, payload, "no lanes key injected for laneless agents");
+});

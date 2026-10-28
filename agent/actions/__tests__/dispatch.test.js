@@ -409,3 +409,76 @@ test("makeAuthFetch: bearer only for tokened ports, passthrough otherwise", asyn
 test("dispatch: ACTION_TYPES exposes exactly the seam union", () => {
   assert.deepEqual(ACTION_TYPES, ["start", "stop", "restart", "switch"]);
 });
+
+// ── S3.1: lane take-turn audit annotation ───────────────────────
+
+/** llm-tp1 (8080, running per SNAPSHOT) and llm-tp2 (8000) share pool gpu0;
+ *  llm-tp3 is the cross-pool counterpart. */
+const LANE_RECIPES = [
+  { ...RECIPES[0], lane: { pool: "gpu0", order: 0 } },
+  { ...RECIPES[1], lane: { pool: "gpu0", order: 1 } },
+  { ...RECIPES[1], name: "llm-tp3", port: 7000, containerName: "qwen38-vllm-x", lane: { pool: "gpu1", order: 0 } },
+];
+const LANE_CATALOG = {
+  getRecipe: (name) => LANE_RECIPES.find((r) => r.name === name) ?? null,
+  listRecipes: () => LANE_RECIPES,
+};
+
+test("dispatch: same-pool lane switch annotates the audit entry with lane {pool, order}", async () => {
+  const auditPath = await tmpAuditPath();
+  try {
+    const exec = fakeExec();
+    const canary = fakeCanaryFetch();
+    await dispatchAction(
+      { type: "switch", serviceName: "llm-tp2" },
+      deps({ auditPath, exec: exec.fn, fetch: canary.fn, ...LANE_CATALOG })
+    );
+    const entries = await readAudit(10, { path: auditPath });
+    assert.equal(entries.length, 1);
+    assert.equal(entries[0].action, "switch");
+    // Incoming lane: pool + ORDER OF THE NEW RECIPE (the take-turn marker).
+    assert.deepEqual(entries[0].lane, { pool: "gpu0", order: 1 });
+    // Switch mechanics unchanged: port-based stop-old/start-new still ran.
+    assert.ok(exec.calls.length > 0, "docker/systemd exec still drives the switch");
+  } finally {
+    await fs.rm(path.dirname(auditPath), { recursive: true, force: true });
+  }
+});
+
+test("dispatch: cross-pool + non-lane switches leave the audit entry unchanged (no lane key)", async () => {
+  for (const [serviceName, catalog] of [
+    ["llm-tp3", LANE_CATALOG], // both recipes have lanes, but on different pools
+    ["llm-tp2", CATALOG], // neither recipe has a lane
+  ]) {
+    const auditPath = await tmpAuditPath();
+    try {
+      const exec = fakeExec();
+      const canary = fakeCanaryFetch();
+      await dispatchAction(
+        { type: "switch", serviceName },
+        deps({ auditPath, exec: exec.fn, fetch: canary.fn, ...catalog })
+      );
+      const entries = await readAudit(10, { path: auditPath });
+      assert.equal(entries.length, 1);
+      assert.ok(!("lane" in entries[0]), `${serviceName}: no lane key on the entry`);
+    } finally {
+      await fs.rm(path.dirname(auditPath), { recursive: true, force: true });
+    }
+  }
+});
+
+test("dispatch: non-switch actions never carry a lane key even between lane recipes", async () => {
+  const auditPath = await tmpAuditPath();
+  try {
+    const docker = fakeDockerExecFile();
+    await dispatchAction(
+      { type: "start", serviceName: "llm-tp2" },
+      deps({ auditPath, execFile: docker.fn, ...LANE_CATALOG })
+    );
+    const entries = await readAudit(10, { path: auditPath });
+    assert.equal(entries.length, 1);
+    assert.ok(!("lane" in entries[0]));
+  } finally {
+    await fs.rm(path.dirname(auditPath), { recursive: true, force: true });
+  }
+});
