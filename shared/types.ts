@@ -386,7 +386,74 @@ export interface TailscaleMetrics {
   error: string | null;
 }
 
-// ─── Node agent snapshot (full telemetry) ──────────────────────────────────
+// ─── Lanes (S3.1) ─────────────────────────────────────────────────────────
+
+/**
+ * Lane slot attribute on an "llm" recipe (shared/recipe.schema.json → Recipe.lane).
+ * Lanes are LLM serving slots that take turns sharing one GPU pool; guards
+ * and lanes are recipe attributes of an enrolled unit, never systems of
+ * their own (EVAL-system-enrollment.md §3/§4.3).
+ */
+export interface RecipeLane {
+  /** Lane pool id: ^[a-z0-9][a-z0-9-]{0,31}$ */
+  pool: string;
+  /** Turn order within the pool (integer >= 0). */
+  order: number;
+}
+
+/**
+ * One lane entry, derived by the agent (agent/catalog/lanes.js deriveLanes):
+ * a lane recipe joined with its live container/version state.
+ */
+export interface LaneEntry {
+  /** Recipe name (the lane's identity). */
+  recipe: string;
+  /** Served model id (live version wins over the recipe value). */
+  modelId: string | null;
+  /** Port the lane serves on (recipe.port). */
+  port: number | null;
+  /** Turn order within the pool (from the recipe lane). */
+  order: number;
+  /** True when a live version/container matches the recipe's port/containerName. */
+  running: boolean;
+  /** Recipe containerName, when known. */
+  containerName: string | null;
+  /** "running" | "stopped" (derived from the live match). */
+  state: string;
+}
+
+/** One lane pool (one shared GPU pool), lanes sorted by order. */
+export interface LanePool {
+  /** Pool id (recipe lane.pool). */
+  id: string;
+  /** Lanes in this pool, sorted by order. */
+  lanes: LaneEntry[];
+}
+
+/**
+ * Advisory candidate: a container that looks lane-like but matches no lane
+ * recipe. NEVER actionable — a candidate is not a service.
+ */
+export interface LaneCandidate {
+  /** Docker container name. */
+  containerName: string;
+  /** Image reference. */
+  image: string;
+  /** Exposed/bound ports ("host:container" or "port" strings, as collected). */
+  ports: string[];
+  /** Why it looks lane-like (name pattern / lane-recipe port). */
+  reason: string;
+}
+
+/** Derived lane view (GET /lanes, NodeAgentSnapshot.lanes). */
+export interface NodeLanes {
+  /** Pools sorted by id. */
+  pools: LanePool[];
+  /** Advisory candidates (never actionable). */
+  candidates: LaneCandidate[];
+}
+
+// ─── Node agent snapshot (full telemetry) ──────────────────────────────────────────────────────────
 
 /**
  * Full telemetry snapshot for one node, produced by the node agent's
@@ -437,6 +504,12 @@ export interface NodeAgentSnapshot {
   topology: TopologyInfo | null;
   /** Tailscale node info (hostname, IP, config). null when not available. */
   tailscale: TailscaleMetrics | null;
+  /**
+   * Derived lane view (S3.1, agent/catalog/lanes.js via snapshot enrichment).
+   * Optional: agents older than S3.1 omit the key entirely; enrichment
+   * failure surfaces as null. Consumers treat both as "no lanes".
+   */
+  lanes?: NodeLanes | null;
   /** Last time this snapshot was polled (ms epoch). */
   polledAt: number;
 }
@@ -517,6 +590,12 @@ export interface AuditEntry {
   message: string;
   /** Duration in ms. null when still running. */
   durationMs: number | null;
+  /**
+   * Lane take-turn context (S3.1): present on switch audit entries when the
+   * old and new recipes share one lane pool — the pool they take turns on and
+   * the incoming lane's order. Absent (or null) for every other action.
+   */
+  lane?: RecipeLane | null;
 }
 
 // ─── Fleet snapshot (dashboard server aggregation) ─────────────────────────

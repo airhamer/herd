@@ -36,7 +36,16 @@
         "env": { "type": "object", "description": "Env vars for the service. Keys are var names, values are strings.", "additionalProperties": { "type": "string" } },
         "args": { "type": "array", "items": { "type": "string" }, "description": "Extra CLI args for the engine." },
         "dependsOn": { "type": "array", "items": { "type": "string" }, "description": "Names of other recipes this one depends on (must be running first)." },
-        "description": { "type": ["string", "null"], "description": "Human-readable description." }
+        "description": { "type": ["string", "null"], "description": "Human-readable description." },
+        "lane": {
+          "type": ["object", "null"],
+          "description": "S3.1: optional lane slot — LLM serving slots that take turns sharing one GPU pool. Only kind \"llm\" recipes may carry a lane; the validator IGNORES a lane on any other kind with a warning (never an error, old files stay valid).",
+          "required": ["pool", "order"],
+          "properties": {
+            "pool": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,31}$", "description": "Lane pool id — the GPU pool these lanes share." },
+            "order": { "type": "number", "minimum": 0, "description": "Turn order within the pool (integer >= 0)." }
+          }
+        }
       }
     }
   }

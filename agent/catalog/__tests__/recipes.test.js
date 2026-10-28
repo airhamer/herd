@@ -175,3 +175,99 @@ test("getRecipe/listRecipes: explicit file arg, null-safe", () => {
   assert.deepEqual(listRecipes(null), []);
   assert.deepEqual(listRecipes({}), []);
 });
+
+// ─── S3.1: optional lane slot ─────────────────────────────────────
+
+const LLM_RECIPE = VALID_FILE.recipes[0]; // kind "llm"
+const IMAGE_RECIPE = VALID_FILE.recipes[1]; // kind "image"
+
+test("validateRecipe: valid lane on llm recipe → {valid:true, errors:[]}", () => {
+  assert.deepEqual(validateRecipe({ ...LLM_RECIPE, lane: { pool: "gpu0", order: 0 } }), {
+    valid: true,
+    errors: [],
+  });
+  // lane: null is the explicit "not in a lane" form — valid, no warnings.
+  assert.deepEqual(validateRecipe({ ...LLM_RECIPE, lane: null }), { valid: true, errors: [] });
+  // pool pattern edges: single char ok, 32 chars ok, order may be > 0.
+  assert.equal(validateRecipe({ ...LLM_RECIPE, lane: { pool: "a", order: 7 } }).valid, true);
+  assert.equal(
+    validateRecipe({ ...LLM_RECIPE, lane: { pool: "a" + "b".repeat(31), order: 0 } }).valid,
+    true
+  );
+});
+
+test("validateRecipe: lane on non-llm recipe is IGNORED with a warning, not an error", () => {
+  const r = validateRecipe({ ...IMAGE_RECIPE, lane: { pool: "gpu0", order: 1 } });
+  assert.equal(r.valid, true);
+  assert.deepEqual(r.errors, []);
+  assert.ok(Array.isArray(r.warnings));
+  assert.ok(r.warnings.some((w) => w.includes(".lane ignored") && w.includes("llm")));
+  // Even a structurally-bogus lane on a non-llm recipe stays warn-only.
+  assert.equal(validateRecipe({ ...IMAGE_RECIPE, lane: 42 }).valid, true);
+  // Files WITHOUT lane carry no warnings key at all (additive-only contract).
+  assert.ok(!("warnings" in validateRecipe(LLM_RECIPE)));
+});
+
+test("validateRecipe: malformed lane on llm recipe → errors", () => {
+  const badPool = validateRecipe({ ...LLM_RECIPE, lane: { pool: "Bad Pool!", order: 0 } });
+  assert.equal(badPool.valid, false);
+  assert.ok(badPool.errors.some((e) => e.includes(".lane.pool")));
+
+  const badOrder = validateRecipe({ ...LLM_RECIPE, lane: { pool: "gpu0", order: -1 } });
+  assert.equal(badOrder.valid, false);
+  assert.ok(badOrder.errors.some((e) => e.includes(".lane.order")));
+  assert.equal(validateRecipe({ ...LLM_RECIPE, lane: { pool: "gpu0", order: 1.5 } }).valid, false);
+
+  const missing = validateRecipe({ ...LLM_RECIPE, lane: { pool: "gpu0" } });
+  assert.equal(missing.valid, false);
+  assert.ok(missing.errors.some((e) => e.includes("lane missing required field 'order'")));
+
+  assert.equal(validateRecipe({ ...LLM_RECIPE, lane: "gpu0" }).valid, false);
+  assert.equal(validateRecipe({ ...LLM_RECIPE, lane: {} }).valid, false);
+});
+
+test("validateRecipeFile: aggregates lane warnings beside errors", () => {
+  const file = {
+    version: 1,
+    nodeId: "n",
+    recipes: [
+      { ...LLM_RECIPE, lane: { pool: "gpu0", order: 0 } },
+      { ...IMAGE_RECIPE, lane: { pool: "gpu0", order: 1 } },
+    ],
+  };
+  const r = validateRecipeFile(file);
+  assert.equal(r.valid, true);
+  assert.equal(r.warnings.length, 1); // only the image recipe warns
+  assert.ok(r.warnings[0].includes("recipes[1].lane ignored"));
+  // no lane misuse → no warnings key (byte-compat with pre-S3.1 consumers)
+  assert.ok(!("warnings" in validateRecipeFile(VALID_FILE)));
+});
+
+test("loadRecipes: lane warnings surface on the result, file stays valid", () => {
+  const p = writeTempFile(
+    "lane-warn.json",
+    JSON.stringify({
+      version: 1,
+      nodeId: "n",
+      recipes: [{ ...IMAGE_RECIPE, lane: { pool: "gpu0", order: 0 } }],
+    })
+  );
+  const file = loadRecipes(p);
+  assert.equal(file.recipes.length, 1);
+  assert.ok(Array.isArray(file.warnings));
+  assert.ok(file.warnings.some((w) => w.includes("lane ignored")));
+  // Old (laneless) files: result unchanged, no warnings key.
+  const old = loadRecipes(writeTempFile("old.json", JSON.stringify(VALID_FILE)));
+  assert.ok(!("warnings" in old));
+  // Malformed lane on an llm recipe stays a hard schema violation.
+  assert.throws(
+    () =>
+      loadRecipes(
+        writeTempFile(
+          "lane-bad.json",
+          JSON.stringify({ version: 1, nodeId: "n", recipes: [{ ...LLM_RECIPE, lane: { pool: "A!", order: 0 } }] })
+        )
+      ),
+    /schema violation/
+  );
+});

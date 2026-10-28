@@ -25,6 +25,8 @@ export const RECIPE_KINDS = ["llm", "image", "video", "tts", "stt", "voice", "ot
 const NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 /** Schema: Recipe.imageDigest — ^sha256:[a-f0-9]{64}$ */
 const DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
+/** Schema: RecipeLane.pool — ^[a-z0-9][a-z0-9-]{0,31}$ (S3.1) */
+const LANE_POOL_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 function isFiniteNumber(v) {
   return typeof v === "number" && Number.isFinite(v);
@@ -57,6 +59,8 @@ function isNullishString(v) {
  * @property {string[]} [args]
  * @property {string[]} [dependsOn]
  * @property {string|null} [description]
+ * @property {{pool: string, order: number}|null} [lane] S3.1 lane slot — only
+ *   kind "llm" recipes may carry one (shared/recipe.schema.json → Recipe.lane)
  */
 
 /**
@@ -65,6 +69,8 @@ function isNullishString(v) {
  * @property {number} version schema version (currently 1)
  * @property {string} nodeId node id this file applies to
  * @property {Recipe[]} recipes
+ * @property {string[]} [warnings] non-empty only: ignored-field warnings from
+ *   the load (S3.1 lane; additive — absent for files without lane misuse)
  */
 
 /**
@@ -186,7 +192,42 @@ export function validateRecipe(recipe, label = "recipe") {
     }
   }
 
-  return { valid: errors.length === 0, errors };
+  // S3.1: optional lane slot (LLM serving slots that take turns on one GPU
+  // pool). Only kind "llm" recipes may carry a lane: on any other kind the
+  // field is IGNORED with a warning (old files stay valid — warn, never
+  // error). On an "llm" recipe a malformed lane is a schema violation.
+  // `warnings` is present in the result only when non-empty (additive-only
+  // contract: existing {valid, errors} consumers are untouched).
+  const warnings = [];
+  if (Object.prototype.hasOwnProperty.call(recipe, "lane")) {
+    const lane = recipe.lane;
+    if (recipe.kind !== "llm") {
+      warnings.push(`${label}.lane ignored (only kind "llm" recipes may carry a lane)`);
+    } else if (lane !== null) {
+      if (typeof lane !== "object" || Array.isArray(lane)) {
+        errors.push(`${label}.lane must be an object or null (got ${JSON.stringify(lane)})`);
+      } else {
+        if (!Object.prototype.hasOwnProperty.call(lane, "pool")) {
+          errors.push(`${label}.lane missing required field 'pool'`);
+        } else if (typeof lane.pool !== "string" || !LANE_POOL_RE.test(lane.pool)) {
+          errors.push(
+            `${label}.lane.pool must match ${LANE_POOL_RE} (got ${JSON.stringify(lane.pool)})`
+          );
+        }
+        if (!Object.prototype.hasOwnProperty.call(lane, "order")) {
+          errors.push(`${label}.lane missing required field 'order'`);
+        } else if (!Number.isInteger(lane.order) || lane.order < 0) {
+          errors.push(
+            `${label}.lane.order must be an integer >= 0 (got ${JSON.stringify(lane.order)})`
+          );
+        }
+      }
+    }
+  }
+
+  const result = { valid: errors.length === 0, errors };
+  if (warnings.length > 0) result.warnings = warnings;
+  return result;
 }
 
 /**
@@ -206,12 +247,16 @@ export function validateRecipeFile(file) {
   if (typeof file.nodeId !== "string" || file.nodeId.length === 0) {
     errors.push(`nodeId must be a non-empty string (got ${JSON.stringify(file.nodeId)})`);
   }
+  /** @type {string[]} */
+  const warnings = [];
   if (!Array.isArray(file.recipes)) {
     errors.push("recipes must be an array");
   } else {
     const seen = new Set();
     file.recipes.forEach((r, i) => {
-      errors.push(...validateRecipe(r, `recipes[${i}]`).errors);
+      const rResult = validateRecipe(r, `recipes[${i}]`);
+      errors.push(...rResult.errors);
+      if (Array.isArray(rResult.warnings)) warnings.push(...rResult.warnings);
       if (typeof r?.name === "string" && r.name.length > 0) {
         if (seen.has(r.name)) {
           errors.push(`recipes[${i}] duplicate recipe name '${r.name}'`);
@@ -220,7 +265,9 @@ export function validateRecipeFile(file) {
       }
     });
   }
-  return { valid: errors.length === 0, errors };
+  const result = { valid: errors.length === 0, errors };
+  if (warnings.length > 0) result.warnings = warnings;
+  return result;
 }
 
 // ── module state: last loaded file ─────────────────────────────────────────
@@ -249,9 +296,14 @@ export function loadRecipes(path) {
   } catch (err) {
     throw new Error(`loadRecipes: invalid JSON in ${path}: ${err.message}`);
   }
-  const { valid, errors } = validateRecipeFile(data);
+  const { valid, errors, warnings } = validateRecipeFile(data);
   if (!valid) {
     throw new Error(`loadRecipes: schema violation in ${path}: ${errors.join("; ")}`);
+  }
+  // S3.1: ignored-field warnings surface on the loadRecipes RESULT (the file
+  // stays valid — old files without lanes carry no warnings key at all).
+  if (Array.isArray(warnings) && warnings.length > 0) {
+    data.warnings = warnings;
   }
   _file = data;
   return data;
