@@ -123,6 +123,19 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 
 ## Running log
 
+- 2026-10-28 ~10:30 EDT — Wake: S4.1b WORKER ACTIVE and legit. Session
+  d7d207a9 status=running, transcript live (<1 min stale, seq 52) — worker
+  extracted gate digits from its 9 saved logs after its own `tr` quoting bug
+  ate the first-pass numbers (self-caught, read from disk, no re-run — same
+  honest-extraction class as our grep -a note). M1 `bf1a614` + M2 `a00bc90`
+  (HEAD, tree clean; M2 amended from placeholder "x" — S3.2b idiom, honest,
+  no push; 2 commits = spec cap). Worker's own battery ×3 at a00bc90:
+  fleet 205 / server 492 / agent 271 / vitest 259 / tsc 0 — server UNCHANGED
+  (correct: no server files in scope), vitest +13 ≥ spec expectation 254.
+  No completion report in parent yet (pendingInputs empty). Tracker empty —
+  same listing-staleness class; sessions_list+history are authority. No
+  orchestrator gating while worker mid-gates. Next wake 4m for report +
+  verify-and-gate.
 - 2026-10-28 ~10:1x EDT — Wake: **S4.1a VERIFIED-AND-GATED (clean completion).**
   Session gone from all listings + no test procs — initially lost-dispatch
   shape, but cleanup-delete at 13:58:12Z matched the completion instant and
@@ -136,7 +149,7 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   the fix). S4.1b spec written (recon: Panel primitive, useUnitHistory poll
   idiom, apiFetch wrapper, NodeDetail mount @~501) + committed 75856f9;
   dispatched run c5706575 this wake. Register after S4.1: S5.1 only.
-  Next wake 4m: worker-active check.
+  Next wake 4m: worker-active check. (Superseded @10:30 — see top of log.)
 - 2026-10-27 ~20:20 EDT — Loop launched. HEAD `d6322d7` (S2.3 closed). Approval
   quoted above. Gate baselines recorded (incl. agent 247/0). First row S3.1
   (agent lane schema + lifecycle) spec = docs/S3.1-SPEC.md.
