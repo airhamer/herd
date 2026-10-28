@@ -26,6 +26,7 @@ import {
 import { formatAgo } from "../OverviewPage/FleetCard";
 import { LaneBudgetPanel } from "./LaneBudgetPanel";
 import { GuardPanel } from "./GuardPanel";
+import { MemoryHealthPanel } from "./MemoryHealthPanel";
 
 export interface NodeDetailProps {
   nodeId: string;
@@ -507,6 +508,9 @@ export function NodeDetail(props: NodeDetailProps) {
 
         {/* Guard proxy status (S4.1b) — fleet-level; the panel self-fetches */}
         <GuardPanel />
+
+        {/* Memory health (S5.1b) — fleet-level; the panel self-fetches */}
+        <MemoryHealthPanel />
 
         {/* Topology */}
         <Panel title="Topology" icon={<NetworkIcon />} bodyClassName="space-y-2">
