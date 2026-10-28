@@ -149,3 +149,12 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   docs/S3.2b-SPEC.md (Lane Budget panel + minimal lanes wiring; one
   component), timeout 7200s, completion target parent. Baselines in force:
   fleet 205 / server 478 / agent 271 / vitest 238 / tsc 0 (grow-only).
+- 2026-10-28 ~09:16 EDT — Wake: S3.2b WORKER ACTIVE and legit. Session 7a9427cd
+  status=running, transcript live (~2 min stale at check), seq 59, mid-recon:
+  verified buildFleetSnapshot spreads lanes (M2 = web-only wiring), reading
+  ServiceInstance/RecipeLane for footprint-map. No S3.2b commits yet (HEAD
+  72ddfdf, tree clean) — recon phase, ~35 min into 7200s budget. NOTE:
+  subagents tracker showed empty while session verifiably running — same
+  listing-staleness class as S3.1-a2; sessions_list+history remain the
+  authority for liveness. Not lost-dispatch. No gate work this wake.
+  Next wake 4m.
