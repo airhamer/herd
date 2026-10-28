@@ -6,6 +6,7 @@ import type {
   MemMetrics,
   MemoryBudget,
   NetMetrics,
+  NodeLanes,
   NodeRole,
   RequestStats,
   ServiceInstance,
@@ -23,6 +24,7 @@ import {
   NetworkIcon,
 } from "../ui/icons";
 import { formatAgo } from "../OverviewPage/FleetCard";
+import { LaneBudgetPanel } from "./LaneBudgetPanel";
 
 export interface NodeDetailProps {
   nodeId: string;
@@ -43,6 +45,8 @@ export interface NodeDetailProps {
   requests: RequestStats | null;
   topology: TopologyInfo | null;
   memory: MemoryBudget | null;
+  /** S3.1 lane seam (S3.2b panel); nullish/missing → panel's not-present state. */
+  lanes?: NodeLanes | null;
   polledAt: number;
 }
 
@@ -116,6 +120,7 @@ export function NodeDetail(props: NodeDetailProps) {
     requests,
     topology,
     memory,
+    lanes,
     polledAt,
   } = props;
 
@@ -132,6 +137,10 @@ export function NodeDetail(props: NodeDetailProps) {
   const memPct = mem?.percentage ?? (memTotal > 0 ? Math.round((memUsed / memTotal) * 100) : 0);
 
   const reqs = requests?.stats ?? [];
+
+  // Lane footprints come from the service list (service name = recipe name).
+  const recipeFootprints: Record<string, number> = {};
+  for (const s of services) recipeFootprints[s.name] = s.footprintMB;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-page-gap)" }}>
@@ -487,6 +496,13 @@ export function NodeDetail(props: NodeDetailProps) {
             <EmptyNote text="No memory budget" />
           )}
         </Panel>
+
+        {/* Lane budget (S3.2b) — sits directly after Memory Budget */}
+        <LaneBudgetPanel
+          lanes={lanes}
+          poolTotalMB={gpu?.vramTotalMB ?? null}
+          recipeFootprints={recipeFootprints}
+        />
 
         {/* Topology */}
         <Panel title="Topology" icon={<NetworkIcon />} bodyClassName="space-y-2">

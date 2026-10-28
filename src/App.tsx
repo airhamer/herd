@@ -670,6 +670,7 @@ function FleetViewPane({
           requests={node.requests}
           topology={node.topology}
           memory={node.memory}
+          lanes={node.lanes}
           polledAt={node.polledAt}
         />
       </div>
