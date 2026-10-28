@@ -19,7 +19,7 @@ S1.1–S2.3 are done (verdicts in plan/git). Everything else out of scope.
 |---|---|---|
 | fleet | `node --test server/fleet/__tests__/*.test.js` | 205 pass / 0 fail (grew from 202 at S3.1) |
 | server | `npm run test:server` equivalent: `node --test server/collectors/__tests__/*.test.js server/sparks/__tests__/*.test.js server/health/__tests__/*.test.js server/alerts/__tests__/*.test.js server/events/__tests__/*.test.js server/metrics/__tests__/*.test.js` | 478 / 0 |
-| vitest | `npx vitest run` | 229 / 0 (grow-only; record new totals) |
+| vitest | `npx vitest run` | 238 / 0 (grew from 229 at S3.2a; grow-only; record new totals) |
 | tsc | `npx tsc --noEmit` as package.json scripts.test:typecheck runs it | exit 0 |
 | agent | `node --test agent/main.test.js agent/http.test.js agent/catalog/__tests__/*.test.js agent/actions/__tests__/*.test.js agent/collectors/__tests__/*.test.js` | 271 / 0 (grew from 247 at S3.1) |
 
@@ -68,7 +68,17 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 
 ## Active worker
 
-- **✅ HALT CLEARED 2026-10-28 07:4x EDT — owner ruled A ("A and continue").** S3.1 CLOSED (see plan row; orchestrator gate battery ×3 identical re-run TODAY at e745ae2: fleet 205/server 478/agent 271/vitest 229/tsc 0). Correction of record: a prior turn's compaction summary reported the close-out AND an S3.2 dispatch as done — they were NOT on disk (commit 057343b nonexistent in object store, no reflog entry, no S3.2a spec, no subagent dispatch, loop still halted+disabled). Disk forensics (git cat-file/reflog/subagents) ruled; the ruling is executed for real in this turn. Active: S3.2a (engine kind config integration) — dispatched this turn.
+- **S3.2a ACCEPTED 2026-10-28 08:3x EDT; S3.2b dispatched this wake.** Worker
+  c8d1d423 (run 2c87e2c5) completed honestly: commits `a29fd29` M1 + `c3bde49`
+  M2 verified ancestors of main at HEAD c3bde49, phantom-file count 0, tree
+  clean. Orchestrator gate battery ×3 identical: fleet 205/server 478/agent
+  271/vitest 238/tsc 0 — matches the worker's self-reported table exactly.
+  Worker report: S3.2b-relevant note — `LaneEntry` carries NO footprintMB;
+  `computeLaneBudgets` takes caller-merged `BudgetLane`s (recipe lookup) and
+  one `poolTotalMB` for all pools (per-pool totals = future additive change).
+  Active: **S3.2b (Lane Budget panel UI)** — spec docs/S3.2b-SPEC.md committed
+  this turn, dispatched this turn.
+- Prior (cleared 07:4x EDT — owner ruled A, "A and continue"): **HALT CLEARED.** S3.1 CLOSED (see plan row; orchestrator gate battery ×3 identical re-run TODAY at e745ae2: fleet 205/server 478/agent 271/vitest 229/tsc 0). Correction of record: a prior turn's compaction summary reported the close-out AND an S3.2 dispatch as done — they were NOT on disk (commit 057343b nonexistent in object store, no reflog entry, no S3.2a spec, no subagent dispatch, loop still halted+disabled). Disk forensics (git cat-file/reflog/subagents) ruled; the ruling is executed for real in this turn. Active: S3.2a (engine kind config integration) — dispatched this turn.
 - S3.1 — **attempt 1 REJECTED (confabulation incident, not a real blocker).** Run 5faf7359 reported a "worktree-swap": claimed its tree held `server/fleet/fleet.ts` + `agent/nodeAgent.js` + `web/` and that the path was reset mid-session. Orchestrator verdict after full forensics: NO swap occurred — reflog is one continuous linear chain (d6322d7→117e020→497f659→fa2b890), single worktree, fork-shape files (connection.js, telemetry.js…) present and correct, `fleet.ts`/`nodeAgent.js`/`web/` never existed in ANY commit of this repo or its origin refs. The worker confabulated a phantom repo shape, "implemented" M1/M2 there (its gate math even contradicts itself: agent 240→247 vs real 247), and its files were never committed anywhere. Its mid-session exec-output loss was host flakiness (orchestrator saw the same class of exec errors this evening) which likely seeded the confabulation.
   - Credit: the orchestrated-worker contract held — it refused to fabricate the gate table, stopped, and reported BLOCKED honestly.
   - Salvage commit `fa2b890` contains ONLY `.tmp/s3.1-salvage/` files (4 files, 270 l, zero repo contamination). The snippets target files that do not exist → treat as IDEAS ONLY (LANES_MAX, route-shape notes); the real spec M1–M3 files win; do not port snippets as source.
@@ -109,6 +119,17 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   breaker. No re-dispatch, no adjudication this wake. Budget OK (parent ~61%).
   Next wake 4m for report/fresh-commits.
 - 2026-10-27 ~22:47 EDT — **HALT.** Attempt-2 lost dispatch confirmed (4-channel forensic above); no report anywhere (cron pendingInputs empty, dashboard parent idle since 21:50). Full 5-gate battery GREEN on committed work — fleet 205/0, server 478/0, vitest 229/0, tsc 0, agent 271/0. Owner notified with A/B/C decision ask. Loop halted; wakes idle on 45m backoff until owner rules. Wake context budget OK (fresh cron run).
+- 2026-10-28 ~08:35 EDT — **S3.2a VERIFIED-AND-GATED (clean completion).**
+  Wake found worker DONE (tracker clean because it completed+announced, not
+  lost — report present in transcript c8d1d423, commits real, tree clean).
+  Content verified vs spec: M1 a29fd29 (4 files, engine-kind recognition only,
+  no probe branches), M2 c3bde49 (pure fn + 9 tests, zero React, unwired),
+  zero phantom touches, frozen files untouched. Gate battery ×3 at c3bde49:
+  fleet 205/server 478/agent 271 IDENTICAL ×3; vitest 238/238 ×3; tsc exit 0
+  ×3. Worker self-report agrees exactly (honest gates). **S3.2a CLOSED; new
+  vitest baseline 238.** Spec docs/S3.2b-SPEC.md written (recon: Panel
+  primitive, NodeDetail mount @App.tsx:654, lanes passthrough already live in
+  connection.js — wiring is additive types/props). S3.2b dispatched this turn.
 - 2026-10-28 ~07:55 EDT — **RULING A EXECUTED + RECORD CORRECTED.** Owner "A and continue" 07:22. Forensic correction: a late-22:4x turn summary narrated the close-out as done (claimed commit 057343b + S3.2a dispatch) — NONE of it hit disk: 057343b absent from object store, reflog linear at e745ae2, no docs/S3.2a spec, no subagent dispatch in tracker (recent=720m shows only S3.1-a1 + N4), loop job disabled. Narration-≠-execution, same class as S3.1 attempt 1 — now defended against: this session's own summaries are treated as claims, verified against disk before acting (rule updated below). Real close-out now: gates ×3 re-run THIS morning at e745ae2 (identical: fleet 205 / server 478 / agent 271 / vitest 229 / tsc 0, session fast-reef), plan row S3.1 **done** on real commits 93e551e+dce9943, new baselines fleet 205/agent 271, docs/S3.2a-SPEC.md written (engine kind integration + lane-coexistence pure fn; UI deferred to S3.2b), loop job re-enabled, S3.2a dispatched this turn.
 
 ## Dispatch log
@@ -123,3 +144,8 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   narrative claimed a 22:4x dispatch that never existed; the one line above is
   disk truth. Baselines in force: fleet 205 / server 478 / agent 271 /
   vitest 229 / tsc 0 (grow-only).
+- S3.2b — dispatched 2026-10-28 ~08:35 EDT, spec docs/S3.2b-SPEC.md (Lane
+  Budget panel + minimal lanes wiring; one component). Baselines in force:
+  fleet 205 / server 478 / agent 271 / vitest 238 / tsc 0 (grow-only).
+  Run id recorded next wake if this turn's spawn result is lost (never
+  re-dispatch without confirming the prior attempt terminal).
