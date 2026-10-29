@@ -361,3 +361,18 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
 - 2026-10-28 ~09:23 EDT — Wake: S3.2b M1+M2 committed (9789429 + 0db70c7, HEAD, tree clean, 2 commits = spec cap; M2 briefly messaged "x" — worker self-caught and amended locally, honest, no push). Worker running its own gate battery ×3 (test procs live, transcript ~1 min fresh). No completion report yet. No orchestrator gating while worker mid-gates. Next wake 4m for report + verify-and-gate.
 - 2026-10-28 ~09:53 EDT — Wake: S4.1a WORKER ACTIVE and legit. Session b3277000 status=running; history record <1 min fresh (seq 43) — worker committing M2 (`GET /api/guard` route) live at check instant, tree clean before/after, tree-dirty window was mid-commit. M1 `6ac8a6c` verified ancestor of main: 2 files, 387 insertions, guardProbe.js + tests only, spec-shaped (pure, unwired). Reflog linear (amend idiom on S3.2b M2 visible in history — known-good). No completion report yet; worker states next step = gate battery ×3. Tracker empty again — same listing-staleness class as S3.1-a2/S3.2b; sessions_list+history are authority. No orchestrator gating while worker mid-gates. Next wake 4m for report + verify-and-gate.
 - 2026-10-28 ~09:4x EDT — **S3.2b VERIFIED-AND-GATED; S3.2 CLOSED.** Worker completed ~09:26 EDT (transcript cleanup-deleted; recovered via .zst — full honest report with self-gates ×3). Disk cross-check exact: 4 files, deltas match, zero phantoms/frozen, tree clean. Orchestrator battery ×3 identical: 205/478/271/246/tsc 0 — agrees with worker to the digit. Vitest baseline 238→246. S4.1 recon: decision §4.2 = monitor/adaptor only, no vendoring; no lane page exists — guard mounts in NodeDetail later (S4.1b). Spec S4.1a = server-side probe (server/health/guardProbe.js — module placed inside server gate glob; tolerant GET /api/guard, settings-read, empty-list = graceful not-present). Dispatched this wake, run 6d22d43f. Next wake 4m: worker-active check.
+
+## Post-run follow-through (owner orders 2026-10-28 evening)
+
+- **LlmProbe flake fixed** (owner: "Fix it with clock injection") at `7c87529`:
+  `LlmProbe` constructor takes `opts.now` (default wall-time); sglang rate tests
+  pin exact 2 s windows against a frozen clock. Verification: gates ×3 identical
+  (205/509/271/274/tsc0) + all 5 probe test files ×10 under 8-way CPU load =
+  70/0 every run (old code failed these under load).
+- **Redeploy authorized** (owner: "redeploy to all nodes and local for testing"):
+  server image rebuilt from `7c87529`, `sparkdash` container recreated via
+  inspect-spec (drift mount id_ed25519 preserved, bundle Dvv6KLCx→DYcJuz0O,
+  size parity 630732, markers api/memory-health + api/guard present, fleet 4/4
+  online). Local node-agent via idempotent installer (health 0.3.0, gpu:null
+  expected on non-GPU host). Fleet: install-node-agent.sh on 226/118/46
+  (in flight at time of writing).
