@@ -136,7 +136,7 @@ const DISK_FIXTURE = [
   { device: "/dev/nvme0n1p2", mount: "/", usedMB: 100, totalMB: 200, availableMB: 60, percentage: 63 },
 ];
 const NET_FIXTURE = [
-  { iface: "eth0", ip: "192.168.50.150", rxSpeed: 0, txSpeed: 0, linkSpeedMbps: 25000 },
+  { iface: "eth0", ip: "192.168.50.150", rxSpeed: 0, txSpeed: 0, linkSpeedMbps: 25000, wireless: null, mac: null, kind: "physical" },
 ];
 const SYSTEMD_FIXTURE = [{ name: "vllm.service", status: "running", uptimeSeconds: 400 }];
 const TAILSCALE_FIXTURE = {

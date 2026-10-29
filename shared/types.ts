@@ -330,6 +330,8 @@ export interface NetMetrics {
   } | null;
   /** MAC address if available. */
   mac?: string | null;
+  /** Kind classification for UI and filtering (physical | bridge | vm-bridge | wireless | link). */
+  kind?: "physical" | "bridge" | "vm-bridge" | "wireless" | "link" | null;
 }
 
 /** Tailscale host config (best-effort; every field degrades to null). */

@@ -671,6 +671,7 @@ function FleetViewPane({
           topology={node.topology}
           memory={node.memory}
           lanes={node.lanes}
+          tailscale={node.tailscale}
           polledAt={node.polledAt}
         />
       </div>

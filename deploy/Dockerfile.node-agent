@@ -35,6 +35,9 @@
 #   -v /var/lib/tailscale:/var/lib/tailscale:ro
 #   -v /etc/tailscale:/etc/tailscale:ro
 #
+#   Disk (TASK 1b): -v /:/host:ro so collector can see true host root fs usage
+#                    (container often reports overlay or /opt/rocm bind instead).
+#
 # The container therefore runs as ROOT on purpose: /run/systemd/private is
 # srwx------ root, so systemd actions (start/stop/restart + unit telemetry)
 # are impossible as any non-root user. Combined with the docker socket, the

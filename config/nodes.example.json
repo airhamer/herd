@@ -5,6 +5,7 @@
       "name": "GX10 Head (1c2c)",
       "endpoint": "192.168.50.226:30091",
       "lanIp": "192.168.50.226",
+      "wolMac": null,
       "role": "head",
       "rank": 0,
       "groupId": "tp2",

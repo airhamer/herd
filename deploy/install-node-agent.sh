@@ -18,6 +18,7 @@
 #   host binaries, /run/systemd (systemctl's private socket — root-only,
 #   which is why the container runs as root), and every /dev/nvidia* device.
 #   /proc and /sys are already host-visible; no extra mount needed.
+#   -v /:/host:ro is added for disk collector to see real host root (TASK 1b).
 #
 #   Tailscale (agent ≥0.3.0): the agent reads `tailscale status --json` and
 #   the host config, so the container mounts the tailscale CLI, the
@@ -217,6 +218,7 @@ docker run -d \
   -v /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro \
   -v /usr/bin/systemctl:/usr/bin/systemctl:ro \
   -v /proc/meminfo:/host/proc/meminfo:ro \
+  -v /:/host:ro \
   -v /run/systemd:/run/systemd \
   "${DEVICE_ARGS[@]}" \
   "${GPU_LIB_ARGS[@]}" \

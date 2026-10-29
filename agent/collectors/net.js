@@ -4,11 +4,11 @@
  * Seam type: NetMetrics[] (shared/types.ts). rx/tx speeds (MB/s) are deltas
  * against the previous call's counters (first call → 0, no baseline).
  *
- * Interface policy: noise plumbing (lo, docker0/br-xxxx, veth, libvirt's
- * virbr*, wireguard-ish zt/tun/wg) is excluded. User-created bridges (br0)
- * and tailscale0 are KEPT: br0 often carries the machine's real LAN IP and
- * tailnet IPs are useful. Interfaces that are operstate DOWN with no IPv4
- * (disconnected wifi, unused vm bridges) are dropped from the report.
+ * Interface policy: noise plumbing (lo, docker*, veth, wireguard-ish zt/tun/wg,
+ * tailscale0) is excluded. User-created bridges (br0) and virbr* (vm) are KEPT and
+ * classified. Any iface that carries a real IPv4 (from `ip -4 addr show`) is shown;
+ * bridges included. Disconnected wireless is shown explicitly (never borrows IP).
+ * MACs are collected per iface for WoL tracking (later).
  *
  * IP source policy: the host `ip` binary needs a newer glibc than the slim
  * agent image (and libbpf on top), so in-container detection uses
@@ -21,8 +21,9 @@
  */
 import { runShell, readTextFile } from "./util.js";
 
-// Noise plumbing only. NOTE: br0 (user bridge) and tailscale0 are NOT here.
-const NOISE_IFACE_RE = /^(lo|docker[0-9]*|br-[0-9a-f]+|veth|virbr|zt|tun[0-9]|wg[0-9]|ipsec|ip6tnl|gre|sit|dummy)/;
+// Noise plumbing only. br0 (user LAN bridge) and virbr* kept for classification + IP.
+// tailscale0 moved to separate Tailscale block.
+const NOISE_IFACE_RE = /^(lo|docker[0-9]*|br-[0-9a-f]+|veth|zt|tun[0-9]|wg[0-9]|ipsec|ip6tnl|gre|sit|dummy|tailscale[0-9]*)/;
 
 const MB = 1024 * 1024;
 
@@ -71,11 +72,11 @@ async function getInterfaceIps(exec, readFile) {
   /** @type {string | null} */
   let lanIp = null;
 
-  const arr = await ipAddrJson(exec, "");
+  const arr = await ipAddrJson(exec, "-4 ");
   if (arr && arr.length > 0) {
     for (const iface of arr) {
       const name = iface.ifname;
-      const ip = (iface.addr_info || []).find(a => a.family === "inet")?.local;
+      const ip = (iface.addr_info || []).find(a => a.family === "inet" || a.family === 2)?.local;
       if (name && ip) map.set(name, ip);
     }
     if (map.size > 0) return { map, lanIp };
@@ -250,9 +251,37 @@ async function getWirelessInfo(iface, exec) {
 }
 
 /**
+ * Classify interface for UI tags. Heuristic + sysfs best-effort.
+ * physical: real NICs (en*)
+ * bridge: user LAN bridge (br0)
+ * vm-bridge: libvirt/docker vm bridges (virbr*, br-*)
+ * wireless: wl*
+ * link: tailscale0 (filtered), bonds, etc.
+ * @param {string} iface
+ * @param {(path: string) => Promise<string>} readFile
+ * @returns {Promise<string>}
+ */
+async function classifyKind(iface, readFile) {
+  if (/^wl/.test(iface)) return "wireless";
+  // bridge detection via sysfs brif (members)
+  let members = [];
+  try {
+    const brif = await readFile(`/sys/class/net/${iface}/brif`);
+    members = brif.trim().split(/\s+/).filter(Boolean);
+  } catch { /* not a bridge master or invisible */ }
+  const hasTapMember = members.some((m) => /^tap|^vnet|^vir/.test(m));
+  if (iface === "br0" || (/^br[0-9]/.test(iface) && !/^br-/.test(iface))) {
+    return hasTapMember ? "vm-bridge" : "bridge";
+  }
+  if (/^virbr/.test(iface) || /^br-/.test(iface) || hasTapMember) return "vm-bridge";
+  if (/^(en|eth|eno|ens|em)/.test(iface)) return "physical";
+  return "link";
+}
+
+/**
  * Collect per-interface network metrics.
  * @param {{ exec?: (cmd: string) => Promise<string>, readFile?: (path: string) => Promise<string>, now?: () => number }} [deps]
- * @returns {Promise<Array<{iface:string, ip:string|null, rxSpeed:number, txSpeed:number, linkSpeedMbps:number|null}>>}
+ * @returns {Promise<Array<import("../../shared/types").NetMetrics>>}
  */
 export async function collectNet({ exec = runShell, readFile = readTextFile, now = Date.now } = {}) {
   try {
@@ -260,7 +289,7 @@ export async function collectNet({ exec = runShell, readFile = readTextFile, now
     const { map: ipMap, lanIp, defaultIface, sole } = await getInterfaceIps(exec, readFile);
     const downIfaces = await getDownIfaces(exec, readFile);
     const t = now();
-    /** @type {Array<{iface:string, ip:string|null, rxSpeed:number, txSpeed:number, linkSpeedMbps:number|null}>} */
+    /** @type {Array<import("../../shared/types").NetMetrics>} */
     const out = [];
 
     for (const line of raw.split("\n").slice(2)) {
@@ -284,13 +313,15 @@ export async function collectNet({ exec = runShell, readFile = readTextFile, now
       const ip = ipMap.get(iface) || null;
       // Drop DOWN interfaces with no address (disconnected wifi, unused
       // bridges). A DOWN-but-addressed iface (rare) or unknown state stays.
-      if (!ip && downIfaces.has(iface)) continue;
+      // Exception: always surface wireless (even disconnected) so UI can label it.
+      if (!ip && downIfaces.has(iface) && !/^wl/.test(iface)) continue;
 
       const wireless = await getWirelessInfo(iface, exec);
       let mac = null;
       try {
         mac = (await readFile(`/sys/class/net/${iface}/address`)).trim() || null;
       } catch {}
+      const kind = await classifyKind(iface, readFile);
       out.push({
         iface,
         ip,
@@ -298,33 +329,13 @@ export async function collectNet({ exec = runShell, readFile = readTextFile, now
         txSpeed: Math.max(0, Math.round((txSpeed / MB) * 100) / 100),
         linkSpeedMbps: await readLinkSpeed(iface, readFile),
         wireless,
+        kind,
         mac,
       });
     }
-    // The /proc fallback mapped the LAN IP onto an iface the container
-    // cannot see (host namespace). Surface it honestly on the best visible
-    // candidate: the bridge's slave (brif), then a single confidently-owned
-    // address, then an up wired iface, else a generic "lan" row.
-    if (lanIp && !out.some(r => r.ip === lanIp)) {
-      let target = null;
-      if (defaultIface) {
-        try {
-          const slave = (await readFile(`/sys/class/net/${defaultIface}/brif`)).trim().split(/\s+/)[0];
-          if (slave) {
-            target = out.find(r => r.iface === slave && !r.ip);
-          }
-        } catch { /* not a bridge or invisible */ }
-      }
-      if (!target && sole) {
-        target = out.find(r => !r.ip && !/^wl/.test(r.iface || "")) || null;
-      }
-      if (!target) {
-        const upWired = out.filter(r => !r.ip && !/^wl/.test(r.iface || "") && (r.linkSpeedMbps ?? 0) > 0);
-        target = upWired[0] || null;
-      }
-      if (target) target.ip = lanIp;
-      else out.push({ iface: "lan", ip: lanIp, rxSpeed: 0, txSpeed: 0, linkSpeedMbps: null, wireless: null, mac: null });
-    }
+    // IP attribution is now strictly from `ip -4 addr show` (or fib_trie fallback in getInterfaceIps).
+    // No more hostname-I style misattribution or fabricated "lan" rows.
+    // If an iface has an IPv4 it owns it; bridges with real IPs are shown as-is.
     return out;
   } catch {
     return [];
