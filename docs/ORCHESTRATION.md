@@ -376,3 +376,26 @@ for park / halt / completion / compact-request. Quiet hours 23:00–08:00.
   online). Local node-agent via idempotent installer (health 0.3.0, gpu:null
   expected on non-GPU host). Fleet: install-node-agent.sh on 226/118/46
   (in flight at time of writing).
+
+## Deploy outcome (2026-10-28 23:2x EDT) — full fleet + local, GPU telemetry live
+
+Server (airhamer/herd:latest, `7c87529`): recreated via inspect-spec on Narthex
+— health ok, drift-mount (ssh key) preserved, bundle Dvv6KLCx→DYcJuz0O with
+size parity 630732, api/memory-health + api/guard markers present, fleet 4/4
+online. Local node-agent: idempotent installer, health 0.3.0, gpu:null EXPECTED
+(this host has no /dev/nvidia*).
+
+Fleet (226/118/46): **GPU telemetry was null on every node — a latent deploy
+bug, not a regression.** node-agent image is node:18-slim and the installer
+mounted the nvidia-smi binary but NOT the host NVML lib, so inside the
+container nvidia-smi died "couldn't find libnvidia-ml.so" and gpu:null was the
+only state the container path ever had (dashboard GPU previously came via the
+server SSH path). Fixed in `dd22fa2`: installer now mounts /usr/lib/*/libnvidia-
+ml.so* (prototyped GB10 96% inside-container first). Post-fix telemetry:
+  gx10-1c2c gpu temp 64 usage 96 power 33.2  vram 124544MB
+  gx10-102c gpu temp 46 usage  0 power 10.8  vram 124544MB
+  gx10-25ed gpu temp 45 usage  0 power 12.7  vram 124544MB
+GET /api/fleet now reports live gpu temp/usage/power for all 3 GPU nodes
+(Narthex gpu:null correct — no GPU). /api/sparks + gpu-history.json 'g' tier
+still read null: that path has a stale server-side comment asserting node-agent
+reports gpu:null (fleet/aggregate.js:91) — separate follow-up, not touched.
