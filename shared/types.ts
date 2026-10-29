@@ -254,8 +254,8 @@ export interface RequestStats {
 // ─── Telemetry (GPU/CPU/Mem/Disk/Net) ──────────────────────────────────────
 
 export interface GpuMetrics {
-  /** GPU temperature (Celsius). */
-  temperature: number;
+  /** GPU temperature (Celsius). null when the sensor reports [N/A] (GB10). */
+  temperature: number | null;
   /** GPU utilization (0-100). */
   usage: number;
   /** Power draw (W). */

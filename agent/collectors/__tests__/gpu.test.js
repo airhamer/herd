@@ -75,7 +75,8 @@ test("gpu: keeps only top 5 processes by VRAM", async () => {
 test("gpu: usage clamped to 0-100", async () => {
   const g = await collectGpu({ exec: mockExec("42, 150, 12.5, 100, 0, 65536", ""), readFile });
   assert.equal(g.usage, 100);
-  assert.equal(g.vramUsedMB, 0);
+  // smi memory.used = 0 with no compute apps → meminfo-host fallback (MemTotal-MemAvailable)
+  assert.equal(g.vramUsedMB, 88000);
   assert.deepEqual(g.processes, []);
 });
 
@@ -91,9 +92,9 @@ test("gpu: returns null on empty/unparseable output", async () => {
   assert.equal(await collectGpu({ exec: async () => "garbage", readFile }), null);
 });
 
-test("gpu: [N/A] temperature → null overall", async () => {
-  assert.equal(
-    await collectGpu({ exec: mockExec("[N/A], 15, 12.5, 100, 0, 65536", ""), readFile }),
-    null
-  );
+test("gpu: [N/A] temperature still returns metrics when usage is valid", async () => {
+  const g = await collectGpu({ exec: mockExec("[N/A], 15, 12.5, 100, 0, 65536", ""), readFile });
+  assert.notEqual(g, null);
+  assert.equal(g.usage, 15);
+  assert.equal(g.temperature, null);
 });

@@ -132,10 +132,22 @@ if [[ ${#DEVICE_ARGS[@]} -gt 0 && ${#GPU_LIB_ARGS[@]} -eq 0 ]]; then
   log "warning: GPU devices present but no libnvidia-ml.so found — GPU telemetry will be null"
 fi
 
-# ip tool for network IP detection inside container (used by net collector)
+# ip tool for network IP detection inside container (used by net collector).
+# The host binary needs libbpf/libelf/libmnl/libcap/libz/libzstd — the slim
+# image lacks them. Mount exactly those; NEVER libc/ld (host glibc is newer
+# than the slim image's and breaks /bin/sh when mounted over it).
 IP_MOUNT=()
 if [[ -x /usr/bin/ip ]]; then
   IP_MOUNT+=(-v /usr/bin/ip:/usr/bin/ip:ro)
+  for _lib in /usr/lib/x86_64-linux-gnu/libbpf.so.1 \
+              /usr/lib/x86_64-linux-gnu/libbpf.so.1 \
+              /usr/lib/x86_64-linux-gnu/libelf.so.1 \
+              /usr/lib/x86_64-linux-gnu/libmnl.so.0 \
+              /usr/lib/x86_64-linux-gnu/libcap.so.2 \
+              /usr/lib/x86_64-linux-gnu/libz.so.1 \
+              /usr/lib/x86_64-linux-gnu/libzstd.so.1; do
+    [[ -e "$_lib" ]] && IP_MOUNT+=(-v "${_lib}:${_lib}:ro")
+  done
 fi
 
 # AMD ROCm support (rocm-smi binary + basic /opt/rocm if present).

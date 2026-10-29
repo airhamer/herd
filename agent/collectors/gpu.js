@@ -89,7 +89,7 @@ export async function collectGpu({ exec = runShell, readFile = readTextFile, smi
       // Return if we got at least usage or temp (for GB10 where some fields N/A)
       if (usage != null || temperature != null) {
         return {
-          temperature: temperature ?? 0,
+          temperature,
           usage: Math.min(100, Math.max(0, usage ?? 0)),
           powerDraw,
           powerLimit,
