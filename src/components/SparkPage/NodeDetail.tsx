@@ -135,6 +135,8 @@ export function NodeDetail(props: NodeDetailProps) {
   const tempBarColor = temp > 85 ? "bg-danger" : temp > 65 ? "bg-warning" : temp > 40 ? "bg-accent" : "bg-success";
   const usage = gpu?.usage ?? 0;
   const usageBarColor = usage > 85 ? "bg-danger" : usage > 60 ? "bg-warning" : "bg-accent";
+  const cpuTemp = cpu?.temperature ?? 0;
+  const cpuTempBarColor = cpuTemp > 85 ? "bg-danger" : cpuTemp > 65 ? "bg-warning" : cpuTemp > 40 ? "bg-accent" : "bg-success";
   const vramUsed = gpu?.vramUsedMB ?? 0;
   const vramTotal = gpu?.vramTotalMB ?? 0;
 
@@ -253,6 +255,7 @@ export function NodeDetail(props: NodeDetailProps) {
                 label="Temperature"
                 value={cpu.temperature}
                 max={100}
+                color={cpuTempBarColor}
                 caption={`${cpu.temperature}°C`}
               />
               <DetailRow label="Draw" value={`${cpu.draw}W`} />

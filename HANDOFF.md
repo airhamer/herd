@@ -71,7 +71,7 @@ then aggregate per-device in UI.
 ## Backlog (owner-asked, in rough priority; confirm ordering with owner after TASK 1)
 1. CPU panel: temp sensor is now k10temp Tctl (fixed); a temp bar exists. Verify bar shows on
    Narthex CPU box like GPU's.
-2. Make **Fleet** the default landing page instead of "sparks".
+2. Make **Fleet** the default landing page instead of "sparks". (DONE — owner confirmed already fixed; no action.)
 3. Lane/stack management UI on 1c2c: swap llm-tp1 (qwen38-flash-next) ↔ llm-tp2
    (qwen3.8-27b TP2) — recipes already feed `telemetry.lanes.pools`; build switch UI (owner
    referenced hasso's "lanes" approach).
