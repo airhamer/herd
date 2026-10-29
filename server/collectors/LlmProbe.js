@@ -60,9 +60,17 @@ function applyModelRef(probe, raw) {
 }
 
 export class LlmProbe {
-  constructor(spark, port = 8888) {
+  /**
+   * @param {{ now?: () => number }} [opts] `now` injects the rate-window clock.
+   *   Tests pin it so Δtokens/Δt lands on exact windows; production defaults
+   *   to wall time. Without injection, strict tok/s asserts measure whatever
+   *   the event loop took between backdating and the internal clock read.
+   */
+  constructor(spark, port = 8888, opts = {}) {
     this.spark = spark;
     this.port = port;
+    /** @type {() => number} Injectable clock; default wall time. */
+    this._now = typeof opts.now === "function" ? opts.now : () => Date.now();
     this.baseUrl = `http://${llmProbeHost(spark)}:${port}`;
 
     // State
@@ -200,11 +208,11 @@ export class LlmProbe {
     try {
       const shouldDetect =
         this.serverIsOpenAI === null ||
-        Date.now() - this._lastDetectAt > REDETECT_INTERVAL_MS;
+        this._now() - this._lastDetectAt > REDETECT_INTERVAL_MS;
 
       if (shouldDetect) {
         await this._detectServerType();
-        this._lastDetectAt = Date.now();
+        this._lastDetectAt = this._now();
       }
 
       if (this.serverIsOpenAI === false) {
@@ -449,7 +457,7 @@ export class LlmProbe {
 
   // ─── OpenAI-compatible path (vLLM/sglang/ds4) ────────────
   async _probeOpenAICompatible() {
-    const now = Date.now();
+    const now = this._now();
     const dtSec = (now - this.lastProbeTime) / 1000;
     this.lastProbeTime = now;
 
@@ -1098,7 +1106,7 @@ export class LlmProbe {
       return 0;
     }
     const rounded = Math.round(raw * 100) / 100;
-    const now = Date.now();
+    const now = this._now();
     const prev = this._sglangStickyTps;
 
     if (!prev) {
@@ -1283,7 +1291,7 @@ export class LlmProbe {
 
   // ─── llama.cpp native path ────────────────────────────────
   async _probeLlamaCpp() {
-    const now = Date.now();
+    const now = this._now();
     const dtSec = (now - this.lastProbeTime) / 1000;
     this.lastProbeTime = now;
 

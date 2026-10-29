@@ -5,6 +5,13 @@ import { test } from "node:test";
 import { strict as assert } from "node:assert";
 import { normalizeModelId, LlmProbe } from "../LlmProbe.js";
 
+// Frozen clock for rate assertions: Δt windows are exact by construction, so
+// strict tok/s asserts can't drift with event-loop jitter on a loaded host
+// (backdating lastProbeTime against a later internal Date.now() read used to
+// turn 2.001 s windows into 49.98 ≠ 50). See LlmProbe constructor opts.now.
+const T0 = 1_000_000_000_000;
+const frozenNow = () => T0;
+
 test("normalizeModelId: HF hub cache snapshot path → org/name", () => {
   const raw =
     "/root/.cache/huggingface/models--thinkingmachines--Inkling-Small-NVFP4/snapshots/b6a99534467840620d411e4cd4ad5819b2610d9c";
@@ -90,12 +97,12 @@ test("_probeIsSglang: prefers /server_info and skips deprecated /get_server_info
 });
 
 test("probe: prefers current SGLang endpoints while retaining the served model ID", async () => {
-  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000);
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000, { now: frozenNow });
   probe.serverIsOpenAI = true;
   probe.backendType = "sglang";
   probe.authOpen = true;
-  probe._lastDetectAt = Date.now();
-  probe.lastProbeTime = Date.now() - 2000;
+  probe._lastDetectAt = T0;
+  probe.lastProbeTime = T0 - 2000;
   const hits = [];
   probe._fetch = async (url) => {
     const u = String(url);
@@ -319,12 +326,12 @@ test("_applySglangServerInfo: prefers total_* counter diffs over last_gen", () =
 });
 
 test("probe: modern sglang without totals still reports last_gen tok/s", async () => {
-  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000);
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000, { now: frozenNow });
   probe.serverIsOpenAI = true;
   probe.backendType = "sglang";
   probe.authOpen = true;
-  probe._lastDetectAt = Date.now();
-  probe.lastProbeTime = Date.now() - 2000;
+  probe._lastDetectAt = T0;
+  probe.lastProbeTime = T0 - 2000;
   let gen = 30;
   probe._fetch = async (url) => {
     const u = String(url);
@@ -360,7 +367,7 @@ test("probe: modern sglang without totals still reports last_gen tok/s", async (
   const seed = await probe.probe();
   assert.equal(seed.generationTps, 0);
   gen = 41.2;
-  probe.lastProbeTime = Date.now() - 2000;
+  probe.lastProbeTime = T0 - 2000;
   const snap = await probe.probe();
   assert.equal(snap.backend, "sglang");
   assert.equal(snap.generationTps, 41.2);
@@ -407,12 +414,12 @@ test("_sglangStickyThroughput: inflight keeps a steady rate after the live windo
 });
 
 test("probe: reachable SGLang without sleep metric is Active, not Sleeping", async () => {
-  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000);
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000, { now: frozenNow });
   probe.serverIsOpenAI = true;
   probe.backendType = "sglang";
   probe.authOpen = true;
-  probe._lastDetectAt = Date.now();
-  probe.lastProbeTime = Date.now() - 2000;
+  probe._lastDetectAt = T0;
+  probe.lastProbeTime = T0 - 2000;
   probe._fetch = async (url) => {
     const u = String(url);
     if (u.endsWith("/v1/models")) {
@@ -453,12 +460,12 @@ test("probe: reachable SGLang without sleep metric is Active, not Sleeping", asy
 });
 
 test("probe: /v1/loads inflight keeps last_gen on the first sample", async () => {
-  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000);
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000, { now: frozenNow });
   probe.serverIsOpenAI = true;
   probe.backendType = "sglang";
   probe.authOpen = true;
-  probe._lastDetectAt = Date.now();
-  probe.lastProbeTime = Date.now() - 2000;
+  probe._lastDetectAt = T0;
+  probe.lastProbeTime = T0 - 2000;
   probe._fetch = async (url) => {
     const u = String(url);
     if (u.endsWith("/v1/models")) {
@@ -619,11 +626,11 @@ function sglangCountersMock(state) {
 }
 
 function sglangCounterProbe(state) {
-  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000);
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000, { now: frozenNow });
   probe.serverIsOpenAI = true;
   probe.backendType = "sglang";
   probe.authOpen = true;
-  probe._lastDetectAt = Date.now();
+  probe._lastDetectAt = T0;
   probe._fetch = sglangCountersMock(state);
   return probe;
 }
@@ -638,7 +645,7 @@ test("probe: SGLang prefill tok/s returns to 0 once the engine goes idle (#99)",
   state.prompt += 400;
   state.gen += 200;
   state.running = 1;
-  probe.lastProbeTime = Date.now() - 2000;
+  probe.lastProbeTime = T0 - 2000;
   const busy = await probe.probe();
   assert.equal(busy.prefillTps, 200);
   assert.equal(busy.generationTps, 100);
@@ -646,7 +653,7 @@ test("probe: SGLang prefill tok/s returns to 0 once the engine goes idle (#99)",
   // Engine idle again: counters frozen, nothing running.
   state.running = 0;
   for (const _ of [1, 2]) {
-    probe.lastProbeTime = Date.now() - 2000;
+    probe.lastProbeTime = T0 - 2000;
     await probe.probe();
   }
   const idle = await probe.probe();
@@ -659,18 +666,18 @@ test("probe: first SGLang poll seeds the prompt baseline, not a lifetime spike (
 
   await probe.probe(); // fresh probe — dtSec is far outside the window
 
-  probe.lastProbeTime = Date.now() - 2000;
+  probe.lastProbeTime = T0 - 2000;
   const snap = await probe.probe(); // idle engine, counters unchanged
   assert.equal(snap.prefillTps, 0); // not lifetimePrompt / dtSec = 114000
   assert.equal(snap.generationTps, 0);
 });
 
 test("probe: server_info totals stay authoritative over Prometheus counters", async () => {
-  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000);
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 30000, { now: frozenNow });
   probe.serverIsOpenAI = true;
   probe.backendType = "sglang";
   probe.authOpen = true;
-  probe._lastDetectAt = Date.now();
+  probe._lastDetectAt = T0;
   probe.lastTokenCounts = { input: 100, output: 50 };
   const json = (payload) => ({
     ok: true,
@@ -702,7 +709,7 @@ test("probe: server_info totals stay authoritative over Prometheus counters", as
     return { ok: false, status: 404, json: async () => ({}), text: async () => "" };
   };
 
-  probe.lastProbeTime = Date.now() - 2000;
+  probe.lastProbeTime = T0 - 2000;
   const snap = await probe.probe();
   assert.equal(snap.generationTps, 50); // (150-50)/2 from server_info
   assert.equal(snap.prefillTps, 100); // (300-100)/2 — not the Prometheus counters
@@ -732,11 +739,11 @@ test("_applySglangPrefillSplit does not clobber server_info tok/s", () => {
 });
 
 test("probe: SGLang keeps the served model ID when native info uses a local path", async () => {
-  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 8888);
+  const probe = new LlmProbe({ lanIp: "10.0.0.1" }, 8888, { now: frozenNow });
   probe.serverIsOpenAI = true;
   probe.backendType = "sglang";
   probe.authOpen = true;
-  probe._lastDetectAt = Date.now();
+  probe._lastDetectAt = T0;
   probe._fetch = async (url) => {
     const u = String(url);
     if (u.endsWith("/v1/models")) {
