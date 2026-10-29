@@ -18,6 +18,9 @@
 #   -v /var/run/docker.sock:/var/run/docker.sock
 #   -v /usr/bin/docker:/usr/bin/docker:ro
 #   -v /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro
+#   -v /usr/lib/.../libnvidia-ml.so*:<same>:ro   (host NVML libs — without
+#                                               them the mounted nvidia-smi
+#                                               cannot load and gpu stays null)
 #   -v /usr/bin/systemctl:/usr/bin/systemctl:ro
 #   -v /run/systemd:/run/systemd           systemctl's private socket (0700 root)
 #   --device /dev/nvidiactl  --device /dev/nvidia0   (all /dev/nvidia* present)

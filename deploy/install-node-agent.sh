@@ -118,6 +118,20 @@ if [[ ${#DEVICE_ARGS[@]} -eq 0 ]]; then
   log "warning: no /dev/nvidia* devices found — GPU telemetry will be null on this host"
 fi
 
+# Host NVML userspace libs. The slim agent image ships no driver library, so
+# the mounted nvidia-smi binary fails "couldn't find libnvidia-ml.so" and
+# telemetry stays gpu:null even with devices present (the failure mode that
+# lived unnoticed on every GPU node until the 2026-10-28 redeploy check).
+# Mount every libnvidia-ml entry (real file + symlinks) at the same path —
+# Debian's dynamic linker searches /usr/lib/<triplet> by default.
+GPU_LIB_ARGS=()
+for lib in /usr/lib/libnvidia-ml.so* /usr/lib/*/libnvidia-ml.so*; do
+  [[ -e "${lib}" ]] && GPU_LIB_ARGS+=("-v" "${lib}:${lib}:ro")
+done
+if [[ ${#DEVICE_ARGS[@]} -gt 0 && ${#GPU_LIB_ARGS[@]} -eq 0 ]]; then
+  log "warning: GPU devices present but no libnvidia-ml.so found — GPU telemetry will be null"
+fi
+
 # ── 6b. Tailscale host access (best-effort; not every node runs tailscaled) ─
 # The agent reads `tailscale status --json` and the host config, so the
 # container mounts the tailscale CLI, the tailscaled socket (+ parent dir),
@@ -163,6 +177,7 @@ docker run -d \
   -v /usr/bin/systemctl:/usr/bin/systemctl:ro \
   -v /run/systemd:/run/systemd \
   "${DEVICE_ARGS[@]}" \
+  "${GPU_LIB_ARGS[@]}" \
   "${TAILSCALE_MOUNTS[@]}" \
   "${ENV_ARGS[@]}" \
   "${IMAGE}" >/dev/null
