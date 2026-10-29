@@ -88,10 +88,12 @@ export default aggregateRequests;
 
 /**
  * Batch 10-B: derive fleet-side GpuMetrics from the SparkMonitor's own
- * collected metrics. Fleet nodes polled via the node-agent report gpu:null
- * (container has no /dev/nvidia* access) while the dashboard's SSH monitor
- * already collects GPU data for the same box (lanIp match). Pure: never
- * throws, returns null when there is nothing to derive from.
+ * collected metrics. Agent snapshots carry gpu:null when the container lacks
+ * the /dev/nvidia* + libnvidia-ml mounts (pre-dd22fa2 agents always did);
+ * with the mounts the agent reports GPU directly and this fallback is unused.
+ * The dashboard's SSH monitor collects GPU data for the same box either way
+ * (lanIp match). Pure: never throws, returns null when there is nothing to
+ * derive from.
  *
  * @param metrics SparkMonitor snapshot `metrics` object (gpu/unifiedMemory)
  * @returns {{usage:number,temperature:number,powerDraw:number,powerLimit:number,vramUsedMB:number,vramTotalMB:number,vramPercentage:number}} | null

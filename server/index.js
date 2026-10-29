@@ -454,9 +454,11 @@ function emptyNodeSnapshot(rec) {
 function buildFleetSnapshot() {
   const nodes = listNodes();
   const cached = fleetConnection.getAllSnapshots();
-  // Batch 10-B: node-agent snapshots report gpu:null (the agent container has
-  // no /dev/nvidia* access). The dashboard's SparkMonitor already collects GPU
-  // metrics for the same boxes over SSH — fall back to it, matched by lanIp.
+  // Batch 10-B fallback: agent snapshots can carry gpu:null (pre-NVML agents,
+  // or containers without the /dev/nvidia* + libnvidia-ml mounts the installer
+  // adds since dd22fa2 — agents now report real GPU when the mounts exist).
+  // The dashboard's SparkMonitor collects GPU metrics for the same boxes over
+  // SSH regardless — fall back to it, matched by lanIp.
   const monitorByLanIp = new Map();
   for (const [id, mon] of monitors) {
     try {

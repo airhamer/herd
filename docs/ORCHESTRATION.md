@@ -396,6 +396,14 @@ ml.so* (prototyped GB10 96% inside-container first). Post-fix telemetry:
   gx10-102c gpu temp 46 usage  0 power 10.8  vram 124544MB
   gx10-25ed gpu temp 45 usage  0 power 12.7  vram 124544MB
 GET /api/fleet now reports live gpu temp/usage/power for all 3 GPU nodes
-(Narthex gpu:null correct — no GPU). /api/sparks + gpu-history.json 'g' tier
-still read null: that path has a stale server-side comment asserting node-agent
-reports gpu:null (fleet/aggregate.js:91) — separate follow-up, not touched.
+(Narthex gpu:null correct — no GPU).
+
+Follow-up RESOLVED same session: the "/api/sparks shows gpu null" reading was
+endpoint confusion — that REST route serves registry metadata only; live metrics
+ride the WS snapshot and /api/sparks/:id/metrics (GPU fully populated there:
+temp/usage/power/vram/processes incl. sglang scheduler 98 GB). gpu-history 'g'
+tier empty is BY DESIGN — deviceReadings records multi-GPU hosts only, GB10 is
+single-device. What was actually stale: two server comments (index.js
+buildFleetSnapshot, aggregate.js fleetGpuFromMonitor) asserting node-agents
+report gpu:null "container has no /dev/nvidia* access" — false since the NVML
+mounts; reworded, gates green.
