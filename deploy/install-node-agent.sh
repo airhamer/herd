@@ -132,6 +132,33 @@ if [[ ${#DEVICE_ARGS[@]} -gt 0 && ${#GPU_LIB_ARGS[@]} -eq 0 ]]; then
   log "warning: GPU devices present but no libnvidia-ml.so found — GPU telemetry will be null"
 fi
 
+# ip tool for network IP detection inside container (used by net collector)
+IP_MOUNT=()
+if [[ -x /usr/bin/ip ]]; then
+  IP_MOUNT+=(-v /usr/bin/ip:/usr/bin/ip:ro)
+fi
+
+# AMD ROCm support (rocm-smi binary + basic /opt/rocm if present).
+# The collector now falls back to rocm-smi for AMD GPUs (RX 9060 etc.).
+# Mount the binary (and /opt/rocm for libs if present) so the slim image
+# can run rocm-smi and report temp/usage/VRAM.
+ROCM_MOUNTS=()
+if command -v rocm-smi >/dev/null 2>&1; then
+  ROCM_BIN="$(command -v rocm-smi)"
+  # Follow symlinks to real binary (often /etc/alternatives -> /opt/rocm/.../bin/rocm-smi)
+  REAL_ROCM="$(readlink -f "${ROCM_BIN}" 2>/dev/null || echo "${ROCM_BIN}")"
+  if [[ -n "${REAL_ROCM}" && -e "${REAL_ROCM}" ]]; then
+    ROCM_MOUNTS+=(-v "${REAL_ROCM}:/usr/bin/rocm-smi:ro")
+  else
+    ROCM_MOUNTS+=(-v "${ROCM_BIN}:${ROCM_BIN}:ro")
+  fi
+  # Common ROCm install locations (libs, etc.)
+  for d in /opt/rocm /opt/rocm-* /etc/alternatives; do
+    [[ -d "${d}" ]] && ROCM_MOUNTS+=(-v "${d}:${d}:ro")
+  done
+  log "rocm-smi host access mounted (AMD GPU telemetry enabled)"
+fi
+
 # ── 6b. Tailscale host access (best-effort; not every node runs tailscaled) ─
 # The agent reads `tailscale status --json` and the host config, so the
 # container mounts the tailscale CLI, the tailscaled socket (+ parent dir),
@@ -170,14 +197,19 @@ docker run -d \
   --name "${CONTAINER}" \
   --restart always \
   --network host \
+  --pid host \
+  --privileged \
   -v "${CONFIG_DIR}:/app/agent/config" \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -v /usr/bin/docker:/usr/bin/docker:ro \
   -v /usr/bin/nvidia-smi:/usr/bin/nvidia-smi:ro \
   -v /usr/bin/systemctl:/usr/bin/systemctl:ro \
+  -v /proc/meminfo:/host/proc/meminfo:ro \
   -v /run/systemd:/run/systemd \
   "${DEVICE_ARGS[@]}" \
   "${GPU_LIB_ARGS[@]}" \
+  "${ROCM_MOUNTS[@]}" \
+  "${IP_MOUNT[@]}" \
   "${TAILSCALE_MOUNTS[@]}" \
   "${ENV_ARGS[@]}" \
   "${IMAGE}" >/dev/null

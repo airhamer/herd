@@ -294,6 +294,33 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
               </label>
             </div>
 
+            {/* Metrics history */}
+            <div>
+              <label className="flex items-start gap-3 text-xs text-muted">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(settings.metricsHistory)}
+                  onClick={() => update({ metricsHistory: !settings.metricsHistory })}
+                  className={`toggle-track relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
+                    settings.metricsHistory ? "is-on" : ""
+                  }`}
+                >
+                  <span
+                    className={`toggle-dot inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
+                      settings.metricsHistory ? "translate-x-4" : "translate-x-0"
+                    }`}
+                  />
+                </button>
+                <span>
+                  <span className="block text-text">Metrics history (dense + buckets)</span>
+                  <span className="mt-0.5 block text-[10px] leading-snug text-muted">
+                    48 h raw series + day/week bucketed tiers for GPU and unit history. Off by default (saves I/O and disk). Turn on for long-range charts.
+                  </span>
+                </span>
+              </label>
+            </div>
+
             {/* Fleet exceptions */}
             <div>
               <label className="flex items-start gap-3 text-xs text-muted">

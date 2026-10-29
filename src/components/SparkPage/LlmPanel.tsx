@@ -692,6 +692,9 @@ export function LlmPanel({
                 {llm.modelId}
               </span>
             )}
+            {Array.isArray(llm?.installedModels) && llm.installedModels.length > 1 && (
+              <span className="text-[10px] text-muted" title={llm.installedModels.join(", ")}>+{llm.installedModels.length - 1} more</span>
+            )}
             <span className="shrink-0 font-tabular text-[10px] text-muted">:{llmPort}</span>
           </div>
           {llm?.modelPath &&

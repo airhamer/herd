@@ -341,11 +341,16 @@ export function enrichSnapshot(snapshot, opts = {}) {
 
   /** @type {object[]} */
   const stats = [];
+  const seen = new Set();
   for (const l of Array.isArray(snap.llm) ? snap.llm : []) {
     if (!l || typeof l !== "object" || l.backend == null) continue;
     if (typeof l.port !== "number" || !Number.isInteger(l.port)) continue;
+    const modelId = typeof l.modelId === "string" && l.modelId !== "" ? l.modelId : "unknown";
+    const key = `${modelId}|${l.backend}|${l.port}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     stats.push({
-      modelId: typeof l.modelId === "string" && l.modelId !== "" ? l.modelId : "unknown",
+      modelId,
       engine: String(l.backend),
       nodeId,
       port: l.port,

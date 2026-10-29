@@ -144,4 +144,87 @@ export function listServices(recipes, liveState = null) {
       polledAt: now,
     };
   });
+
+  // Also surface running containers that are not in the recipe catalog (e.g. crawl4ai, searxng, litellm, redis, qdrant on Narthex)
+  const recipePorts = new Set(recipes.map(r => r.port));
+  const extra = [];
+  for (const c of live) {
+    if (!c || c.status !== "running") continue;
+    const ports = hostPortsOf(c);
+    const p = ports[0] || 0;
+    if (p && !recipePorts.has(p)) {
+      extra.push({
+        name: c.name || "container",
+        kind: "other",
+        engine: "docker",
+        port: p,
+        status: "running",
+        modelId: null,
+        engineVersion: null,
+        footprintMB: 0,
+        active: false,
+        polledAt: now,
+      });
+    }
+  }
+  return recipes.map((r, i) => {
+    const label = `recipes[${i}]`;
+    if (typeof r !== "object" || r === null || Array.isArray(r)) {
+      throw new TypeError(`${label} must be an object`);
+    }
+    if (typeof r.name !== "string" || r.name.length === 0) {
+      throw new TypeError(`${label}.name must be a non-empty string`);
+    }
+    if (!Number.isInteger(r.port) || r.port < 1 || r.port > 65535) {
+      throw new TypeError(`${label}.port must be an integer 1–65535 (got ${JSON.stringify(r.port)})`);
+    }
+    const kind = typeof r.kind === "string" && r.kind.length > 0 ? r.kind : "other";
+    const engine = typeof r.engine === "string" && r.engine.length > 0 ? r.engine : "other";
+    let footprintMB = 0;
+    if (r.footprintMB !== undefined && r.footprintMB !== null) {
+      if (!isFiniteNumber(r.footprintMB) || r.footprintMB < 0) {
+        throw new TypeError(`${label}.footprintMB must be a non-negative finite number (got ${JSON.stringify(r.footprintMB)})`);
+      }
+      footprintMB = r.footprintMB;
+    }
+
+    const live = liveMap ? liveMap[r.port] : undefined;
+    const liveObj = live && typeof live === "object" ? live : null;
+
+    let status;
+    if (liveObj && VALID_STATUS.has(liveObj.status)) {
+      status = liveObj.status;
+    } else if (liveObj) {
+      status = liveObj.running === true ? "running" : "stopped";
+    } else {
+      status = "stopped";
+    }
+
+    let modelId;
+    let engineVersion;
+    if (liveObj && status === "running") {
+      modelId =
+        typeof liveObj.modelId === "string" && liveObj.modelId.length > 0 ? liveObj.modelId : null;
+      engineVersion =
+        typeof liveObj.engineVersion === "string" && liveObj.engineVersion.length > 0
+          ? liveObj.engineVersion
+          : null;
+    } else {
+      modelId = typeof r.modelId === "string" && r.modelId.length > 0 ? r.modelId : null;
+      engineVersion = imageTag(r.image);
+    }
+
+    return {
+      name: r.name,
+      kind,
+      engine,
+      port: r.port,
+      status,
+      modelId,
+      engineVersion,
+      footprintMB,
+      active: kind === "llm" && status === "running",
+      polledAt: now,
+    };
+  });
 }

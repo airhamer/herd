@@ -348,7 +348,7 @@ function DashboardApp() {
         <header className="flex flex-wrap items-center gap-3" style={{ marginBottom: "var(--density-header-gap)" }}>
           <button
             type="button"
-            onClick={() => (inFleet ? fleetNavigate({ page: "fleet" }) : goSpark(OVERVIEW_ID))}
+            onClick={() => fleetNavigate({ page: "fleet" })}
             className="logo-pill"
           >
             <BoltIcon className="h-3.5 w-3.5 text-accent" />
@@ -358,12 +358,12 @@ function DashboardApp() {
             aria-label="Views"
             className="flex items-center gap-0.5 rounded-lg border border-border bg-surface p-0.5"
           >
-            <ViewTab label="Sparks" active={!inFleet} onClick={() => goSpark(OVERVIEW_ID)} />
             <ViewTab
               label="Fleet"
               active={inFleet && fleetView?.page !== "topology"}
               onClick={() => fleetNavigate({ page: "fleet" })}
             />
+            <ViewTab label="Sparks" active={!inFleet} onClick={() => goSpark(OVERVIEW_ID)} />
             <ViewTab
               label="Topology"
               active={inFleet && fleetView?.page === "topology"}

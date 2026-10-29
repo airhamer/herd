@@ -269,6 +269,10 @@ export interface NetworkInterface {
   operstate: string;
   /** Present when interface is in disabledInterfaces; still returned for Settings UI */
   disabled?: boolean;
+  /** Wireless details if applicable. */
+  wireless?: { ssid: string | null; signalDbm: number | null; frequency: string | null } | null;
+  /** MAC address. */
+  mac?: string | null;
 }
 
 export interface NetworkMetrics {
@@ -349,6 +353,8 @@ export interface LlmMetrics {
   backend: "vllm" | "llama.cpp" | "sglang" | "ds4" | "exl3" | "q27" | null;
   modelId: string | null;
   modelPath: string | null;
+  /** For ollama etc: list of installed models. */
+  installedModels?: string[] | null;
   contextLength: number | null;
   /** GPU memory utilization for the LLM engine (0–1), e.g. 0.9. Only from vLLM internal info. */
   gpuMemoryUtilization: number | null;
@@ -762,6 +768,8 @@ export interface Settings {
   benchShareImage: boolean;
   /** Alert notifications (Settings → Alerts). Off by default; while off nothing is evaluated or sent. */
   alertsEnabled?: boolean;
+  /** Opt-in dense 48 h GPU/unit history + bucketed day/week tiers. Off by default (saves disk + CPU). */
+  metricsHistory: boolean;
 }
 
 export interface SparksListResponse {

@@ -321,6 +321,7 @@ export function FleetCard(props: FleetCardProps) {
                         }`}
                       >
                         {s.modelId ?? s.name}
+                        {v?.quantization ? ` (${v.quantization})` : ""}
                       </span>
                       {(s.status === "loading" || s.status === "wedged") && (
                         <span className={`shrink-0 text-[10px] ${s.status === "wedged" ? "text-danger" : "text-warning"}`}>
@@ -356,7 +357,7 @@ export function FleetCard(props: FleetCardProps) {
               value={`${containers.length} (${runningContainers} running)`}
               title={
                 containers.length > 0
-                  ? containers.map((c) => `${c.name} [${c.status}]`).join("\n")
+                  ? containers.map((c) => `${c.name} [${c.status}]${c.ports && c.ports.length ? " ports:" + c.ports.join(",") : ""}`).join("\n")
                   : "No containers"
               }
             />

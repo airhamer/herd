@@ -56,6 +56,7 @@ export async function collectDisk({ exec = runShell } = {}) {
         percentage,
       });
     }
+    // Return all real disks; UI can choose primary (prefer / )
     return disks;
   } catch {
     return [];

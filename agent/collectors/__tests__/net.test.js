@@ -66,6 +66,8 @@ test("net: excludes virtual ifaces; first call → 0 speeds; second → delta MB
       rxSpeed: 10, // 104857600 B / 10 s = 10 MB/s
       txSpeed: 5, // 52428800 B / 10 s = 5 MB/s
       linkSpeedMbps: 25000,
+      wireless: null,
+      mac: null,
     },
   ]);
 });

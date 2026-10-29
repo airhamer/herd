@@ -245,7 +245,12 @@ export function NodeDetail(props: NodeDetailProps) {
                 max={100}
                 caption={`${cpu.usage}%`}
               />
-              <DetailRow label="Temperature" value={`${cpu.temperature}°C`} />
+              <MetricBar
+                label="Temperature"
+                value={cpu.temperature}
+                max={100}
+                caption={`${cpu.temperature}°C`}
+              />
               <DetailRow label="Draw" value={`${cpu.draw}W`} />
               <DetailRow label="TDP" value={`${cpu.tdp}W`} />
             </>
@@ -305,7 +310,7 @@ export function NodeDetail(props: NodeDetailProps) {
             net.map((n) => (
               <div key={n.iface} className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 rounded-md border border-border bg-surface-elevated px-3 py-2 text-xs">
                 <span className="font-medium text-text">{n.iface}</span>
-                <span className="font-tabular text-muted">{n.ip ?? "no ip"}</span>
+                <span className="font-tabular text-muted">{n.ip || ((n.wireless || /^wl/.test(n.iface || "")) ? "no ip (wireless, disconnected)" : "no ip")}</span>
                 <span className="font-tabular text-muted" title="RX">
                   ↓ {n.rxSpeed.toFixed(1)} MB/s
                 </span>

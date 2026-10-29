@@ -28,17 +28,56 @@ export function resetNetBaseline() {
 async function getInterfaceIpMap(exec) {
   const map = new Map();
   try {
-    const out = await exec("ip -4 addr show 2>/dev/null");
-    const blocks = out.split(/\n(?=\d+:\s+)/);
-    for (const block of blocks) {
-      const first = block.split("\n")[0];
-      const m = first.match(/^\d+:\s+(\S+):/);
-      if (!m) continue;
-      const ipMatch = block.match(/inet\s+([\d.]+)/);
-      if (ipMatch) map.set(m[1], ipMatch[1]);
+    // Try json first
+    let out = await exec("ip -j -4 addr show 2>/dev/null || true");
+    if (out && out.trim().startsWith("[")) {
+      try {
+        const arr = JSON.parse(out);
+        for (const iface of arr) {
+          const name = iface.ifname;
+          const ip = (iface.addr_info || []).find(a => a.family === "inet")?.local;
+          if (name && ip) map.set(name, ip);
+        }
+      } catch {}
     }
+    if (map.size === 0) {
+      out = await exec("ip -4 addr show 2>/dev/null || ip addr show 2>/dev/null");
+      let currentIface = null;
+      for (const line of out.split("\n")) {
+        const m = line.match(/^\d+:\s+([^:]+):/);
+        if (m) {
+          currentIface = m[1].trim();
+        }
+        if (currentIface) {
+          const ipm = line.match(/inet\s+([0-9.]+)/);
+          if (ipm) {
+            map.set(currentIface, ipm[1]);
+          }
+        }
+      }
+    }
+    // Fallback: hostname -I for main IP, assign to first non-virtual iface without IP
+  try {
+    const h = await exec("hostname -I 2>/dev/null || true");
+    const ips = h.trim().split(/\s+/).filter((x) => x && !x.includes(":")); // IPv4 only
+    if (ips.length > 0) {
+      const mainIp = ips[0];
+      // assign to first iface in map or a common name
+      if (map.size === 0) {
+        map.set("eth0", mainIp);
+      } else {
+        // fill first without ip
+        for (const [k, v] of map) {
+          if (!v) {
+            map.set(k, mainIp);
+            break;
+          }
+        }
+      }
+    }
+  } catch {}
   } catch {
-    /* ip tool optional */
+    /* optional */
   }
   return map;
 }
@@ -53,6 +92,29 @@ async function readLinkSpeed(iface, readFile) {
   try {
     const n = parseInt((await readFile(`/sys/class/net/${iface}/speed`)).trim(), 10);
     return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Best-effort wireless info for a WiFi interface using iw if available.
+ * Returns null for non-wireless or failure.
+ */
+async function getWirelessInfo(iface, exec) {
+  try {
+    // Quick check if wireless
+    const devInfo = await exec(`iw dev ${iface} info 2>/dev/null || true`).catch(() => "");
+    if (!devInfo || !/Interface/.test(devInfo)) return null;
+    const link = await exec(`iw dev ${iface} link 2>/dev/null || true`).catch(() => "");
+    const ssidMatch = link.match(/SSID: (.+)/);
+    const signalMatch = link.match(/signal: (-?\d+) dBm/);
+    const freqMatch = link.match(/freq: (\d+)/);
+    return {
+      ssid: ssidMatch ? ssidMatch[1].trim() : null,
+      signalDbm: signalMatch ? parseInt(signalMatch[1], 10) : null,
+      frequency: freqMatch ? freqMatch[1] + " MHz" : null,
+    };
   } catch {
     return null;
   }
@@ -89,13 +151,28 @@ export async function collectNet({ exec = runShell, readFile = readTextFile, now
       }
       lastSample.set(iface, { rxBytes, txBytes, time: t });
 
+      const wireless = await getWirelessInfo(iface, exec);
+      let mac = null;
+      try {
+        mac = (await readFile(`/sys/class/net/${iface}/address`)).trim() || null;
+      } catch {}
       out.push({
         iface,
         ip: ipMap.get(iface) || null,
         rxSpeed: Math.max(0, Math.round((rxSpeed / MB) * 100) / 100),
         txSpeed: Math.max(0, Math.round((txSpeed / MB) * 100) / 100),
         linkSpeedMbps: await readLinkSpeed(iface, readFile),
+        wireless,
+        mac,
       });
+    }
+    // Fallback IP for display if none detected (common when ip tool parse misses bridge/wireless)
+    if (out.length > 0) {
+      try {
+        const h = await exec("hostname -I 2>/dev/null || true");
+        const ip = h.trim().split(/\s+/).filter(Boolean)[0];
+        if (ip && !out[0].ip) out[0].ip = ip;
+      } catch {}
     }
     return out;
   } catch {

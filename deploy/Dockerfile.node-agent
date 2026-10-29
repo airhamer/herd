@@ -21,6 +21,9 @@
 #   -v /usr/lib/.../libnvidia-ml.so*:<same>:ro   (host NVML libs — without
 #                                               them the mounted nvidia-smi
 #                                               cannot load and gpu stays null)
+#   -v /usr/bin/rocm-smi:/usr/bin/rocm-smi:ro   (AMD ROCm; collector falls back
+#                                               when no nvidia; mount /opt/rocm*
+#                                               if present for full libs)
 #   -v /usr/bin/systemctl:/usr/bin/systemctl:ro
 #   -v /run/systemd:/run/systemd           systemctl's private socket (0700 root)
 #   --device /dev/nvidiactl  --device /dev/nvidia0   (all /dev/nvidia* present)

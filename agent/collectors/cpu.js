@@ -65,6 +65,37 @@ async function readCpuTemp(readFile) {
       /* next zone */
     }
   }
+
+  // Generic Linux / AMD: hwmon for k10temp, zenpower, coretemp, etc.
+  try {
+    for (const h of fs.readdirSync("/sys/class/hwmon")) {
+      try {
+        const name = (await readFile(`/sys/class/hwmon/${h}/name`)).trim().toLowerCase();
+        if (/amdgpu|gpu/.test(name)) continue;
+        if (!/k10temp|zenpower|coretemp|cpu|amd|acpi/.test(name)) continue;
+        // Try labeled temps first (Tctl/Tdie for AMD)
+        for (let i = 1; i <= 5; i++) {
+          try {
+            const label = (await readFile(`/sys/class/hwmon/${h}/temp${i}_label`)).trim().toLowerCase();
+            if (/tctl|tdie|cpu|core/.test(label)) {
+              const raw = await readFile(`/sys/class/hwmon/${h}/temp${i}_input`);
+              const t = parseInt(raw.trim(), 10);
+              if (Number.isFinite(t) && t > 0 && t < 200000) {
+                return Math.round((t / 1000) * 10) / 10;
+              }
+            }
+          } catch {}
+        }
+        // Fallback to temp1_input
+        const raw = await readFile(`/sys/class/hwmon/${h}/temp1_input`);
+        const t = parseInt(raw.trim(), 10);
+        if (Number.isFinite(t) && t > 0 && t < 200000) {
+          return Math.round((t / 1000) * 10) / 10;
+        }
+      } catch {}
+    }
+  } catch {}
+
   return 0;
 }
 

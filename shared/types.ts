@@ -322,6 +322,14 @@ export interface NetMetrics {
   txSpeed: number;
   /** Link speed (Mbps). null when unknown. */
   linkSpeedMbps: number | null;
+  /** Wireless info if this is a WiFi interface. */
+  wireless?: {
+    ssid: string | null;
+    signalDbm: number | null;
+    frequency: string | null;
+  } | null;
+  /** MAC address if available. */
+  mac?: string | null;
 }
 
 /** Tailscale host config (best-effort; every field degrades to null). */

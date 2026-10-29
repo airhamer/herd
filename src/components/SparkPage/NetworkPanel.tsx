@@ -68,7 +68,7 @@ export function NetworkPanel({
 
   const visible = interfaces.filter(
     (iface) => !iface.disabled && !disabledInterfaces.includes(iface.name)
-      && iface.operstate === "up" && iface.ip
+      && iface.operstate === "up"
   );
 
   const primaryVisible =
@@ -155,7 +155,16 @@ export function NetworkPanel({
                       {iface.ip ? (
                         <span className="font-tabular truncate">{iface.ip}</span>
                       ) : (
-                        <span className="truncate">{iface.name}</span>
+                        <span className="truncate">{iface.name} (no IP)</span>
+                      )}
+                      {iface.wireless?.ssid && (
+                        <span className="shrink-0 text-[10px] text-muted">{iface.wireless.ssid}</span>
+                      )}
+                      {iface.wireless?.signalDbm != null && (
+                        <span className="shrink-0 font-tabular text-[10px] text-muted">{iface.wireless.signalDbm} dBm</span>
+                      )}
+                      {iface.mac && (
+                        <span className="shrink-0 font-tabular text-[9px] text-muted" title="MAC for WoL">{iface.mac}</span>
                       )}
                     </span>
                     <span className="font-tabular text-xs text-text">

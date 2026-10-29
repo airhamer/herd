@@ -137,7 +137,7 @@ export function GuardPanel({ className, fetcher = fetchGuard }: GuardPanelProps)
   } else if (!data) {
     body = <p className="text-xs text-muted">Checking guards…</p>;
   } else if (data.guards.length === 0) {
-    body = <p className="text-xs text-muted">No guard proxies configured</p>;
+    body = <p className="text-xs text-muted">No guard proxies configured. (Hasso’s dgx-spark-qwen38 setup uses an external guard-proxy fronting the LLM endpoint on the node, referenced as recipe+port rather than enrolled system. Add baseUrl to settings.guard.endpoints to surface status.)</p>;
   } else {
     body = (
       <div className="space-y-2">
