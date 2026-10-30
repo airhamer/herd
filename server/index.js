@@ -66,6 +66,7 @@ import { buildTopology } from "./fleet/topology.js";
 import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
 import { renderFleetMetrics } from "./fleet/metrics.js";
 import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
+import { buildComponentAction, proxyComponentAction } from "./fleet/componentActions.js";
 import { createWaveSequencer } from "./fleet/waveSequencer.js";
 
 dotenv.config();
@@ -878,6 +879,28 @@ app.post("/api/fleet/nodes/:id/actions", async (req, res) => {
   } catch (err) {
     res.status(502).json({ error: `Node agent unreachable: ${err.message}` });
   }
+});
+
+/**
+ * v2 component actions (SC action seam, docs/COMPONENTS-DESIGN-PROPOSAL.md
+ * §7). The browser posts the browser-owned fields of a ComponentActionRequest
+ * to this per-node route; the server mints actionId, pins nodeId from the
+ * route, stamps actor, and proxies the v2 request to the node agent
+ * POST /actions (agent is validator of last resort). Status mapping matches
+ * the legacy /actions proxy: 405 upstream → 501 telemetry-only build,
+ * non-ok/transport → 502. Boot-class timeouts (long sglang boots) live in
+ * proxyComponentAction, not the 60 s updates window.
+ */
+app.post("/api/fleet/nodes/:id/component-actions", async (req, res) => {
+  const rec = listNodes().find((n) => n.id === req.params.id);
+  if (!rec) return res.status(404).json({ error: "Node not found" });
+  const built = buildComponentAction(req.body, {
+    nodeId: req.params.id,
+    actor: req.auth?.actor ?? req.headers["x-actor"] ?? null,
+  });
+  if (!built.ok) return res.status(built.status).json({ error: built.error });
+  const { status, body } = await proxyComponentAction(rec, built.request);
+  res.status(status).json(body);
 });
 
 // ─── Fleet updates API (Batch 5, docs/SPEC-UPDATES.md §6) ───
