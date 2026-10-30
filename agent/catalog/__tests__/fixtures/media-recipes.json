@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "nodeId": "gx10-fixture",
+  "recipes": [
+    {
+      "name": "video",
+      "kind": "video",
+      "engine": "comfyui",
+      "port": 8188,
+      "image": "AEON-7/comfyui-aeon-spark:latest",
+      "footprintMB": 40000,
+      "modelId": "ltx-2.3-22b",
+      "modelPath": "Lightricks/LTX-2.3-22B",
+      "contextLength": null,
+      "memFraction": null,
+      "tpSize": null
+    },
+    {
+      "name": "image",
+      "kind": "image",
+      "engine": "comfyui",
+      "port": 8188,
+      "image": "AEON-7/comfyui-aeon-spark:latest",
+      "footprintMB": 40000,
+      "modelId": "flux-image",
+      "modelPath": null,
+      "contextLength": null,
+      "memFraction": null,
+      "tpSize": null
+    },
+    {
+      "name": "tts",
+      "kind": "tts",
+      "engine": "qwen3-tts",
+      "port": 3000,
+      "image": "AEON-7/qwen3-tts-server:latest",
+      "footprintMB": 5000,
+      "modelId": "qwen3-tts",
+      "modelPath": "Qwen/Qwen3-TTS",
+      "contextLength": null,
+      "memFraction": null,
+      "tpSize": null
+    },
+    {
+      "name": "stt",
+      "kind": "stt",
+      "engine": "qwen3-asr",
+      "port": 3001,
+      "image": "AEON-7/qwen3-asr-server:latest",
+      "footprintMB": 5000,
+      "modelId": "qwen3-asr",
+      "modelPath": "Qwen/Qwen3-ASR",
+      "contextLength": null,
+      "memFraction": null,
+      "tpSize": null
+    },
+    {
+      "name": "voice",
+      "kind": "voice",
+      "engine": "matrix-voip",
+      "port": 3002,
+      "image": "AEON-7/matrix-voip:latest",
+      "footprintMB": 3000,
+      "modelId": null,
+      "modelPath": null,
+      "contextLength": null,
+      "memFraction": null,
+      "tpSize": null,
+      "dependsOn": ["stt", "tts"]
+    }
+  ]
+}

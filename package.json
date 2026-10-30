@@ -9,8 +9,10 @@
     "dev:client": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "npm run test:server && npm run test:frontend",
-    "test:server": "node --test server/collectors/__tests__/*.test.js server/sparks/__tests__/*.test.js server/health/__tests__/*.test.js server/alerts/__tests__/*.test.js server/events/__tests__/*.test.js server/metrics/__tests__/*.test.js",
+    "test": "npm run typecheck && npm run test:server && npm run test:agent && npm run test:frontend",
+    "test:server": "node --test \"server/**/__tests__/*.test.js\"",
+    "test:fleet": "node --test \"server/fleet/__tests__/*.test.js\"",
+    "test:agent": "node --test \"agent/**/*.test.js\"",
     "test:frontend": "vitest run",
     "preview": "vite preview",
     "start": "node server/index.js",
@@ -33,6 +35,9 @@
   "author": "Mia'a AI Lab",
   "homepage": "https://x.com/MiaAI_lab",
   "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
