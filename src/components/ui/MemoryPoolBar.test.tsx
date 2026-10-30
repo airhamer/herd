@@ -1,9 +1,7 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanupRenders, render } from "../../testing/render";
+import { describe, expect, it } from "vitest";
+import { render } from "../../testing/render";
 import { memoryPool } from "../../lib/memoryPool";
 import { MemoryPoolBar } from "./MemoryPoolBar";
-
-afterEach(cleanupRenders);
 
 const HASSO = {
   totalMB: 124560,
