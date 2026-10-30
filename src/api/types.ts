@@ -345,6 +345,12 @@ export interface UnifiedMemoryMetrics {
     current: number;
     peak: number;
   };
+  /** /proc/meminfo Cached (MB): reclaimable page cache, inside `available`. Optional (#26). */
+  cached?: number;
+  /** /proc/meminfo SwapTotal (MB). Optional (#26). */
+  swapTotal?: number;
+  /** /proc/meminfo SwapFree (MB). Optional (#26). */
+  swapFree?: number;
 }
 
 // ─── LLM metrics ─────────────────────────────────────────
