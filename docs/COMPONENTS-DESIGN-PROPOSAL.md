@@ -296,6 +296,23 @@ editing, never reinterpreting. In the action path that becomes mechanical:
    measurement says the machine doesn't change. If the owner later rules
    mode a copy axis, modes become ids and this path narrows; the seam
    doesn't move.
+5. **The handle-class gap (POC4, 2026-10-30):** the action layer's existing
+   verbs act on a *live* handle (`docker start <name>`,
+   `systemctl start <unit>`). A unit- or launcher-managed engine
+   (Hasso-style: `qwen38-flash.service`, where image+flags+env live in the
+   unit, not in the recipe) has no materializable container handle until
+   someone creates one — so SC10's materialization must first settle the
+   **handle class**: does a component adopt the node's existing unit as its
+   handle (`systemdUnit`; recipe pins then *document* rather than *define*
+   the launch, and component-vs-unit drift becomes a first-class Library
+   finding), or does it define its own launch (image+digest, args, env,
+   docker caps — needs a `docker run`-class primitive and a
+   recipe-schema conversation; caps live in `memoryProfile`, above
+   recipe-schema v1)? This must be ruled inside the SC10 dispatch batch:
+   after it ships, the answer hardens into deployed behavior on live
+   nodes, and changing it later means migrating live. It is also the
+   honest source of the 1c2c `unknown service` refusals: the live engine
+   was never materialized into the recipe store (§7.10 F4).
 
 ## 7.7 Idempotency, replay, and failure semantics
 
@@ -337,3 +354,106 @@ editing, never reinterpreting. In the action path that becomes mechanical:
   approval), no agent-side model download (materialize validates pins;
   pulling a missing pinned checkpoint is a preflight finding, not an
   action).
+
+## 7.10 POC4 live-review conclusions (batch 8, issue #8) — feed into the SC data-model + action seams
+
+POC4 exercised UI→server→agent→engine on live `gx10-1c2c`
+(`docs/BATCH8-POC4-LIVE-TEST.md`). This section is the pre-scaling review:
+what the results say about the component model, the action method, and the
+UI, ruled **before** scouring more Hasso/AEON recipes, so definition churn
+stays near zero.
+
+### What worked (keep; scale on it)
+
+- **W1 — UI→server leg: PASS.** Components tab + catalog projection +
+  dry-run-first flow + truthful per-field 400s on a batch/8 build.
+  Nothing here needs a redesign before more data gathering.
+- **W2 — the one-method bet paid off.** Server-minted `actionId`,
+  route-pinned `nodeId`, fail-closed tokens, v2→v1 downgrade, the 502
+  mapping: the deployed agent refused v2 *by contract* with a truthful
+  error — not broken, not guessed. The seam needs no shape change; SC10
+  fills the producer/consumer gap.
+- **W3 — the definition format survived contact with reality.** Both
+  Hasso conversions projected into the live UI with zero loader errors,
+  `warnings: []`. Schema stability is adequate to scale gathering; the
+  only field changes proposed below are additive (D3, D5-adjacent).
+- **W4 — the copy-on-(tp, machineClass) rule earned its keep.** Scope is
+  encoded in the file, machine-readable, and it is exactly the discipline
+  that recipe drift (§7.10 F4) shows a node cannot enforce by itself.
+- **W5 — read-by-construction live testing is a reusable method:**
+  impossible-`serviceName` tripwires + audit-confirmed untouched nodes;
+  the `docs/poc4/` drivers are the template for every later live leg.
+
+### What didn't (fix before scaling)
+
+- **F1 — the deployed UI lags the tree.** The :5555 container predates
+  POC1–3; a fleet-wide live POC is impossible while the redeploy question
+  is parked. Any later live POC must carry its own build (POC4's
+  fresh-server approach), not assume the deployed one.
+- **F2 — v2 dispatch is undeployed:** SC10 wiring + fleet redeploy remain
+  the only blocker chain for the full switch leg (already §7.8).
+- **F3 — proxy telemetry false-negatives.** `proxy.running:false` /
+  `state:"unknown"` while `systemctl is-active` says active-active, and
+  `servingContainer:"qwen38-"` (regex-truncated). §7.1 fact 2
+  (traffic-check proves the change behind the proxy) is unprovable on
+  1c2c until the collector is honest — a take-turn canary would then
+  *fail truthfully* against a working engine. The traffic-check step is
+  dead weight in every live result until this lands.
+- **F4 — recipe drift is a live switch-hazard precedent.** 1c2c's
+  `recipes.json` still names `qwen38-sglang`/`qwen38-vllm-tp2` containers
+  that no longer exist; a v1 `start` on that recipe `docker start`s a
+  ghost — silent no-op at best, wrong-engine start at worst. Meanwhile
+  the live engine (`qwen38-flash`, unit-managed) is invisible: its
+  recipes were never materialized from the component files.
+- **F5 — the version/join channel is blind to unit-managed engines.**
+  `versions` derives from `LLM_PORTS` HTTP probes only; a unit-managed
+  engine behind the keepalive proxy on non-probed ports never appears,
+  `lanes` goes stale, and `joinComponentState` matches nothing — the
+  Components tab was truthful but blind on the fleet's actual serving
+  node.
+- **F6 — no machine-class source.** §7.5's scope check reads the target's
+  machine class "from the fleet registry's node capability report" — that
+  report does not exist. Today every scope check null-matches: the
+  copy-on-change refusal is un-executable.
+
+### Refinement rulings (one method; one pre-SC10 hygiene batch + SC10)
+
+- **D1 — add a node-hygiene batch to the seam's critical path (pre-SC10).**
+  Contents: fix the proxy collector (unit-active + `:PORT/health` probe
+  drives `running`/`state`; take the serving container name whole, no
+  regex truncation); carry unit-managed engines in `versions` (unit +
+  `docker inspect`-derived entry, or a unit-aware fallback when a
+  component's engine answers behind the proxy); re-materialize 1c2c's
+  `recipes.json` from the catalog so no ghost recipe stays dispatchable.
+  Rationale: materialize-then-act assumes the recipe store is current,
+  and the traffic-check step assumes the proxy collector is honest.
+  Gathering a dozen more recipes onto a node whose first live target is a
+  ghost-recipe node converts every action into a live hazard — this is
+  the churn minimizer the review was for.
+- **D2 — make live observation a first-class catalog concern.** A
+  component's "running" state must derive from the proxy's serving-model
+  list (the §7.1 fact-2 source) *and* unit/container state, with the
+  `versions`-probe join as one channel, not the only one. Concretely:
+  `ComponentActionTraffic.servingModels` gets a real producer (fix F3)
+  and `joinComponentState` gains a serve-based match path. No field
+  shapes move — the seam holds; only producers get built.
+- **D3 — component files settle a handle class (§7.6 point 5).** Rule it
+  inside the SC10 dispatch batch, before deployed behavior hardens.
+- **D4 — `machineClass` needs a node-side source of truth.** Bootstrap/SC10
+  materializes a node capability record (`machineClass`, tp-group
+  membership) alongside the registry record — otherwise the scope check,
+  the SC3 calculator's fit verdict, and the §3 picker filter all silently
+  pass on null.
+- **D5 — bootstrap seeds *observed live* components first.** 1c2c's actual
+  serving stack (the flash lane) existed in the catalog yet was invisible
+  in the UI. When converting more Hasso recipes, convert the fleet's live
+  shapes first, and make re-materializing the live shape onto its own
+  hosting node the conversion's acceptance check — it verifies the §5 map
+  end to end without touching engines. Recipe volume after that is cheap;
+  recipe volume onto a half-blind node is churn.
+
+**Net before scaling the Hasso→component conversion:** the definition
+format (§1–§6) and the action method (§7.1–§7.9) stand as designed; the
+*observability* half (proxy truth, unit-aware versions, class report,
+recipe hygiene) must land with or before SC10, or every added recipe
+inherits 1c2c's blindness. No schema rewrite, no second design.
