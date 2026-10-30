@@ -1,6 +1,6 @@
 # Components Design Proposal — component definition catalog (SC2/SC10 POC, batch 5)
 
-**Date:** 2026-10-30 · **Status:** POC (owner-approved 2026-10-30) · **Issue:** airhamer/herd#5
+**Date:** 2026-10-30 · **Status:** POC (owner-approved 2026-10-30) · **Issue:** airhamer/herd#5 · **PR:** airhamer/herd#22
 
 This is the data-model half of the 2026-10-30 Stacks/Components adoption
 (`docs/IMPLEMENTATION_PLAN.md` SC2/SC10). It defines the **component definition
