@@ -83,18 +83,31 @@ function fakeFetch(initial = {}) {
     if (h === "hang") {
       return new Promise((resolve, reject) => {
         const sig = init?.signal;
-        if (sig) {
-          if (sig.aborted) {
-            reject(new Error("aborted"));
-            return;
-          }
-          sig.addEventListener("abort", () => reject(new Error("aborted")), {
-            once: true,
-          });
+        if (sig?.aborted) {
+          reject(new Error("aborted"));
+          return;
         }
-        // Otherwise it truly hangs — a hang with NO signal would deadlock
-        // the poll cycle, so the very fact that "hang" tests complete is
-        // itself proof the timeout signal was passed.
+        // AbortSignal.timeout() uses an UNREF'd timer: with no real socket
+        // open, Node 22 sees an empty event loop and cancels the pending test
+        // ("Promise resolution is still pending but the event loop has
+        // already resolved") before the abort can fire. Hold a REF'd guard
+        // timer while hanging so the loop stays alive (Node 22 + 24). The
+        // guard also turns a missing signal into a clear rejection instead
+        // of a silent cancel; the tests' dt bounds still catch it.
+        const guard = setTimeout(
+          () => reject(new Error("hang stub: no abort signal fired within 5s")),
+          5000,
+        );
+        if (sig) {
+          sig.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(guard);
+              reject(new Error("aborted"));
+            },
+            { once: true },
+          );
+        }
       });
     }
     if (typeof h === "object" && h !== null) return h;
