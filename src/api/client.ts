@@ -575,6 +575,60 @@ export interface NodeRecord {
   claimToken?: string;
 }
 
+// ─── Components (POC tab, issue #7) ────────────────────────────
+// GET /api/components serves the POC1 catalog projected to CatalogComponent
+// + live per-node state. Component actions ride the v2 seam: POST
+// /api/fleet/nodes/:id/component-actions with the browser-owned fields of a
+// ComponentActionRequest; the response is a ComponentActionResult (dry-run
+// preview = same route with dryRun: true, which returns the plan).
+
+/** One catalog component with its live per-node observation (server projection). */
+export interface CatalogComponent {
+  id: string;
+  name: string;
+  purpose: string;
+  kind: string;
+  tp: number;
+  machineClass: string | null;
+  engine: string | null;
+  image: string | null;
+  servedModelName: string | null;
+  memoryPerSparkMB: number | null;
+  description: string;
+  /** Nodes where the component is currently observed (empty = not running anywhere). */
+  nodes: { nodeId: string; nodeName: string; state: string }[];
+}
+
+/** Live component catalog: POC1 definitions + per-node state. */
+export function fetchComponents(): Promise<{ components: CatalogComponent[]; warnings: string[] }> {
+  return apiFetch("/api/components");
+}
+
+/** Fields the browser owns on a v2 ComponentActionRequest; the server mints
+ *  actionId, pins nodeId from the route and stamps actor (server/fleet/
+ *  componentActions.js). Response is a ComponentActionResult. */
+export interface ComponentActionSendRequest {
+  type: "start" | "stop" | "restart";
+  componentId: string;
+  groupRef?: string | null;
+  exclusiveWith?: string | null;
+  confirmationToken?: string | null;
+  dryRun: boolean;
+  recipeName?: string | null;
+  timeoutMs?: number | null;
+}
+
+/** Send one component action (or dry-run preview) to a node's agent. */
+export function sendComponentAction(
+  nodeId: string,
+  body: ComponentActionSendRequest
+): Promise<import("../../shared/types").ComponentActionResult> {
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(nodeId)}/component-actions`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 /** List all registered fleet nodes. */
 export function fetchFleetNodes(): Promise<{ nodes: NodeRecord[] }> {
   return apiFetch("/api/fleet/nodes");

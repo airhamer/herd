@@ -67,6 +67,7 @@ import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
 import { renderFleetMetrics } from "./fleet/metrics.js";
 import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
 import { buildComponentAction, proxyComponentAction } from "./fleet/componentActions.js";
+import { loadComponentCatalog, joinComponentState } from "./fleet/componentCatalog.js";
 import { createWaveSequencer } from "./fleet/waveSequencer.js";
 
 dotenv.config();
@@ -901,6 +902,25 @@ app.post("/api/fleet/nodes/:id/component-actions", async (req, res) => {
   if (!built.ok) return res.status(built.status).json({ error: built.error });
   const { status, body } = await proxyComponentAction(rec, built.request);
   res.status(status).json(body);
+});
+
+/**
+ * POC components tab (issue #7): POC1 catalog definitions (agent/catalog/
+ * components/*.json) joined with live per-node state. Read-only: the action
+ * seam itself is the per-node POST /api/fleet/nodes/:id/component-actions
+ * route above — the browser sends ComponentActionRequest fields there and
+ * gets ComponentActionResult back (dry-run preview = same route, dryRun:true).
+ */
+app.get("/api/components", (_req, res) => {
+  const { components, warnings } = loadComponentCatalog();
+  const nodeSnaps = Object.values({
+    ...fleetConnection.getAllSnapshots(),
+    ...sshFleet.getAllSnapshots(),
+    ...macosSshFleet.getAllSnapshots(),
+    ...windowsFleet.getAllSnapshots(),
+  }).filter((s) => s && s.nodeId);
+  joinComponentState(components, nodeSnaps);
+  res.json({ components, warnings });
 });
 
 // ─── Fleet updates API (Batch 5, docs/SPEC-UPDATES.md §6) ───

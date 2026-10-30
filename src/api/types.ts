@@ -1137,6 +1137,14 @@ export type {
   LanePool,
   LaneCandidate,
   NodeLanes,
+  // POC2 component-action seam types (issue #7 Components tab consumes these).
+  ComponentActionType,
+  ComponentActionConfirm,
+  ComponentActionRequest,
+  ComponentActionStep,
+  ComponentActionTraffic,
+  ComponentActionResult,
+  ComponentActionPlan,
 } from "../../shared/types";
 
 // ─── Fleet updates (docs/SPEC-UPDATES.md §6/§9) ────

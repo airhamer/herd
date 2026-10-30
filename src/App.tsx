@@ -4,6 +4,7 @@ import { useFleetAlerts } from "./hooks/useFleetAlerts";
 import { useBrowserAlerts } from "./hooks/useBrowserAlerts";
 import { useAppRoute, useRoute, useFleetRoute, type FleetView } from "./hooks/useRoute";
 import { fetchSparks, reorderSparks, fetchSettings, sendNodeAction } from "./api/client";
+import { ComponentsPage } from "./components/Stacks/ComponentsPage";
 import { useFleetData } from "./hooks/useFleet";
 import { SparkTabs } from "./components/SparkTabs";
 import { AddSparkDialog } from "./components/AddSparkDialog";
@@ -374,6 +375,11 @@ function DashboardApp() {
               active={inFleet && fleetView?.page === "updates"}
               onClick={() => fleetNavigate({ page: "updates" })}
             />
+            <ViewTab
+              label="Components"
+              active={inFleet && fleetView?.page === "components"}
+              onClick={() => fleetNavigate({ page: "components" })}
+            />
           </nav>
           {!inFleet && (
             <SparkTabs
@@ -597,6 +603,12 @@ function FleetViewPane({
         </p>
       </div>
     );
+  }
+
+  if (view.page === "components") {
+    // Self-contained POC page: fetches GET /api/components + the node
+    // registry itself; actions go through the per-node component-actions route.
+    return <ComponentsPage />;
   }
 
   if (view.page === "fleet") {
