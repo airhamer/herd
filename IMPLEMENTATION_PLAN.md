@@ -1,5 +1,9 @@
 # Multi-Spark Dashboard — Implementation Plan
 
+> Superseded as the action list by GitHub issues in airhamer/herd on 2026-10-30.
+> Status is the issue label: `needs-decision`, `ready`, `in-progress`, or `done`.
+> This file is design rationale only. Do not add open rows here.
+
 > **Superseded as the action list** on 2026-10-25 by
 > [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) (H.E.R.D. S-series).
 > **Further superseded for Stacks/Components work** by 2026-10-30 session design (see top of docs/IMPLEMENTATION_PLAN.md). Kept as the design record for the 2026-09-22 multi-Spark build and the
@@ -12,7 +16,7 @@
 > The 2026-10-30 session's outlined steps (new stacks.json, group TP=x base + per-spark singles, unlocked estimates, Hasso memory viz, aggregated group mem, distributed stacks, downtime sequence preview + live, filters for TP/source/purpose/pre-defined, bootstrap from aeon7, manual external retrieval + merge in setup, pre-defined tp behavior, parallel per recipe) must be completed before any remaining steps here or in docs/.
 
 **Date:** 2026-09-22
-**Revised:** 2026-10-25 (demoted as the action list; body unchanged)
+**Revised:** 2026-10-30 (demoted as the action list to GitHub; body unchanged)
 **Author:** Jarvis (orchestrator)
 **Supersedes:** Phase 0 research notes (2026-09-22, in-conversation)
 **Base:** Fork of `MiaAI-Lab/sparkDash` @ `airhamer/sparkDash` (upstream 1.8.8, commit `754f40a`)
@@ -360,32 +364,19 @@ seed-and-diff (deploy scripts idempotent); e2e (dashboard + node-agent wired, PR
 
 ---
 
-## 3a. Open register
+## Open register — migrated, not the action list
 
-**THE action list.** Grouped by what blocks each item. Ids keep historical prefixes.
+The list is GitHub. This table only translates old ids.
 
-### Needs-a-decision (blocked on human)
-| Id | Item | Blocker |
-|---|---|---|
-| D1 | Confirm media service images/recipes (Batch 5A) | Need exact AEON-7 image tags + ports for video/image/TTS/STT/voice |
-| D2 | Node-agent Docker image (Batch 5B) | Need to confirm node-agent runs as Docker container on each Spark (vs bare systemd) |
-| D3 | PR to MiaAI-Lab (Batch 6) | Need to confirm PR target + branch name |
+| Old id | Issue |
+|---|---|
+| D1 | https://github.com/airhamer/herd/issues/2 |
+| D2 | https://github.com/airhamer/herd/issues/3 |
+| D3 | https://github.com/airhamer/herd/issues/4 |
 
-### Ready (unblocked)
-| Id | Item | Batch |
-|---|---|---|
-| R1 | Batch 0 scaffolding + seam contracts | 0 |
-| R2 | Batch 1A collectors + telemetry + http + versions | 1 |
-| R3 | Batch 1B recipe catalog + memory budgeting | 1 |
-| R4 | Batch 2A docker actions + audit | 2 |
-| R5 | Batch 2B systemd actions + LLM switch | 2 |
-| R6 | Batch 3A node registry + fleet connection | 3 |
-| R7 | Batch 3B requests aggregation + topology | 3 |
-| R8 | Batch 4A Overview/fleet + per-node + topology UI | 4 |
-| R9 | Batch 4B Service Manager + requests + memory UI | 4 |
-| R10 | Batch 5A media catalog | 5 |
-| R11 | Batch 5B e2e wiring + deploy + docs + PR prep | 5 |
-| R12 | Batch 6 test + verify + PR | 6 |
+Already done in the plan (per top banner), no issue opened: R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12.
+
+Follow-on items (F1–F3) also not migrated as open rows (outside current scope).
 
 ### Follow-on (after v1)
 | Id | Item |
