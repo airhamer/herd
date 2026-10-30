@@ -2,12 +2,14 @@
 
 > **Superseded as the action list** on 2026-10-25 by
 > [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) (H.E.R.D. S-series).
-> Kept as the design record for the 2026-09-22 multi-Spark build and the
+> **Further superseded for Stacks/Components work** by 2026-10-30 session design (see top of docs/IMPLEMENTATION_PLAN.md). Kept as the design record for the 2026-09-22 multi-Spark build and the
 > 2026-10 DGX-updates running log. Do not dispatch from §3a. Rows R1–R12
 > finished; the register was never ticked. Requirements that lived only in
 > this file are copied into the S-series plan under "Retained specifications
 > (2026-09-22 plan)". Live loop state is `docs/ORCHESTRATION.md`, not the
 > September `ORCHESTRATION.md` at the repo root.
+
+> The 2026-10-30 session's outlined steps (new stacks.json, group TP=x base + per-spark singles, unlocked estimates, Hasso memory viz, aggregated group mem, distributed stacks, downtime sequence preview + live, filters for TP/source/purpose/pre-defined, bootstrap from aeon7, manual external retrieval + merge in setup, pre-defined tp behavior, parallel per recipe) must be completed before any remaining steps here or in docs/.
 
 **Date:** 2026-09-22
 **Revised:** 2026-10-25 (demoted as the action list; body unchanged)

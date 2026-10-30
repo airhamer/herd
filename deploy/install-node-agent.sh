@@ -133,6 +133,21 @@ if [[ ${#DEVICE_ARGS[@]} -gt 0 && ${#GPU_LIB_ARGS[@]} -eq 0 ]]; then
   log "warning: GPU devices present but no libnvidia-ml.so found — GPU telemetry will be null"
 fi
 
+# Full runtime deps for the host `ip` binary (net collector needs accurate `ip -4 addr show` output;
+# the slim image lacks them). Mount like nvidia libs.
+IP_LIB_ARGS=()
+for base in /lib/aarch64-linux-gnu /usr/lib/aarch64-linux-gnu /lib /usr/lib; do
+  for pat in "libbpf.so*" "libcap.so*" "libelf.so*" "libmnl.so*" "libz.so*" "libzstd.so*"; do
+    for lib in ${base}/${pat}; do
+      [[ -e "${lib}" ]] && IP_LIB_ARGS+=("-v" "${lib}:${lib}:ro")
+    done
+  done
+done
+IP_BIN=$(command -v ip 2>/dev/null || true)
+if [[ -n "${IP_BIN}" ]]; then
+  IP_LIB_ARGS+=("-v" "${IP_BIN}:${IP_BIN}:ro")
+fi
+
 # ip tool for network IP detection inside container (used by net collector).
 # The host binary needs libbpf/libelf/libmnl/libcap/libz/libzstd — the slim
 # image lacks them. Mount exactly those; NEVER libc/ld (host glibc is newer
@@ -222,6 +237,7 @@ docker run -d \
   -v /run/systemd:/run/systemd \
   "${DEVICE_ARGS[@]}" \
   "${GPU_LIB_ARGS[@]}" \
+  "${IP_LIB_ARGS[@]}" \
   "${ROCM_MOUNTS[@]}" \
   "${IP_MOUNT[@]}" \
   "${TAILSCALE_MOUNTS[@]}" \

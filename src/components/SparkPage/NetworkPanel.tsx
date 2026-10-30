@@ -66,10 +66,11 @@ export function NetworkPanel({
     }
   };
 
-  const visible = interfaces.filter(
-    (iface) => !iface.disabled && !disabledInterfaces.includes(iface.name)
-      && iface.operstate === "up"
-  );
+  const visible = interfaces.filter((iface) => {
+    const isWireless = /^wl/.test(iface.name);
+    return !iface.disabled && !disabledInterfaces.includes(iface.name) &&
+      (iface.operstate === "up" || isWireless);
+  });
 
   const primaryVisible =
     primary && !disabledInterfaces.includes(primary) ? primary : null;
@@ -152,10 +153,11 @@ export function NetworkPanel({
                     }`}
                   >
                     <span className={`flex items-center gap-2 text-xs ${isPrimary ? "text-text-strong" : "text-text"}`}>
+                      <span className="truncate">{iface.name}</span>
                       {iface.ip ? (
-                        <span className="font-tabular truncate">{iface.ip}</span>
+                        <span className="font-tabular truncate">- {iface.ip}</span>
                       ) : (
-                        <span className="truncate">{iface.name} (no IP)</span>
+                        <span className="truncate text-muted">(no IP{ /^wl/.test(iface.name) ? ", disconnected" : " (disconnected)" })</span>
                       )}
                       {iface.wireless?.ssid && (
                         <span className="shrink-0 text-[10px] text-muted">{iface.wireless.ssid}</span>

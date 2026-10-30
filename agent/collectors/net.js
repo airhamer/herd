@@ -54,6 +54,30 @@ async function ipAddrJson(exec, flags) {
 }
 
 /**
+ * Robust line-based parser for `ip -4 addr show` (or full) text output.
+ * Correctly attributes inet to its iface even with altname, mixed case, etc.
+ */
+function parseIpsFromText(out) {
+  const map = new Map();
+  let current = null;
+  for (const line of out.split("\n")) {
+    const trimmed = line.trim();
+    const m = trimmed.match(/^\d+:\s+([^:@\s]+)[:@<]/);
+    if (m) {
+      current = m[1];
+      continue;
+    }
+    if (current) {
+      const ipm = trimmed.match(/inet\s+([0-9.]+)/);
+      if (ipm && !map.has(current)) {
+        map.set(current, ipm[1]);
+      }
+    }
+  }
+  return map;
+}
+
+/**
  * iface → IPv4 map.
  * 1. `ip addr show` when functional (json then text) — exact per iface.
  * 2. /proc/net/fib_trie local host addresses. Without route-scope labels the
@@ -72,6 +96,18 @@ async function getInterfaceIps(exec, readFile) {
   /** @type {string | null} */
   let lanIp = null;
 
+  // Prefer text parse of `ip -4 addr show` for accurate per-iface attribution (matches host `ip addr` output).
+  // The json path was sometimes misattributing on RoCE nodes.
+  try {
+    const out = await exec("ip -4 addr show 2>/dev/null || true");
+    const textMap = parseIpsFromText(out);
+    if (textMap.size > 0) {
+      for (const [k, v] of textMap) map.set(k, v);
+      return { map, lanIp };
+    }
+  } catch { /* optional */ }
+
+  // Fallback to json if text failed
   const arr = await ipAddrJson(exec, "-4 ");
   if (arr && arr.length > 0) {
     for (const iface of arr) {
@@ -81,6 +117,8 @@ async function getInterfaceIps(exec, readFile) {
     }
     if (map.size > 0) return { map, lanIp };
   }
+
+  // Legacy text parse as last resort before fib
   try {
     let out = "";
     try {
@@ -147,20 +185,65 @@ async function getInterfaceIps(exec, readFile) {
     !ip.startsWith("172.17.") && !ip.startsWith("172.18.") && !ip.startsWith("172.19.") &&
     !ip.startsWith("172.2") && !ip.startsWith("192.168.122.") // docker/virbr noise
   );
-  // Most LAN-like first: site space (192.168/10.x) over anything else.
-  lanCandidates.sort((a, b) => {
-    const score = (ip) => (/^192\.168\./.test(ip) || /^10\./.test(ip)) ? 0 : 1;
-    return score(a) - score(b);
-  });
 
-  if (defaultIface && lanCandidates.length > 0) {
-    map.set(defaultIface, lanCandidates[0]);
-    lanIp = lanCandidates[0];
-  } else if (!defaultIface && lanCandidates.length === 1) {
-    // Single usable address (e.g. wifi client): attribute it confidently.
-    map.set("__sole", lanCandidates[0]);
-    lanIp = lanCandidates[0];
+  // Parse connected subnets from /proc/net/route so we can attribute each local
+  // IP to the exact iface that owns its subnet (critical for RoCE nodes with
+  // 192.168 management on wl* + 10.200/10.201 RoCE on physical en*).
+  // Format: Iface Dest Gateway Flags ... Mask ...
+  // Note: Dest and Mask in /proc/net/route are little-endian hex dwords.
+  const subnetRoutes = [];
+  try {
+    const routeLines = (await readFile("/proc/net/route")).split("\n").slice(1);
+    for (const line of routeLines) {
+      const t = line.trim().split(/\s+/);
+      if (t.length < 8) continue;
+      const iface = t[0];
+      const destHex = t[1];
+      const maskHex = t[7];
+      if (!iface || destHex === "00000000") continue; // skip default
+      // Convert LE hex to network-order int for matching against ipToInt (BE style)
+      const le = parseInt(destHex, 16);
+      const leMask = parseInt(maskHex, 16);
+      const network = ((le & 0xff) << 24) | (((le >> 8) & 0xff) << 16) | (((le >> 16) & 0xff) << 8) | ((le >> 24) & 0xff);
+      const mask = ((leMask & 0xff) << 24) | (((leMask >> 8) & 0xff) << 16) | (((leMask >> 16) & 0xff) << 8) | ((leMask >> 24) & 0xff);
+      if (Number.isFinite(network) && Number.isFinite(mask) && mask !== 0) {
+        subnetRoutes.push({ iface, network, mask });
+      }
+    }
+  } catch { /* optional */ }
+
+  function ipToInt(ip) {
+    const p = ip.split(".").map((x) => parseInt(x, 10));
+    if (p.length !== 4 || p.some((n) => !Number.isFinite(n))) return null;
+    return ((p[0] << 24) >>> 0) | ((p[1] << 16) >>> 0) | ((p[2] << 8) >>> 0) | (p[3] >>> 0);
   }
+
+  // Attribute locals via subnet match first (exact ownership).
+  for (const ip of lanCandidates) {
+    const ipInt = ipToInt(ip);
+    if (ipInt == null) continue;
+    for (const r of subnetRoutes) {
+      if ((ipInt & r.mask) === r.network) {
+        if (!map.has(r.iface)) map.set(r.iface, ip);
+        break;
+      }
+    }
+  }
+
+  // Fallback for the default route iface (management LAN) if it didn't get an IP yet.
+  if (defaultIface && !map.has(defaultIface) && lanCandidates.length > 0) {
+    // Prefer a 192.168 on the default iface (usual management), else first candidate.
+    const mgmt = lanCandidates.find((ip) => /^192\.168\./.test(ip)) || lanCandidates[0];
+    map.set(defaultIface, mgmt);
+  }
+
+  // Still set lanIp to the one on the default route iface if present (for legacy consumers).
+  if (defaultIface && map.has(defaultIface)) {
+    lanIp = map.get(defaultIface);
+  } else if (lanCandidates.length > 0) {
+    lanIp = lanCandidates.find((ip) => /^192\.168\./.test(ip)) || lanCandidates[0];
+  }
+
   if (tsIp) map.set("tailscale0", tsIp);
 
   return { map, lanIp, defaultIface, sole: map.has("__sole") ? lanCandidates[0] : null };

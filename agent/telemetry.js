@@ -25,6 +25,8 @@ import { collectCpu } from "./collectors/cpu.js";
 import { collectMem } from "./collectors/mem.js";
 import { collectDisk } from "./collectors/disk.js";
 import { collectNet } from "./collectors/net.js";
+import { collectProxy } from "./collectors/proxy.js";
+import { collectLibrary } from "./collectors/library.js";
 import { collectDocker } from "./collectors/docker.js";
 import { collectSystemd } from "./collectors/systemd.js";
 import { collectLlm } from "./collectors/llm.js";
@@ -123,6 +125,8 @@ export function assembleSnapshot({
   llm = [],
   comfy = null,
   tailscale = null,
+  proxy = null,
+  library = null,
 }) {
   return {
     nodeId,
@@ -147,6 +151,8 @@ export function assembleSnapshot({
     // Batch 1A extras (additive; schema permits additional properties):
     llm,
     comfy,
+    proxy,
+    library,
     systemd: systemdUnits,
     // Tailscale node info (hostname, IP, config); null when no tailscaled.
     tailscale,
@@ -184,6 +190,8 @@ export async function collectTelemetry(nodeId, nodeName, lanIp, ports = [], comf
     llm,
     comfy,
     tailscale,
+    proxy,
+    library,
   ] = await Promise.all([
     inj.gpu ? inj.gpu() : collectGpu(opts),
     inj.cpu ? inj.cpu() : collectCpu(opts),
@@ -195,6 +203,8 @@ export async function collectTelemetry(nodeId, nodeName, lanIp, ports = [], comf
     inj.llm ? inj.llm(ports) : collectLlm(ports, { authTokens: opts.llmAuthTokens }),
     inj.comfy ? inj.comfy(comfyPort) : collectComfy(comfyPort, opts),
     inj.tailscale ? inj.tailscale() : collectTailscale(opts),
+    inj.proxy ? inj.proxy() : collectProxy(opts),
+    inj.library ? inj.library() : collectLibrary(opts),
   ]);
 
   let uptimeSeconds = null;
@@ -208,10 +218,30 @@ export async function collectTelemetry(nodeId, nodeName, lanIp, ports = [], comf
     }
   }
 
+  // Rigorous primary/lan IP selection for the snapshot top-level field (used by UIs for
+  // "Primary" display and sometimes to highlight the management adapter).
+  // Prefer the 192.168 management IP on the wireless iface (common on these RoCE DGX Sparks).
+  // Fall back to any 192.168, then a 10.x. This avoids the os.networkInterfaces() order lottery
+  // that was putting a RoCE 10.200 on the primary/wl row.
+  let effectiveLanIp = lanIp;
+  if (Array.isArray(net) && net.length > 0) {
+    const wl192 = net.find(n => n.ip && /^192\.168\./.test(n.ip) && (n.kind === "wireless" || /^wl/.test(n.iface || "")));
+    if (wl192) {
+      effectiveLanIp = wl192.ip;
+    } else {
+      const any192 = net.find(n => n.ip && /^192\.168\./.test(n.ip));
+      if (any192) effectiveLanIp = any192.ip;
+      else {
+        const first10 = net.find(n => n.ip && /^10\./.test(n.ip));
+        if (first10) effectiveLanIp = first10.ip;
+      }
+    }
+  }
+
   return assembleSnapshot({
     nodeId,
     nodeName,
-    lanIp,
+    lanIp: effectiveLanIp,
     nowMs,
     uptimeSeconds,
     gpu,
@@ -224,5 +254,7 @@ export async function collectTelemetry(nodeId, nodeName, lanIp, ports = [], comf
     llm,
     comfy,
     tailscale,
+    proxy,
+    library,
   });
 }

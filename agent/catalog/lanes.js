@@ -1,7 +1,10 @@
 /**
  * lanes.js — derive the lane view from recipes + containers + versions (S3.1).
  *
- * Lanes are LLM serving slots that take turns sharing one GPU pool
+ * NOTE (2026-10-29): New terminology: "Component" in UI/docs = former "lane" (a loadable serving unit).
+ * "Stack" = group of Components. Internal code keeps "lane" for compatibility with deriveLanes etc.
+ *
+ * Lanes (Components) are LLM serving slots that take turns sharing one GPU pool
  * (docs/EVAL-system-enrollment.md §3/§4.3 — lanes are recipe attributes of
  * an enrolled unit, never systems of their own). This module joins the
  * recipe catalog (which lanes CAN run) with live container/version state

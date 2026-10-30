@@ -57,6 +57,13 @@ RUN npm install --production
 FROM node:18-slim
 WORKDIR /app
 COPY --from=builder /app ./
+
+# iproute2 provides a working `ip` binary inside the container (the host `ip` binary
+# often has a newer glibc than the slim base image; mounting host libs leads to
+# GLIBC version errors). This lets the net collector use the robust line-based
+# `ip -4 addr show` parser for correct per-iface IP attribution on RoCE nodes.
+RUN apt-get update && apt-get install -y --no-install-recommends iproute2 && rm -rf /var/lib/apt/lists/*
+
 # Documented only; the container runs under network_mode: host (see
 # deploy/docker-compose.yml / install script), so this does not bind a port.
 EXPOSE 30091

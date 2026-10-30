@@ -1380,6 +1380,8 @@ export class SystemCollector {
         // fetching that one afterwards cost a second SSH login per poll.
         // Virtual interfaces have no `speed`; they just come back blank.
         "for d in /sys/class/net/*/speed; do echo \"$(basename $(dirname $d)):$(cat $d 2>/dev/null)\"; done 2>/dev/null || true",
+        "echo '---'",
+        "cat /proc/net/fib_trie 2>/dev/null || true",
       ].join("; ");
 
       const output = await sshExec(this.spark, cmd);
@@ -1390,6 +1392,7 @@ export class SystemCollector {
       const operstateOut = sections[3]?.trim() || "";
       const wolMac = normalizeMac(sections[4]?.trim() || "");
       const speedOut = sections[5]?.trim() || "";
+      const fibOut = sections[6]?.trim() || "";
 
       // Parse link speed lines ("enP7s7:10000"); blank values stay unknown.
       const speedMap = new Map();
@@ -1409,19 +1412,39 @@ export class SystemCollector {
         }
       }
 
-      // Parse IP addresses
+      // Parse IP addresses - line-based to correctly attribute inet to its iface header.
+      // Fixes crossed IPs on RoCE nodes (e.g. wireless 10.200.x attributed to en* or vice versa).
       const ipMap = new Map();
-      const ipBlocks = ipOut.split(/\n(?=\d+:\s+)/);
-      for (const block of ipBlocks) {
-        const first = block.split("\n")[0];
-        const m = first.match(/^\d+:\s+(\S+):/);
-        if (!m) continue;
-        const iface = m[1];
-        const ipMatch = block.match(/inet\s+([\d.]+)/);
-        if (ipMatch) {
-          ipMap.set(iface, ipMatch[1]);
+      let currentIface = null;
+      for (const line of ipOut.split("\n")) {
+        const trimmed = line.trim();
+        // Match iface header lines like "2: enp1s0f1np1: <...>"
+        const ifaceMatch = trimmed.match(/^\d+:\s+([^:@\s]+)[:@<]/);
+        if (ifaceMatch) {
+          currentIface = ifaceMatch[1];
+          continue;
+        }
+        if (currentIface) {
+          const ipMatch = trimmed.match(/inet\s+([0-9.]+)/);
+          if (ipMatch && !ipMap.has(currentIface)) {
+            ipMap.set(currentIface, ipMatch[1]);
+          }
         }
       }
+
+      // Rely on the direct line-based parse of "ip -4 addr show" (the SSH command always
+      // includes it). This is the rigorous source of truth: each inet is attributed to its
+      // own iface header line. No heuristic "assign first LAN candidate to default route iface"
+      // and no stealing IPs from other adapters. Fib-trie is kept only for potential future
+      // fallback (e.g. if ip command output is empty on a remote host).
+      //
+      // On RoCE nodes this naturally produces:
+      //   wlP9s9 → 192.168.50.x (management / wireless LAN)
+      //   enp1s0f1np1 → 10.200.x (RoCE)
+      //   enP2p1s0f1np1 → 10.201.x (RoCE)
+      //
+      // If the user prefers RoCE IPs to live only in the ROCE/RDMA box, we can filter or
+      // tag them later; for now they appear under their real adapters in NETWORK (correctly).
 
       // Parse /proc/net/dev
       const lines = devOut.split("\n").slice(2);

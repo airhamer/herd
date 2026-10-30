@@ -1,3 +1,66 @@
+# 2026-10-30 Stacks/Components Adoption (H.E.R.D. Cockpit) — superseding priority
+
+**This session's design and decisions supersede prior information in this file and the root IMPLEMENTATION_PLAN.md for the Stacks/Components work.**
+The steps outlined in the 2026-10-30 session (terminology, data model, calculator, history, UI selector with filters/categories/downtime, Library, multi-spark support, storage, presentation, bootstrap) **must be completed before any remaining work steps from the S-series or 2026-09-22 plan that are still relevant.**
+
+Existing S1–S5 are marked done; retained specs from root plan are noted below. New work takes precedence.
+
+## Session Design Decisions (2026-10-30, supersede)
+
+From Hasso source review (DESIGN.md, CAPABILITIES.md, recipes.py, lifecycle.py):
+- Recipes pin exact components (image, revision, drafter, flags like mem_fraction, context).
+- Lifecycle states + historical ETAs for downtime.
+- Panels: Lanes (load), Library (recipes/pins/checkpoints/drift), Traffic (table+stats), Machine (detailed mem/CPU/GPU), Requests.
+- Vanilla for reliability; SSE live; explicit confirms with exact cmds.
+
+**Decisions from Q&A (user answers):**
+1. Storage: New `stacks.json`. No auto-fetch on install. Manual download of definitions from github/web to extend/replace with dedup. Merge/export/import in setup menu. User can add custom.
+2. Estimates: UI unlocked (we will be source of future estimates). Bootstrap with hardcodes (use TP=2 qwen38-27b aeon7 + Hasso model), update from real-world testing/runs (after 5 history for avg).
+3. Topology grouping + RoCE test/setup: TBD later
+4. Parallel startups: defined by recipe/stack.
+5. Pre-defined stacks:
+   - Single spark or non-spark: only tp=1 components that fit available memory.
+   - Multi-spark group: default tp=x (x = #GPUs in group), user changeable.
+6. Presentation:
+   - Adopt Hasso's memory display (better visualization of flash export, system, page cache, free, swap, floor, KV guard).
+   - Fleet page: multi-spark groups show aggregated memory in a single line across all sparks.
+   - Fleet Overview: no multiple cards for group members (group configured in topology TBD). Group cards list components (in models section). On select: Services sub-tabs Components (stacks as filter, components grouped in stack card), Library (Hasso equiv + stacks), new Traffic tab (proxy + engine, most accurate).
+   - Filters at top of presented list: tp=x (based on target GPUs), recipe source (hasso vs mia-ai-lab etc.), inference engine, LLM purpose (code/embed/decision/image/video/audio/tts), pre-defined stacks (selectable/creatable in bar).
+   - Group stack: distributed; some components may run on only one spark in group.
+7. Group stack model: Select group → main TP=x components for group; then singles for remaining per-spark mem. Free mem calculated.
+8. Downtime on execute: Preview sequence list (shutdown to free resources first, then startups; parallel per recipe/stack). Total ETA (recipe estimates until 5 history avg, independent of first). Live during (progress + logs).
+9. Resource calc: New (Hasso doesn't have multi). Follow Hasso lane recipe estimation model, expanded to spark group + per-spark estimates. Bootstrap as above; real testing to refine.
+10. Pre-defined/external: Support storage/retrieval of stack defs from external sources (manual for now). Examples in component recipe config sourced from our github on install (AEON-7 as examples only, his old).
+
+**Ideas from Hasso for implementation:**
+- Use recipes.py style for pinning exact (extend our recipes for stacks).
+- Lifecycle.py for states/ETAs (adapt for shutdown/startup sequence).
+- Panels + filters for efficiency (adopt in our ServiceManager/Fleet + new views).
+- Library for checkpoints (pinned/stray), engine images, pins (enhance our catalog/recipes).
+
+## New Priority Register (complete these before retained S-steps)
+
+| id | title | status | notes |
+|---|---|---|---|
+| SC1 | Terminology alignment (Components=lanes, Subcomponents, Stacks=groups w/ 4 categories: Proven/Calculated/Not rec/Blocked) in docs/code/UI | pending | Update all references; keep internal "lane" for compat where needed. |
+| SC2 | Data model: Stack types in shared/types.ts; support new stacks.json (storage, external retrieval, merge) | pending | Per user: new file, manual external, dedup, setup menu merge. |
+| SC3 | Resource calculator extended for multi-spark/GPU (TP=x, per-spark mem, group total + breakdown, bootstrap estimates) | pending | Integrate with existing MemoryBudget + recipes. Unlock in UI. |
+| SC4 | Proven history tracking (storage/query for category) | pending | Build on SC2. |
+| SC5 | UI: Stack/Component selector + filters (TP, source, purpose, pre-defined) + live categories + downtime preview (sequence list + total ETA + live) | pending | Per answers: group first, main TP then singles w/ remaining mem; Hasso memory viz; aggregated fleet mem; filters at top; pre-defined behavior per single/multi. Location: extend ServiceManager sub-tabs (Components/Library + new Traffic); Fleet group cards. |
+| SC6 | Library enhancements (checkpoints on disk w/ pinned/stray/status, engine images, pins; Hasso-style) as priority | pending | New collector if needed; UI in Library tab. |
+| SC7 | Multi-spark support: group stacks (distributed, some components single-spark), per-spark addons if mem fits, TP calc | pending | Topology TBD later per user. |
+| SC8 | Downtime/execute flow: shutdown sequence to free, then startup (parallel per stack); preview + live | pending | |
+| SC9 | Presentation updates: Hasso memory display, aggregated group mem on fleet, group cards no individuals | pending | |
+| SC10 | Bootstrap + pre-defined stacks handling (hardcode initial, unlock UI, tp=1 for single, tp=x default for multi) | pending | |
+| SC11 | Integration: with proxy (LLM traffic only through proxy), recipes, fleet, telemetry, existing S3 lanes | pending | |
+| SC12 | Update this plan + progress tracking; test plan updates | pending | |
+
+(After these, resume retained S work if any open.)
+
+## Retained from Prior (superseded for new work)
+
+The S1–S5 rows below are complete per prior run. Any open items or retained specs from 2026-09-22 root plan remain, but new Stacks work above takes precedence for dispatch.
+
 # H.E.R.D. Implementation Plan — overnight run 2026-10-21 (S-series)
 
 Repo: `/home/steve/.openclaw/workspace/projects/sparkDash` · branch `main`

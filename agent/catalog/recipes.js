@@ -7,6 +7,10 @@
  * (JSON Schema draft-07). This module implements that schema with a
  * dependency-free validator — no ajv, no build step.
  *
+ * NOTE (2026-10-29): In new UI/docs we call an llm recipe that carries a .lane slot a "Component".
+ * Subcomponents are the individual library artifacts (checkpoint, drafter, image, etc.).
+ * Stacks are user-defined groups of Components.
+ *
  * Seam contract: shared/types.ts + shared/recipe.schema.json.
  * Style: Node.js ESM, plain JS (JSDoc), mirrors server/sparks/SparkRegistry.js
  * (load → validate → expose).

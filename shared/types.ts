@@ -463,6 +463,48 @@ export interface NodeLanes {
   candidates: LaneCandidate[];
 }
 
+// ─── Stacks (groups of Components) ─────────────────────────────────────────
+// NOTE (2026-10-29): New terminology for UI/docs:
+// - "Component" = a loadable serving unit (internally still often called a lane/recipe).
+// - "Subcomponent" = individual library artifacts (checkpoint, drafter, image, ...).
+// - "Stack" = user-defined group of Components that are intended to share the pool.
+// Stacks are selected in the browser UI and assigned one of four categories.
+
+export type StackCategory = 'proven' | 'calculated' | 'not_recommended' | 'blocked';
+
+/**
+ * A Stack definition (group of Components).
+ * Defined by selecting Components in the UI.
+ * Category is computed live (proven history + resource calc).
+ */
+export interface Stack {
+  /** Stable id (uuid or slug). */
+  id: string;
+  /** Human name, e.g. "Qwen3.8 full stack". */
+  name: string;
+  /** Component names (recipe names) that belong to this stack. */
+  componentNames: string[];
+  /** Current computed category. */
+  category: StackCategory;
+  /** When the category was last (re)computed (ms epoch). */
+  lastCalculatedAt?: number;
+  /** Optional free-form notes. */
+  notes?: string;
+  /** For 'proven': history of successful joint runs (no OOM, completed successfully). */
+  provenRuns?: Array<{
+    timestamp: number;
+    success: boolean;
+    durationMs?: number;
+    notes?: string;
+  }>;
+}
+
+/** Lightweight definition used when the UI is building a stack (before save). */
+export interface StackDraft {
+  name: string;
+  componentNames: string[];
+}
+
 // ─── Node agent snapshot (full telemetry) ──────────────────────────────────────────────────────────
 
 /**

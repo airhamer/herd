@@ -28,6 +28,32 @@ server container `sparkdash` (`airhamer/herd:latest`, :5555) and a local node-ag
   sglang::scheduler 98,819 MB on 1c2c).
 - SSH: `steve@<ip>` with the ed25519 key; server container mounts ssh key + config.
 
+## New work (2026-10-29 evening): Stacks / Components (adopting Hasso cockpit lanes + library)
+
+**Terminology (new going forward, non-breaking for existing code):**
+- **Component** = what was previously called a "lane" (an llm recipe that can be loaded and served as a unit, owning the pool or part of it).
+- **Subcomponent** = the library pieces that make up a Component (checkpoint, drafter, image, tokenizer, etc.).
+- **Stack** = a named group of Components that are intended to run together in the same unified memory pool.
+
+Stacks have four live categories (computed when selecting Components in the UI):
+1. **Proven** — executed together before (history) without problems or OOM.
+2. **Calculated** — resource math says they should fit.
+3. **Not recommended** — math says tight / close to insufficient.
+4. **Blocked** — definite insufficient resources.
+
+Stacks are defined by the operator selecting Components in the browser UI.
+
+See the progress_card in the current session for the full breakdown and current status.
+Internal code still uses "lane" / "recipe" for compatibility (deriveLanes etc.). New UI and stack logic will use the new terms.
+
+**Current related code**:
+- agent/catalog/recipes.js + lanes.js (deriveLanes, pools)
+- shared/types.ts (Recipe, Lane concepts)
+- node agent telemetry (containers, versions, memory budget, net)
+- Recent proxy collector for guard/keepalive (1C2C is running it)
+
+---
+
 ## TASK 1 (start here): Network/IP/MAC/Tailscale model redesign
 Owner direction from the last session (deliberately NOT implemented yet — design first, then build):
 
