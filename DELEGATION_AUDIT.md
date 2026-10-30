@@ -183,3 +183,52 @@ need to be wired. This is expected; the seam contract (shared/types.ts) ensures 
 | **DELEGATE** (node agent) | GPU/CPU/Mem/Disk/Net telemetry, Docker telemetry, Systemd telemetry, LLM/ComfyUI telemetry, Versions, Recipe catalog, Memory budgeting, Service registry, Docker actions, Audit log, Systemd actions, LLM switch, Media catalog |
 | **KEEP-DIRECT** (dashboard server) | Node registry, Fleet connection, Requests aggregation, Topology model, Overview UI, Per-node UI, Topology UI, Service Manager UI, Requests UI, Memory UI, E2E wiring, Deploy scripts, Docs, PR prep, Live verification |
 | **CONSOLIDATE** (both) | E2E wiring |
+
+## 6. 2026-10-30 Cockpit Adoption (Hasso-inspired Stacks/Components/Library) — New Capabilities Audit
+
+**Date added:** 2026-10-30
+**Context:** Morning session decisions (Hasso source + explicit Q&A). New priority work superseding prior. Terminology: Components (ex-Lanes), Subcomponents, Stacks (groups with 4 categories). New stacks.json, multi-spark resource calc, downtime sequencer, Hasso memory viz, aggregated group views, Library + Traffic panels, proxy as sole LLM path.
+
+### Capability audit (new)
+
+| Capability | Decision | Rationale | Related SC |
+|---|---|---|---|
+| **Stack / Component catalog & selector** | KEEP-DIRECT | Fleet-wide view + user selection; low frequency; fleet + UI state | SC1, SC2, SC5, SC10 |
+| **stacks.json storage + external retrieval** | CONSOLIDATE | Local (agent for pins/recipes) + server (UI/merge); manual external | SC2 |
+| **Multi-spark resource calculator (TP=x, per-spark, group totals)** | KEEP-DIRECT | Fleet/group view + estimates; integrates MemoryBudget | SC3, SC7, SC9 |
+| **Proven history + ETA averaging (5 events)** | KEEP-DIRECT | Fleet-wide history; low frequency | SC4, SC8 |
+| **Proxy collector (serving inference process focus)** | DELEGATE | Local ps + docker + port probe; high frequency; local state | SC6, SC11 |
+| **Library collector (checkpoints, images, pins, stray/pinned)** | DELEGATE | Local docker/HF cache scans; low frequency; local state | SC6 |
+| **Downtime sequencer (preview sequence + live progress)** | CONSOLIDATE | Local actions (shutdown/start via agent) + fleet preview/ETA (server) | SC8 |
+| **Hasso memory display (detailed breakdown)** | KEEP-DIRECT | UI presentation of local memory data | SC9 |
+| **Aggregated group memory / temps on fleet cards** | KEEP-DIRECT | Fleet-wide aggregation | SC9, SC7 |
+| **Group cards (no individual members) + components list** | KEEP-DIRECT | Fleet Overview presentation | SC7, SC9 |
+| **Components / Library / Traffic sub-tabs** | KEEP-DIRECT | Per-node detail UI | SC5 |
+| **Filters (tp, source, engine, purpose, pre-defined)** | KEEP-DIRECT | UI presentation + selection | SC5, SC10 |
+| **Pre-defined stack behavior (tp=1 single vs tp=x group)** | KEEP-DIRECT | UI + calculator logic | SC5, SC10 |
+| **Traffic panel (proxy + engine, most accurate)** | KEEP-DIRECT | New panel consuming proxy collector | SC5, SC11 |
+
+### Direct-manipulation audit (new)
+
+| Capability | Direct manipulation? | Rationale |
+|---|---|---|
+| Stack/Component catalog & stacks.json | Yes (server for UI/merge) + local agent for pins | Fleet view + local recipe integration |
+| Resource calculator | Yes (server) | Fleet/group view |
+| Proxy/Library collectors | No | Needs local ps/docker/HF cache; dashboard remote |
+| Downtime sequencer | No (actions via agent) | Local actions + server preview |
+| New UI (filters, sub-tabs, aggregated, memory viz, group cards) | Yes | Fleet-wide view + presentation; dashboard server owns UI |
+
+### Internal duplication scan (new)
+
+All new capabilities follow the same rule: collectors/actions local (DELEGATE), aggregation/UI/selection fleet-wide (KEEP-DIRECT), shared state like stacks.json + downtime (CONSOLIDATE where needed).
+
+### Consequences for 2026-10-30 work
+- Node agent owns proxy (serving process) and library collectors.
+- Dashboard owns stack selection, filters, resource calc, history, aggregated views, sub-tabs, downtime preview.
+- Seams: stacks.json format, updated telemetry snapshot, downtime sequence output, memory budget extensions (must be specified precisely in IMPLEMENTATION_PLAN.md).
+- E2E wiring for new flows remains CONSOLIDATE.
+
+**Updated verdict summary (combined):**
+- DELEGATE additions: Proxy collector (serving), Library collector.
+- KEEP-DIRECT additions: Stack/Component selector + filters, resource calculator, history, all new UI (group cards, aggregated memory, Hasso memory viz, sub-tabs, Traffic, downtime preview).
+- CONSOLIDATE additions: stacks.json + external merge, downtime sequencer (preview + execute).
