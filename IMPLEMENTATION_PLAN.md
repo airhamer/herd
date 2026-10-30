@@ -1,3 +1,7 @@
+> Superseded as the action list by GitHub issues in airhamer/herd on 2026-10-30.
+> Status is the issue label: `needs-decision`, `ready`, `in-progress`, or `done`.
+> This file is design rationale only. Do not add open rows here.
+
 # H.E.R.D. Cockpit Adoption — Stacks, Components, Library, Multi-Spark & Downtime (2026-10-30)
 
 **Date:** 2026-10-30
@@ -6,7 +10,8 @@
 **Supersedes:** All prior IMPLEMENTATION_PLAN.md (root and docs/), old S-series register, 2026-09-22 multi-spark plan, and github-plan-migration of old D rows. The action list for legacy items is now on GitHub (see below). This is the single tracked plan and register (per large-project-orchestrator v7).
 
 **Companion planning documents (document-first approach — review these before granular batch prompts):**
-- PHASES.md (high-level phases; to be created/updated first)
+- PHASES.md (high-level phases)
+- docs/COMPONENTS-DESIGN-PROPOSAL.md (initial Hasso + MiaAI research + multi-spark extension design — started 2026-10-30; POC steps build on it)
 - DELEGATION_AUDIT.md (updated for new capabilities)
 - TEST_PLAN.md (to be reconciled)
 - ORCHESTRATION.md (standing orders)
@@ -70,6 +75,12 @@ Hasso source review (DESIGN.md, CAPABILITIES.md, recipes.py, lifecycle.py) showe
 8. **Downtime on execute**: Preview sequence list (shutdown to free resources first, then startups; parallel per recipe/stack). Total ETA (recipe estimates until 5 history avg). Live during execution (progress + logs).
 9. **Resource calculation**: New (Hasso lacks multi-spark). Follow Hasso lane/recipe estimation model, expanded to spark group with per-spark estimates + group total/breakdown. Bootstrap as above; refine via real testing.
 10. **Pre-defined/external**: Support storage/retrieval of stack definitions from external sources (manual for now). Examples in component recipe config sourced from our github on install (AEON-7 as examples only; his designs are old).
+
+**Additional design constraints (user 2026-10-30 clarification):**
+- A component/recipe definition is bound to a specific TP and inference machine. Changing the TP number or the inference engine/machine **requires copying the definition into a new recipe** (prevents implementation problems across sparks). Multiple similar models may share the same base recipe (following Hasso's pattern).
+- The dashboard must handle model lifecycle smartly: download a model once on one host, then copy it to other local instances as needed (no repeated full downloads).
+- Concrete example: AEON-7 Qwen38-27b was selected for the dual-spark setup because following MiaAI GLM-5.3 instructions did not succeed.
+
 11. **Ideas from Hasso for implementation**:
     - recipes.py style for pinning exact components/stacks (extend our recipes/catalog).
     - lifecycle.py for states/ETAs (adapt for shutdown + startup sequence preview + live).
@@ -132,39 +143,49 @@ High-level phases (detailed batches only after user review of this plan + PHASES
 - **Phase 5: Integration, bootstrap, multi-spark** (full group support, per-spark addons, proxy-only traffic, pre-defined external examples, bootstrap data).
 - **Phase 6: Test, verify, gate** (on live fleet; gates per TEST_PLAN).
 
-(See PHASES.md for more detail on sequencing and dependencies. SC1–SC12 below map to these phases.)
+### Initial Proof-of-Concept Steps (prioritized early validation on single-spark first)
 
-Legacy S1–S5 work is done (per prior run). Old D1/D2/D3 issues closed and removed from board as no longer relevant (2026-10-30 user directive). Focus is now exclusively on SC1–SC12 from the morning session.
+These concrete steps are the entry point for implementation. They provide working proof on gx10-1c2c before expanding the full catalog or multi-spark complexity. They map to SC2, SC5, SC6, SC10, SC11 (and supporting parts of SC3/SC8).
 
-## 3a. Open register (THE action list — SC priority)
+1. Pull two Hasso recipes (one 27b-style and one flash-style) and convert them into our component definition format (respecting the "copy on TP or inference machine change" rule).
+2. Design the method for acting on component/lane changes (dashboard-initiated start/stop/switch, using the proxy as the sole LLM traffic path, integrated with agent actions and recipes).
+3. Design, implement, and deploy the dashboard pages + functionality to consume the component data and perform lane/component changes.
+4. Test end-to-end by using the new UI to switch what is running on gx10-1c2c.
+5. Review the results on 1c2c and identify any obvious changes needed before scouring/gathering large amounts of additional recipe data (to minimize churn on definitions).
 
-**THE action list.** Grouped by blocker. New SC work takes precedence. Legacy items noted.
+This POC-first approach validates the core loop quickly.
 
-### needs-decision
-- None from legacy D rows (closed as irrelevant per user directive on 2026-10-30). Any new needs-decision items will be added here or on the GitHub board as they arise during SC work.
+(See PHASES.md for more detail on sequencing and dependencies. SC1–SC12 below map to these phases. The POC steps above are the concrete starting work.)
 
-### Ready / pending (new SC work from 2026-10-30 morning session — complete these before retained old steps)
-| id | title | status | notes |
-|---|---|---|---|
-| SC1 | Terminology alignment (Components=lanes, Subcomponents, Stacks=groups w/ 4 categories: Proven/Calculated/Not rec/Blocked) in docs/code/UI | pending | Update all references; keep internal "lane" for compat where needed. |
-| SC2 | Data model: Stack types in shared/types.ts; support new stacks.json (storage, external retrieval, merge) | pending | Per user: new file, manual external, dedup, setup menu merge. |
-| SC3 | Resource calculator extended for multi-spark/GPU (TP=x, per-spark mem, group total + breakdown, bootstrap estimates) | pending | Integrate with existing MemoryBudget + recipes. Unlock in UI. |
-| SC4 | Proven history tracking (storage/query for category) | pending | Build on SC2. |
-| SC5 | UI: Stack/Component selector + filters (TP, source, purpose, pre-defined) + live categories + downtime preview (sequence list + total ETA + live) | pending | Per answers: group first, main TP then singles w/ remaining mem; Hasso memory viz; aggregated fleet mem; filters at top; pre-defined behavior per single/multi. Location: extend ServiceManager sub-tabs (Components/Library + new Traffic); Fleet group cards. |
-| SC6 | Library enhancements (checkpoints on disk w/ pinned/stray/status, engine images, pins; Hasso-style) as priority | pending | New collector if needed; UI in Library tab. (Proxy collector already started.) |
-| SC7 | Multi-spark support: group stacks (distributed, some components single-spark), per-spark addons if mem fits, TP calc | pending | Topology TBD later per user. |
-| SC8 | Downtime/execute flow: shutdown sequence to free, then startup (parallel per stack); preview + live | pending | |
-| SC9 | Presentation updates: Hasso memory display, aggregated group mem on fleet, group cards no individuals | pending | |
-| SC10 | Bootstrap + pre-defined stacks handling (hardcode initial, unlock UI, tp=1 for single, tp=x default for multi) | pending | |
-| SC11 | Integration: with proxy (LLM traffic only through proxy), recipes, fleet, telemetry, existing S3 lanes | pending | |
-| SC12 | Update this plan + progress tracking; test plan updates | pending | (Self-update after review.) |
+Legacy S1–S5 work is done (per prior run). Old D1/D2/D3 issues closed and removed from board as no longer relevant (2026-10-30 user directive). Focus is now exclusively on SC1–SC12 from the morning session (starting with the POC steps).
 
-(After SC1–SC12, resume any retained old steps only if user directs. GitHub board will be used for some legacy needs-decision.)
+## Open register — migrated, not the action list
 
-### Follow-on (after v1 of this adoption)
-- Full RoCE topology + grouping UI (TBD per user).
-- Auto-fetch or more advanced external stack retrieval (currently manual).
-- Production container redeploy (requires owner OK).
+The list is GitHub. This table only translates old ids.
+
+| Old id | Issue |
+|---|---|
+| POC1 | https://github.com/airhamer/herd/issues/5 |
+| POC2 | https://github.com/airhamer/herd/issues/6 |
+| POC3 | https://github.com/airhamer/herd/issues/7 |
+| POC4 | https://github.com/airhamer/herd/issues/8 |
+| POC5 | https://github.com/airhamer/herd/issues/9 |
+| SC1 | https://github.com/airhamer/herd/issues/10 |
+| SC2 | https://github.com/airhamer/herd/issues/11 |
+| SC3 | https://github.com/airhamer/herd/issues/12 |
+| SC4 | https://github.com/airhamer/herd/issues/13 |
+| SC5 | https://github.com/airhamer/herd/issues/14 |
+| SC6 | https://github.com/airhamer/herd/issues/15 |
+| SC7 | https://github.com/airhamer/herd/issues/16 |
+| SC8 | https://github.com/airhamer/herd/issues/17 |
+| SC9 | https://github.com/airhamer/herd/issues/18 |
+| SC10 | https://github.com/airhamer/herd/issues/19 |
+| SC11 | https://github.com/airhamer/herd/issues/20 |
+| SC12 | https://github.com/airhamer/herd/issues/21 |
+
+Already done in the plan, no issue opened: Legacy S1–S5 (prior run), old D1/D2/D3 (closed as irrelevant), high-level phases (planning only).
+
+Follow-on items (RoCE topology, auto-fetch, production redeploy) not migrated as open rows.
 
 ## 4. Orchestration Plan
 
@@ -187,9 +208,9 @@ GitHub project board: in setup (see separate walkthrough). Status labels on issu
 - 2026-10-30: github-plan-migration for legacy items. Old D1/D2/D3 closed and removed from board as no longer relevant (user directive). New plan focuses on SC1-SC12 morning decisions. Board now has only Orchestration.
 - 2026-10-30: Proxy collector adjusted for serving inference process; library collector wired. StackBuilder stub. Terminology + design decisions captured in docs/ (now reconciled here).
 - 2026-10-30: Full morning session Q&A decisions recorded (storage, estimates, pre-defined behavior, presentation, group model, downtime, resource calc, Hasso ideas). New priority SC1-SC12 register.
-- 2026-10-30: This plan created/overwrote root as single source per large-project-orchestrator + user document-first directive. All morning design/decisions now in one place.
+- 2026-10-30: User directed POC-first approach: (1) pull two Hasso recipes into our format (respect TP/machine copy rule + smart model copy), (2) design method for acting on lane/component changes, (3) design/implement/deploy dashboard UI + actions, (4) test switch on gx10-1c2c, (5) review before more data. Added to plan as prioritized early validation steps (maps to SC2/SC5/SC10/SC11). Design constraint on recipe copying and model distribution added.
 
-**Next (document-first):** Produce/review PHASES.md (high-level phases) and updated DELEGATION_AUDIT.md before any granular decomposition or worker prompts.
+**Next:** Execute the Initial Proof-of-Concept Steps (pull 2 Hasso recipes, design lane change method, implement dashboard UI + actions, test switch on gx10-1c2c, review). Use docs/COMPONENTS-DESIGN-PROPOSAL.md as starting point for the data model. Update this plan and PHASES.md with lessons after the 1c2c test.
 
 ---
 
