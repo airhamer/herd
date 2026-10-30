@@ -272,6 +272,10 @@ export interface GpuMetrics {
   vramAvailableMB: number;
   /** Top GPU processes by VRAM usage (max 5). */
   processes: Array<{ pid: number; name: string; vramMB: number }>;
+  /** Sum of ALL compute-apps GPU memory (MB), not capped at 5. Optional: agents before #26 omit it. */
+  gpuAllocMB?: number;
+  /** true when the GPU draws from the OS memory pool (GB10: nvidia-smi memory.total is N/A). */
+  unifiedMemory?: boolean;
 }
 
 export interface CpuMetrics {
@@ -294,6 +298,12 @@ export interface MemMetrics {
   availableMB: number;
   /** Memory percentage (0-100). */
   percentage: number;
+  /** /proc/meminfo Cached (MB): reclaimable page cache, inside availableMB. Optional (#26). */
+  cachedMB?: number;
+  /** /proc/meminfo SwapTotal (MB). Optional (#26). */
+  swapTotalMB?: number;
+  /** /proc/meminfo SwapFree (MB). Optional (#26). */
+  swapFreeMB?: number;
 }
 
 export interface DiskMetrics {

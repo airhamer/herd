@@ -41,6 +41,8 @@ test("gpu: parses nvidia-smi csv into GpuMetrics (ground truth)", async () => {
       { pid: 456, name: "vllm", vramMB: 4096 },
       { pid: 123, name: "python", vramMB: 1024 },
     ],
+    gpuAllocMB: 5120,
+    unifiedMemory: false, // nvidia-smi reports its own memory.total
   });
 });
 
@@ -54,6 +56,22 @@ test("gpu: GB10 [N/A] memory falls back to meminfo + compute-apps sum", async ()
   assert.equal(g.vramAvailableMB, 40000);
   assert.equal(g.vramPercentage, 40); // 51200/128000
   assert.deepEqual(g.processes, [{ pid: 789, name: "sglang", vramMB: 51200 }]);
+});
+
+test("gpu: gpuAllocMB sums ALL compute apps, not just the top 5 (issue #26)", async () => {
+  const apps = Array.from({ length: 7 }, (_, i) => `${i + 1},proc${i},1000`).join("\n");
+  const g = await collectGpu({ exec: mockExec("55, 5, 10, 65, [N/A], [N/A]", apps), readFile });
+  assert.equal(g.processes.length, 5);
+  assert.equal(g.gpuAllocMB, 7000);
+});
+
+test("gpu: unifiedMemory is true when memory.total is [N/A] (GB10), false on a discrete total", async () => {
+  const gb10 = await collectGpu({ exec: mockExec("55, 90, 20.2, 90.0, [N/A], [N/A]", "789,sglang,51200"), readFile });
+  assert.equal(gb10.unifiedMemory, true);
+  assert.equal(gb10.gpuAllocMB, 51200);
+  const discrete = await collectGpu({ exec: mockExec("55, 5, 10, 65, 0, 65536", ""), readFile });
+  assert.equal(discrete.unifiedMemory, false);
+  assert.equal(discrete.gpuAllocMB, 0);
 });
 
 test("gpu: clamps vramPercentage to 100 when apps exceed pool", async () => {

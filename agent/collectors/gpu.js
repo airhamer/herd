@@ -9,6 +9,11 @@
  * OS pool (MemTotal from /proc/meminfo), vramUsed to the compute-apps sum, and
  * vramAvailable to MemAvailable.
  *
+ * Issue #26: also reports `gpuAllocMB` (sum of ALL compute apps, not just the
+ * top 5 in `processes`) and `unifiedMemory` (true when nvidia-smi gives no
+ * memory.total, i.e. the GPU draws from the OS pool, as on GB10). The cards use
+ * them to carve the model's share out of MemTotal − MemAvailable.
+ *
  * NOTE: the per-process VRAM field is `used_gpu_memory` (the actual
  * nvidia-smi field; the task spec's "utilities.gpu.memory.usage" does not
  * exist in nvidia-smi).
@@ -24,7 +29,7 @@ const APPS_QUERY =
 /**
  * Collect GPU metrics.
  * @param {{ exec?: (cmd: string) => Promise<string>, readFile?: (path: string) => Promise<string>, smiPath?: string }} [deps]
- * @returns {Promise<{temperature:number, usage:number, powerDraw:number, powerLimit:number, vramUsedMB:number, vramTotalMB:number, vramPercentage:number, vramAvailableMB:number, processes:Array<{pid:number, name:string, vramMB:number}>} | null>}
+ * @returns {Promise<{temperature:number, usage:number, powerDraw:number, powerLimit:number, vramUsedMB:number, vramTotalMB:number, vramPercentage:number, vramAvailableMB:number, processes:Array<{pid:number, name:string, vramMB:number}>, gpuAllocMB:number, unifiedMemory:boolean} | null>}
  */
 export async function collectGpu({ exec = runShell, readFile = readTextFile, smiPath = "nvidia-smi" } = {}) {
   // Try NVIDIA
@@ -98,6 +103,8 @@ export async function collectGpu({ exec = runShell, readFile = readTextFile, smi
           vramPercentage,
           vramAvailableMB,
           processes,
+          gpuAllocMB: Math.round(appsSumMB),
+          unifiedMemory: !(smiTotal != null && smiTotal > 0),
         };
       }
     }
