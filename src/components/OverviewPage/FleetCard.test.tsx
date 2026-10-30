@@ -185,9 +185,10 @@ describe("FleetCard", () => {
     // CPU
     expect(text).toContain("25% · 55°C");
 
-    // Mem
-    expect(text).toContain("Mem");
-    expect(text).toContain("39.1 / 125.0 GB"); // used / total in GB
+    // Unified memory pool (#26): GB10 → one pool bar instead of VRAM + Mem
+    expect(text).toContain("Unified memory");
+    expect(text).toContain("39.1 / 125.0 GiB in use"); // MemTotal − MemAvailable
+    expect(text).not.toContain("VRAM");
 
     // Containers: 3 total, 2 running
     expect(text).toContain("3 (2 running)");
@@ -203,6 +204,47 @@ describe("FleetCard", () => {
 
     // PolledAt
     expect(container.querySelector('[data-testid="fleet-card-polledat"]')?.textContent).toContain("1m ago");
+  });
+
+  it("memory pool (#26): names the running model, splits cache and swap from the agent's meminfo fields", () => {
+    const { container } = render(
+      <FleetCard
+        {...makeCard({
+          gpu: { ...gpu(), gpuAllocMB: 30000, unifiedMemory: true },
+          mem: {
+            ...mem(),
+            cachedMB: 20480,
+            swapTotalMB: 16384,
+            swapFreeMB: 8192,
+          },
+        })}
+      />
+    );
+    const legend = container.querySelector('[data-testid="memory-pool-legend"]')?.textContent ?? "";
+    expect(legend).toContain("qwen3.8-27b29.3"); // gpuAllocMB 30000 MB
+    expect(legend).toContain("System and apps9.8"); // 40000 − 30000
+    expect(legend).toContain("Page cache20.0");
+    expect(legend).toContain("Free65.9"); // 88000 − 20480
+    expect(legend).toContain("Swap in use8.0");
+    expect(container.querySelector('[data-testid="memory-pool-floor-text"]')?.textContent).toBe(
+      "82.9 above the 3 GiB floor"
+    );
+  });
+
+  it("memory pool (#26): a discrete GPU keeps its VRAM bar and the pool has no GPU segment", () => {
+    const { container } = render(
+      <FleetCard
+        {...makeCard({
+          gpu: { ...gpu(), vramTotalMB: 24576, vramUsedMB: 8192, unifiedMemory: false },
+        })}
+      />
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("VRAM");
+    expect(text).toContain("8.0 / 24.0 GB");
+    expect(container.querySelector('[data-testid="memory-pool"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="memory-pool-seg-gpu"]')).toBeNull();
+    expect(text).not.toContain("Unified memory");
   });
 
   it("shows offline status and unreachable placeholder", () => {
