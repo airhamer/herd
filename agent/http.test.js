@@ -217,17 +217,46 @@ test("http: POST /actions runs a docker action through the catalog + dispatch", 
   });
 });
 
-test("http: POST /actions maps a systemd recipe to the unit action", async () => {
-  await withServer({ catalog: CATALOG }, async (base) => {
-    const r = await postAction(base, { type: "restart", serviceName: "whisper" });
-    assert.equal(r.status, 200);
-    // systemctl exists in this env? Either way the wiring is proven: the
-    // message must name the unit, and the response must be an ActionResponse.
-    assert.match(r.body.message, /whisper-server\.service/);
-    assert.equal(r.body.serviceName, "whisper");
-    assert.ok(["success", "failure"].includes(r.body.status));
-  });
-});
+/**
+ * Run fn with PATH pointing ONLY at a temp dir holding a stub `systemctl`
+ * that records its argv and exits 0. Makes the systemd action hermetic:
+ * the result no longer depends on whether this machine has systemd, and a
+ * dev box / Spark running the suite never restarts a real unit.
+ */
+async function withFakeSystemctl(fn) {
+  const fs = await import("node:fs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sparkdash-fake-systemctl-"));
+  const argvLog = path.join(dir, "argv.log");
+  const stub = path.join(dir, "systemctl");
+  fs.writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${argvLog}'\nexit 0\n`, { mode: 0o755 });
+  const savedPath = process.env.PATH;
+  process.env.PATH = dir;
+  try {
+    await fn(() => (fs.existsSync(argvLog) ? fs.readFileSync(argvLog, "utf-8") : ""));
+  } finally {
+    process.env.PATH = savedPath;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test(
+  "http: POST /actions maps a systemd recipe to the unit action",
+  { skip: process.platform === "win32" ? "stub systemctl is a POSIX sh script" : false },
+  async () => {
+    await withFakeSystemctl(async (readArgv) => {
+      await withServer({ catalog: CATALOG }, async (base) => {
+        const r = await postAction(base, { type: "restart", serviceName: "whisper" });
+        assert.equal(r.status, 200);
+        // whisper → whisper-server.service, exact argv, ActionResponse shape
+        assert.equal(readArgv(), "restart whisper-server.service\n");
+        assert.equal(r.body.serviceName, "whisper");
+        assert.equal(r.body.status, "success");
+        assert.equal(r.body.ok, true);
+        assert.equal(r.body.message, "systemctl restart whisper-server.service → exit 0");
+      });
+    });
+  },
+);
 
 test("http: POST /actions validation + lookup errors → 400/404 JSON", async () => {
   await withServer({ catalog: CATALOG }, async (base) => {
