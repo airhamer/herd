@@ -1,0 +1,34 @@
+[
+  {
+    "leg": "S1 batch/8 route: v2 body verbatim -> fresh server -> agent",
+    "request": {
+      "version": 2,
+      "actionId": "2a17329f-9b19-496e-9107-0752cfd21b0d",
+      "componentId": "qwen38-27b-stock-sglang-tp1-gx10",
+      "type": "start",
+      "nodeId": "gx10-1c2c",
+      "groupRef": null,
+      "exclusiveWith": "qwen38-flash-next-sglang-tp1-gx10",
+      "confirmationToken": null,
+      "dryRun": true,
+      "recipeName": null,
+      "timeoutMs": null,
+      "actor": "poc4-live-test"
+    },
+    "response": {
+      "status": 502,
+      "body": {
+        "error": "Node agent responded 404"
+      }
+    }
+  },
+  {
+    "leg": "S2 batch/8 route: v2 body + v1-guard tripwire -> fresh server -> agent",
+    "response": {
+      "status": 502,
+      "body": {
+        "error": "Node agent responded 404"
+      }
+    }
+  }
+]
