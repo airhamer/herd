@@ -1,0 +1,110 @@
+{
+  "id": "qwen38-flash-next-sglang-tp1-gx10",
+  "name": "Qwen3.8-Flash-Next 176B NVFP4 + NEXTN (SGLang, concurrency tier)",
+  "purpose": "code",
+  "kind": "llm",
+  "tp": 1,
+  "machineClass": "dgx-spark-gb10-128g",
+  "memory_estimate_mb": {
+    "perSpark": 112640,
+    "basis": "measured",
+    "notes": "Docker cap 110g on a 128 GB unified pool; SGLang mem_fraction 0.85 (cookbook single-Spark cell). Host MemAvailable in service: 19.8 GiB at the concurrency tier (docs/flash-lane.md measurement). The 47.7 GiB FP8 N-gram (PLE) table lives in a sparse NVMe file read through GB10 host page tables (--ple-offload-backend file), with a resident-set budget of 8 GiB (SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB). Boot to /health: 12 min 21 s fresh PLE table, 14 min 54 s when it rewrote a populated one. KV pool lottery is real on this lane: 189,056 vs 249,408 tokens for the same launcher two boots apart (2026-09-03); the launcher's MemAvailable>=96 GiB floor loop bounds it."
+  },
+  "engine": "sglang",
+  "image": "lmsysorg/sglang@sha256:3e79541d1e2a6818979c4aa9ca1fa63d6961d7bc50120867953ea6baaf1d8f62",
+  "imageAlias": "lmsysorg/sglang:nightly-cu134-20261011-53295c6",
+  "model": {
+    "repo": "RadixArk/Qwen3.8-Flash-Next-NVFP4",
+    "revision": "7b719225242aacd3dbd3f9407468c2ee9a9d2594",
+    "servedModelName": "qwen3.8-flash-next",
+    "quantization": "modelopt_fp4"
+  },
+  "drafter": {
+    "algorithm": "NEXTN",
+    "repo": null,
+    "revision": null,
+    "quantization": "unquant",
+    "numSteps": 3,
+    "eagleTopk": 1,
+    "numDraftTokens": 4,
+    "notes": "MTP head rides in the target checkpoint (in-checkpoint MTP tensors are BF16 in this NVFP4 export, hence unquant). Reduced draft vocabulary (--speculative-token-map, 65,536 rows) is generated per box by install.sh; worth 14-25% decode, value-bearing flag rendered by the tier."
+  },
+  "flags": {
+    "context_length": 262144,
+    "mem_fraction": 0.85,
+    "max_running_requests": 8,
+    "chunked_prefill": 4096,
+    "max_mamba_cache_size": 40,
+    "page_size": 64,
+    "fp4_gemm_backend": "flashinfer_cutlass",
+    "mamba_cache_strategy": "extra_buffer",
+    "mamba_max_states_per_path": 2,
+    "ple_offload_backend": "file",
+    "switches": {
+      "--sleep-on-idle": true,
+      "--enable-metrics": true,
+      "--enable-cache-report": true,
+      "--ple-offload-embedding": true,
+      "--enable-linear-replayssm-spec": true,
+      "--allow-auto-truncate": false
+    },
+    "tier": "concurrency",
+    "tierAlternatives": {
+      "context": "--max-running-requests 4 --max-mamba-cache-size 20 + NEXTN pair",
+      "throughput": "--max-running-requests 24 --max-mamba-cache-size 96 --mamba-radix-cache-strategy extra_buffer_lazy (no speculation)"
+    },
+    "rawArgs": [
+      "--tp-size", "1",
+      "--quantization", "modelopt_fp4",
+      "--fp4-gemm-backend", "flashinfer_cutlass",
+      "--page-size", "64",
+      "--ple-offload-embedding", "--ple-offload-backend", "file", "--ple-offload-dir", "/ple",
+      "--mem-fraction-static", "0.85",
+      "--context-length", "262144",
+      "--chunked-prefill-size", "4096",
+      "--max-running-requests", "8", "--max-mamba-cache-size", "40",
+      "--mamba-radix-cache-strategy", "extra_buffer", "--mamba-max-states-per-path", "2",
+      "--mamba-radix-cache-strategy", "extra_buffer",
+      "--speculative-algorithm", "NEXTN", "--speculative-num-steps", "3",
+      "--speculative-eagle-topk", "1", "--speculative-num-draft-tokens", "4",
+      "--speculative-draft-model-quantization", "unquant",
+      "--enable-linear-replayssm-spec",
+      "--reasoning-parser", "qwen3", "--tool-call-parser", "qwen3_coder"
+    ]
+  },
+  "ports": { "engine": 30000, "notes": "Hasso box default PORT=30000, keepalive proxy PORT+1; per-box choice (host placeholder upstream)." },
+  "memoryProfile": {
+    "docker": { "memory": "110g", "memorySwap": "110g", "shmSize": "16g", "network": "host", "ipc": "host" },
+    "hostFloorGiB": 96,
+    "ple": {
+      "tableSizeGiB": 47.7,
+      "dir": "per-box (upstream default $HOME/flashnext-ple)",
+      "rssBudgetGiB": 8,
+      "rewriteOnBoot": true,
+      "requiresAts": "GB10 ATS addressing mode (iommu.passthrough=0); outside it the engine refuses the table at weight load (upstream issue #54) — checked by a preflight that exits 78."
+    },
+    "env": {
+      "SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK": "1",
+      "SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES": "1",
+      "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "0",
+      "SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB": "8",
+      "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+      "HF_HUB_OFFLINE": "1"
+    }
+  },
+  "multi_spark": {
+    "supported": false,
+    "rule": "copy-on-tp-or-machine-change: this file is tp=1 on dgx-spark-gb10-128g. This component exists precisely because the 176B checkpoint fits ONE GB10 via file-backed PLE + GB10 host-page-table access; that mechanism is GB10-specific, so a 64 GB Spark or a TP2 pair is NOT a copy-and-run — a copy must re-prove the PLE path or pick another export (e.g. the vLLM FP4-Local lane), with its own measured flags and estimates.",
+    "singleSparkOnly": true
+  },
+  "source": {
+    "origin": "hasso5703/dgx-spark-qwen38",
+    "upstreamCommit": "43a3597fdeab4b408fcc62ff663cff9ccc79a158",
+    "derivedFrom": ["dashboard/recipes.py", "install.sh", "qwen38-flash-launch.sh.template", "docs/flash-lane.md"],
+    "upstreamRecipeId": "flash",
+    "tierPinnedFrom": "install.sh FLASH_TIER default (concurrency)",
+    "license": "MIT",
+    "retrievedAt": "2026-10-30"
+  },
+  "description": "Flash lane, RadixArk target: Qwen3.8-Flash-Next (176B hybrid MoE, 6B active) NVFP4 with in-checkpoint NEXTN, SGLang nightly on one GB10, concurrency tier (8 running requests). Converted from Hasso's builtin recipe 'flash'; image/model pins and tier flags verbatim from upstream at the commit above."
+}
