@@ -36,7 +36,7 @@ This is the **master plan AND the open-action register** (ONE tracked plan per l
 - Network fixes applied (little-endian route parsing, lanIp preference, NetworkPanel display).
 - New collectors in agent: proxy.js, library.js (wired to telemetry).
 - UI stub: src/components/Stacks/StackBuilder.tsx .
-- GitHub migration completed: old D1/D2/D3 moved to airhamer/herd issues #2/#3/#4 (needs-decision). Labels created. Project board setup in progress (token scopes pending read:project/write:project).
+- GitHub migration completed for legacy items. Old D1/D2/D3 closed as no longer relevant (per user 2026-10-30). New SC work is the focus.
 
 ### 1.2 Base state before morning session
 - Old terminology: Lanes, Library components.
@@ -134,14 +134,14 @@ High-level phases (detailed batches only after user review of this plan + PHASES
 
 (See PHASES.md for more detail on sequencing and dependencies. SC1–SC12 below map to these phases.)
 
-Legacy S1–S5 work is done (per prior run). Old D rows migrated to GitHub issues #2–#4 (needs-decision). Those are now discussed on GitHub; not re-opened here unless user directs.
+Legacy S1–S5 work is done (per prior run). Old D1/D2/D3 issues closed and removed from board as no longer relevant (2026-10-30 user directive). Focus is now exclusively on SC1–SC12 from the morning session.
 
 ## 3a. Open register (THE action list — SC priority)
 
 **THE action list.** Grouped by blocker. New SC work takes precedence. Legacy items noted.
 
-### needs-decision (from morning + GitHub migration)
-- D1, D2, D3 (migrated to https://github.com/airhamer/herd/issues/2 , #3 , #4 — see GitHub for current discussion/rulings). These were from prior plan; decisions needed on AEON-7 images/ports, node-agent Docker vs bare, PR target/branch.
+### needs-decision
+- None from legacy D rows (closed as irrelevant per user directive on 2026-10-30). Any new needs-decision items will be added here or on the GitHub board as they arise during SC work.
 
 ### Ready / pending (new SC work from 2026-10-30 morning session — complete these before retained old steps)
 | id | title | status | notes |
@@ -184,7 +184,7 @@ GitHub project board: in setup (see separate walkthrough). Status labels on issu
 
 ## 6. Running log (newest first)
 
-- 2026-10-30: github-plan-migration completed for legacy D rows (issues #2-4 created; root plan demoted). Labels created. Board setup pending token scopes.
+- 2026-10-30: github-plan-migration for legacy items. Old D1/D2/D3 closed and removed from board as no longer relevant (user directive). New plan focuses on SC1-SC12 morning decisions. Board now has only Orchestration.
 - 2026-10-30: Proxy collector adjusted for serving inference process; library collector wired. StackBuilder stub. Terminology + design decisions captured in docs/ (now reconciled here).
 - 2026-10-30: Full morning session Q&A decisions recorded (storage, estimates, pre-defined behavior, presentation, group model, downtime, resource calc, Hasso ideas). New priority SC1-SC12 register.
 - 2026-10-30: This plan created/overwrote root as single source per large-project-orchestrator + user document-first directive. All morning design/decisions now in one place.
