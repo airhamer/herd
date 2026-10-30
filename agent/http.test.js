@@ -197,37 +197,20 @@ async function postAction(base, body, headers = {}) {
   return { status: res.status, body: await res.json().catch(() => null) };
 }
 
-test("http: POST /actions runs a docker action through the catalog + dispatch", async () => {
-  await withServer({ catalog: CATALOG }, async (base) => {
-    // Real dispatch: docker start on qwen38-sglang — no docker binary here,
-    // so the action layer resolves "docker not found"; what's under test is
-    // the HTTP wiring: valid request → 200 ActionResponse (ok=false is data).
-    const r = await postAction(base, {
-      actionId: "act-http-1",
-      type: "start",
-      serviceName: "llm-tp1",
-    });
-    assert.equal(r.status, 200);
-    assert.equal(r.body.actionId, "act-http-1");
-    assert.equal(r.body.serviceName, "llm-tp1");
-    assert.equal(r.body.status, "failure"); // docker missing in this test env
-    assert.equal(r.body.ok, false);
-    assert.match(r.body.message, /docker start qwen38-sglang/);
-    assert.equal(typeof r.body.at, "number");
-  });
-});
-
 /**
- * Run fn with PATH pointing ONLY at a temp dir holding a stub `systemctl`
- * that records its argv and exits 0. Makes the systemd action hermetic:
- * the result no longer depends on whether this machine has systemd, and a
- * dev box / Spark running the suite never restarts a real unit.
+ * Run fn with PATH pointing ONLY at a temp dir holding a stub executable
+ * `name` that records its argv (one line per call) and exits 0. Makes the
+ * action tests hermetic: results no longer depend on whether this machine
+ * has docker/systemd, and a dev box / Spark running the suite never starts a
+ * real container or restarts a real unit.
+ * @param {string} name executable to stub (e.g. "docker", "systemctl")
+ * @param {(readArgv: () => string) => Promise<void>} fn
  */
-async function withFakeSystemctl(fn) {
+async function withFakeBin(name, fn) {
   const fs = await import("node:fs");
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sparkdash-fake-systemctl-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `sparkdash-fake-${name}-`));
   const argvLog = path.join(dir, "argv.log");
-  const stub = path.join(dir, "systemctl");
+  const stub = path.join(dir, name);
   fs.writeFileSync(stub, `#!/bin/sh\nprintf '%s\\n' "$*" >> '${argvLog}'\nexit 0\n`, { mode: 0o755 });
   const savedPath = process.env.PATH;
   process.env.PATH = dir;
@@ -240,10 +223,39 @@ async function withFakeSystemctl(fn) {
 }
 
 test(
+  "http: POST /actions runs a docker action through the catalog + dispatch",
+  { skip: process.platform === "win32" ? "stub docker is a POSIX sh script" : false },
+  async () => {
+    // Stub docker on a private PATH: the real binary is never invoked, so
+    // this can't start qwen38-sglang on a Spark. What's under test is the
+    // HTTP wiring + catalog mapping: llm-tp1 → `docker start qwen38-sglang`
+    // (exact argv) → 200 ActionResponse.
+    await withFakeBin("docker", async (readArgv) => {
+      await withServer({ catalog: CATALOG }, async (base) => {
+        const r = await postAction(base, {
+          actionId: "act-http-1",
+          type: "start",
+          serviceName: "llm-tp1",
+        });
+        assert.equal(r.status, 200);
+        assert.equal(readArgv(), "start qwen38-sglang\n");
+        assert.equal(r.body.actionId, "act-http-1");
+        assert.equal(r.body.serviceName, "llm-tp1");
+        assert.equal(r.body.status, "success");
+        assert.equal(r.body.ok, true);
+        assert.equal(r.body.error, null);
+        assert.equal(r.body.message, "docker start qwen38-sglang → exit 0");
+        assert.equal(typeof r.body.at, "number");
+      });
+    });
+  },
+);
+
+test(
   "http: POST /actions maps a systemd recipe to the unit action",
   { skip: process.platform === "win32" ? "stub systemctl is a POSIX sh script" : false },
   async () => {
-    await withFakeSystemctl(async (readArgv) => {
+    await withFakeBin("systemctl", async (readArgv) => {
       await withServer({ catalog: CATALOG }, async (base) => {
         const r = await postAction(base, { type: "restart", serviceName: "whisper" });
         assert.equal(r.status, 200);
