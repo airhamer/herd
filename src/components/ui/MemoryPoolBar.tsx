@@ -47,8 +47,8 @@ export function poolSegments(pool: MemoryPool, holder: string): PoolSegment[] {
     ...(pool.unified
       ? [{ key: "gpu" as const, label: holder, short: `${holder} ${whole(pool.gpuMB)}`, mb: pool.gpuMB, className: "bg-accent text-black" }]
       : []),
-    { key: "other", label: "System and apps", short: `system ${whole(pool.otherMB)}`, mb: pool.otherMB, className: "bg-muted-strong text-surface" },
-    { key: "cache", label: "Page cache", short: `cache ${whole(pool.cacheMB)}`, mb: pool.cacheMB, className: "bg-muted/60 text-text-strong" },
+    { key: "other", label: "System and apps", short: `system ${whole(pool.otherMB)}`, mb: pool.otherMB, className: "bg-muted text-surface" },
+    { key: "cache", label: "Page cache", short: `cache ${whole(pool.cacheMB)}`, mb: pool.cacheMB, className: "bg-border-strong text-text-strong" },
     { key: "free", label: "Free", short: `free ${whole(pool.freeMB)}`, mb: pool.freeMB, className: "text-success", style: { background: FREE_HATCH } },
   ];
 }
@@ -200,12 +200,11 @@ export function MemoryPoolReservoir({ pool, holder }: { pool: MemoryPool; holder
         <span className="absolute right-0">{gib(pool.totalMB)} GiB</span>
       </div>
       {showSwap && (
-        <div className="mt-1.5 flex items-center gap-2 text-[11px] text-warning" data-testid="memory-reservoir-swap">
-          <span className="w-10 shrink-0">Swap</span>
-          <div className="relative h-2 flex-1 overflow-hidden rounded-full bg-border">
+        <div className="mt-1" data-testid="memory-reservoir-swap" title="Swap in use, on the same GiB scale as the pool">
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-border">
             <div className="h-full" style={{ width: pct(pool.swapUsedMB, pool.totalMB), background: SWAP_HATCH }} />
           </div>
-          <span className="font-tabular">{gib(pool.swapUsedMB)} GiB</span>
+          <div className="mt-0.5 text-[11px] text-warning font-tabular">swap {gib(pool.swapUsedMB)} GiB</div>
         </div>
       )}
     </div>
