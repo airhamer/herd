@@ -67,6 +67,7 @@ test("net: excludes virtual ifaces; first call → 0 speeds; second → delta MB
       txSpeed: 5, // 52428800 B / 10 s = 5 MB/s
       linkSpeedMbps: 25000,
       wireless: null,
+      kind: "physical", // TASK 1: every row carries a kind tag
       mac: null,
     },
   ]);
@@ -172,7 +173,7 @@ const NET_DEV_BRIDGE = [
   "tailscale0: 900    90    0    0    0     0          0         0  900      90    0    0    0     0          0         0",
 ].join("\n");
 
-test("net: broken ip tool → /proc fallback puts LAN IP on the bridge, tailnet on tailscale0", async () => {
+test("net: broken ip tool → /proc fallback puts LAN IP on the bridge; tailscale0 is not a net row", async () => {
   resetNetBaseline();
   const exec = async (cmd) => {
     if (String(cmd).includes("tailscale status")) {
@@ -199,27 +200,43 @@ test("net: broken ip tool → /proc fallback puts LAN IP on the bridge, tailnet 
   assert.equal(br0.ip, "192.168.50.150");
   const slave = rows.find(r => r.iface === "enp16s0");
   assert.equal(slave.ip, null);
-  // tailnet address surfaces on tailscale0
-  const ts = rows.find(r => r.iface === "tailscale0");
-  assert.equal(ts.ip, "100.122.55.39");
+  assert.equal(slave.kind, "physical");
+  assert.equal(br0.kind, "bridge"); // brif = enp16s0 (no tap/vnet member) → plain bridge
+  // TASK 1: tailscale0 moved to the separate telemetry.tailscale block
+  // (collectors/tailscale.js); the net table never lists it, and the tailnet
+  // address is never claimed by a LAN row.
+  assert.equal(rows.some(r => r.iface === "tailscale0"), false);
+  assert.equal(rows.every(r => r.ip !== "100.122.55.39"), true);
   // UNICAST route (not ours) never claimed
   assert.equal(rows.every(r => r.ip !== "198.51.100.7"), true);
 });
 
-test("net: Narthex real-world — br0 keeps the LAN IP, tailscale0 surfaces, disconnected wifi + docker noise dropped", async () => {
+test("net: Narthex real-world — br0 bridge keeps the LAN IP, virbr0 vm-bridge, wlp17s0 wireless w/o IP, tailscale0 + docker noise dropped", async () => {
   resetNetBaseline();
   const exec = async () => NARTHEX_JSON;
   const rows = await collectNet({ exec, readFile: narthexReadFile, now: () => 0 });
   const byIface = Object.fromEntries(rows.map((r) => [r.iface, r]));
+  // TASK 1 contract: exactly these rows, in /proc/net/dev order
+  assert.deepEqual(rows.map((r) => r.iface), ["enp16s0", "wlp17s0", "br0", "virbr0"]);
   // bridge carries the real IP; its slave enp16s0 honestly shows no IP
   assert.equal(byIface.br0.ip, "192.168.50.150");
+  assert.equal(byIface.br0.kind, "bridge");
+  assert.equal(byIface.br0.mac, "3a:6e:3e:a7:8b:f4");
   assert.equal(byIface.enp16s0.ip, null);
+  assert.equal(byIface.enp16s0.kind, "physical");
   assert.equal(byIface.enp16s0.mac, "fc:9d:05:02:36:7c");
   assert.equal(byIface.enp16s0.linkSpeedMbps, 5000); // wired stays despite no IP
-  // tailnet IP visible without the Tailscale CLI
-  assert.equal(byIface.tailscale0.ip, "100.122.55.39");
-  // disconnected wifi and all docker/vm plumbing are gone
-  assert.equal(rows.some((r) => r.iface === "wlp17s0"), false);
+  // disconnected wifi is SHOWN (UI labels it "wireless, disconnected") and
+  // never borrows another iface's address
+  assert.equal(byIface.wlp17s0.kind, "wireless");
+  assert.equal(byIface.wlp17s0.ip, null);
+  assert.equal(byIface.wlp17s0.wireless, null);
+  // libvirt bridge owns a real IPv4 → shown, tagged vm-bridge
+  assert.equal(byIface.virbr0.kind, "vm-bridge");
+  assert.equal(byIface.virbr0.ip, "192.168.122.1");
+  // tailscale0 lives in the separate Tailscale block, not the net table
+  assert.equal(byIface.tailscale0, undefined);
+  assert.equal(rows.every((r) => r.ip !== "100.122.55.39"), true);
+  // docker/compose plumbing is gone
   assert.equal(rows.some((r) => r.iface.startsWith("docker") || r.iface.startsWith("br-")), false);
-  assert.equal(byIface.virbr0, undefined);
 });
