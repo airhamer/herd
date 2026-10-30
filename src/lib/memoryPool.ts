@@ -129,3 +129,23 @@ export function shortModel(id: string): string {
   const i = t.lastIndexOf("/");
   return i >= 0 && i < t.length - 1 ? t.slice(i + 1) : t;
 }
+
+/**
+ * The size a box is sold as, from what Linux sees (Hasso's boxmem.py: a 128 GB
+ * GB10 shows 121.6 GiB of MemTotal). Prefers the hardware's own figure.
+ */
+export function poolClassGB(totalMB: number, hardwareGB?: number | null): number | null {
+  if (typeof hardwareGB === "number" && Number.isFinite(hardwareGB) && hardwareGB > 0) return Math.round(hardwareGB);
+  const g = nn(totalMB) / 1024;
+  if (g <= 0) return null;
+  for (const cls of [16, 32, 64, 128, 256, 512]) if (g <= cls) return cls;
+  return Math.round(g);
+}
+
+/** Scale labels under the full bar: every 32 GiB that leaves room before the total (Hasso: 0/32/64/96/total). */
+export function poolScaleGiB(totalMB: number): number[] {
+  const g = nn(totalMB) / 1024;
+  const marks: number[] = [];
+  for (let m = 0; m < g - 12; m += 32) marks.push(m);
+  return marks;
+}

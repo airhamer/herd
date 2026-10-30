@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gib, gpuHolderLabel, isUnifiedGpu, memoryPool, shortModel } from "./memoryPool";
+import { gib, gpuHolderLabel, isUnifiedGpu, memoryPool, poolClassGB, poolScaleGiB, shortModel } from "./memoryPool";
 
 // Hasso's reference screenshot (ASUS Ascent GX10): 109.9 of 121.6 GiB in use,
 // 11.8 available, 8.8 above the 3 GiB floor; model 99.2, system 10.7,
@@ -112,5 +112,19 @@ describe("gpuHolderLabel", () => {
   it("shortModel keeps ids without a slash", () => {
     expect(shortModel("qwen38-flash")).toBe("qwen38-flash");
     expect(shortModel("org/")).toBe("org/");
+  });
+});
+
+describe("poolClassGB / poolScaleGiB", () => {
+  it("names the box size from MemTotal when the hardware does not say (121.6 GiB → 128 GB)", () => {
+    expect(poolClassGB(124560)).toBe(128);
+    expect(poolClassGB(60000)).toBe(64);
+    expect(poolClassGB(124560, 128)).toBe(128);
+    expect(poolClassGB(0)).toBeNull();
+  });
+  it("scale marks every 32 GiB with room before the total", () => {
+    expect(poolScaleGiB(124560)).toEqual([0, 32, 64, 96]);
+    expect(poolScaleGiB(60000)).toEqual([0, 32]);
+    expect(poolScaleGiB(0)).toEqual([]);
   });
 });
