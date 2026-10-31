@@ -1157,3 +1157,170 @@ export interface FleetUpdatePlan {
   startedAt: number | null;
   waveStates: Array<"pending" | "running" | "rebooting" | "slow" | "healthy">;
 }
+
+// ─── Bench results store (BENCH1, server/bench/results) ──────────────────
+//
+// One BenchResult = one measured cell (a run at one fixed set of
+// conditions). Snake_case because the records are a persisted file format
+// (config/bench-results.json) shared with imports from other bench tools.
+// Timestamps here are ISO-8601 strings. Unknown provenance is null.
+
+export type BenchMetric =
+  | "decode_tps_stream"
+  | "agg_window_tps"
+  | "agg_sum_tps"
+  | "prefill_tps"
+  | "server_generation_tps"
+  | "ttft_p50"
+  | "ttft_p95"
+  | "tpot_p95"
+  | "accuracy_pct"
+  | "wh_per_1k_tokens";
+
+/** Page §3 source tiers: counter 1, native 2, proxy 3, client 4; reference = not measured by Herd. */
+export type BenchMetricSource = "counter" | "native" | "proxy" | "client" | "reference";
+
+export type BenchOrigin = "herd" | "reference" | "aeon-pod";
+
+export interface BenchMetricRow {
+  metric: BenchMetric;
+  /** null = not measured (never 0). */
+  value: number | null;
+  unit: string;
+  n: number | null;
+  ci_low: number | null;
+  ci_high: number | null;
+  source: BenchMetricSource;
+  tier: 1 | 2 | 3 | 4 | null;
+  window_s: number | null;
+  approximate: boolean;
+  valid: boolean;
+  /** Registered definition name, e.g. "herd.decode.agg_window.v1", "mia.agg_sum_per_request.v1". */
+  definition: string;
+}
+
+export interface BenchRunInfo {
+  run_id: string;
+  started_at: string;
+  completed_at: string | null;
+  status: "completed" | "failed" | "cancelled" | "interrupted" | "partial" | null;
+  suite: string;
+  suite_version: string;
+  bench: string;
+  bench_version: string;
+  origin: BenchOrigin;
+  /** Required for non-herd origins. */
+  reference_url: string | null;
+  imported_from: { file: string; key: string } | null;
+}
+
+export interface BenchHostInfo {
+  node_id: string | null;
+  node_name: string | null;
+  /** AEON-style bucket: "Single DGX Spark", "2× DGX Spark", "Single RTX 5090"… */
+  hw_bucket: string | null;
+  gpu: string | null;
+  gpu_count: number | null;
+  mem_class: string | null;
+  clock_cap_mhz: number | null;
+  power_cap_w: number | null;
+}
+
+export interface BenchLaneInfo {
+  engine: string | null;
+  engine_version: string | null;
+  image_digest: string | null;
+  model_id: string | null;
+  weights_hash: string | null;
+  quant: string | null;
+  recipe_flags: string[] | null;
+  spec_decode: string | null;
+  kv_dtype: string | null;
+  ctx_len: number | null;
+  parallel: Record<string, number> | null;
+}
+
+/** Must match for two results to be compared. */
+export interface BenchConditions {
+  concurrency: number | null;
+  context_tokens: number | null;
+  max_tokens: number | null;
+  temperature: number | null;
+  thinking: boolean | null;
+  prompt_set: string | null;
+  client_location: "local" | "network" | null;
+}
+
+export interface BenchResult {
+  schema_version: 1;
+  id: string;
+  recorded_at: string;
+  run: BenchRunInfo;
+  host: BenchHostInfo;
+  lane: BenchLaneInfo;
+  conditions: BenchConditions;
+  settings: Record<string, unknown>;
+  metrics: BenchMetricRow[];
+  /** Per-item pass/fail vector (enables McNemar between runs). */
+  quality: { items: Array<{ id: string; pass: boolean | null }> } | null;
+  /** Source object the record was derived from (lossless import). */
+  raw: Record<string, unknown> | null;
+}
+
+export interface BenchResultsListResponse {
+  schema_version: number;
+  read_only: boolean;
+  total: number;
+  results: BenchResult[];
+}
+
+export interface BenchResultsFilter {
+  run_id?: string;
+  bench?: string;
+  suite?: string;
+  origin?: BenchOrigin;
+  node_id?: string;
+  hw_bucket?: string;
+  model_id?: string;
+  engine?: string;
+  quant?: string;
+  metric?: BenchMetric;
+  definition?: string;
+  concurrency?: number;
+  context_tokens?: number;
+  /** ISO date or epoch ms. */
+  since?: string | number;
+  until?: string | number;
+  /** Only results comparable with this result id. */
+  like?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface BenchCompareRow {
+  metric: BenchMetric;
+  unit: string;
+  baseline: number;
+  candidate: number;
+  delta: number;
+  delta_pct: number | null;
+  improved: boolean | null;
+  baseline_definition: string;
+  candidate_definition: string;
+}
+
+export interface BenchCompareResponse {
+  baseline: string;
+  candidate: string;
+  comparable: boolean;
+  /** Why the two results cannot be compared at all. */
+  reasons: string[];
+  rows: BenchCompareRow[];
+  /** Metrics present on both sides whose definitions differ. */
+  refused: Array<{
+    metric: BenchMetric;
+    baseline_definition: string;
+    candidate_definitions: string[];
+    reason: string;
+  }>;
+}

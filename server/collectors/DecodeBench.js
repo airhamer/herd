@@ -927,6 +927,21 @@ export class DecodeBenchManager {
     list.unshift(pub);
     this.historyBySpark.set(job.sparkId, list.slice(0, HISTORY_LIMIT));
     this._saveHistory();
+    this._emitResult(pub);
+  }
+
+  /**
+   * Hand a finished run to the bench results store (set by server/index.js).
+   * A failing sink never affects the bench.
+   * @param {object} record
+   */
+  _emitResult(record) {
+    if (typeof this.resultSink !== "function") return;
+    try {
+      this.resultSink(record);
+    } catch (err) {
+      console.warn(`[bench-results] sink failed: ${err?.message || err}`);
+    }
   }
 }
 
