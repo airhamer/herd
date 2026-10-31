@@ -86,7 +86,7 @@ test("http: identity + health endpoints", async () => {
     assert.deepEqual(await root.json(), {
       name: "sparkdash-node-agent",
       version: "0.2.0",
-      endpoints: ["/telemetry", "/versions", "/containers", "/actions", "/audit", "/health", "/updates"],
+      endpoints: ["/telemetry", "/versions", "/containers", "/actions", "/audit", "/roce/apply", "/health", "/updates"],
     });
 
     const health = await fetch(`${base}/health`);
@@ -523,4 +523,31 @@ test("http: GET /lanes 503-safe when live telemetry fails (never hangs, never 50
   } finally {
     await server.stop();
   }
+});
+
+test("http: POST /roce/apply defaults to a dry run and a real apply is a 501 stub (SC5d)", async () => {
+  await withServer({ token: "sekret" }, async (base) => {
+    const auth = { "Content-Type": "application/json", Authorization: "Bearer sekret" };
+    const interfaces = [{ ifName: "enp1s0f1np1", action: "enable", speedMbps: 200000 }];
+
+    const denied = await fetch(`${base}/roce/apply`, { method: "POST", body: "{}" });
+    assert.equal(denied.status, 401);
+
+    const dry = await fetch(`${base}/roce/apply`, { method: "POST", headers: auth, body: JSON.stringify({ interfaces }) });
+    assert.equal(dry.status, 200);
+    const dryBody = await dry.json();
+    assert.equal(dryBody.dryRun, true);
+    assert.deepEqual(dryBody.commands, []);
+
+    const real = await fetch(`${base}/roce/apply`, {
+      method: "POST",
+      headers: auth,
+      body: JSON.stringify({ interfaces, dryRun: false }),
+    });
+    assert.equal(real.status, 501);
+    assert.match((await real.json()).error, /not implemented/);
+
+    const bad = await fetch(`${base}/roce/apply`, { method: "POST", headers: auth, body: "{nope" });
+    assert.equal(bad.status, 400);
+  });
 });

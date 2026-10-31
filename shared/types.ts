@@ -58,6 +58,11 @@ export interface TopologyInfo {
   rank: number | null;
   /** Group id this node belongs to (e.g. "tp2-glm"). null for standalone. */
   groupId: string | null;
+  /**
+   * Display name of the group (SC5d: from config/groups.json). Optional —
+   * absent on agent-produced TopologyInfo and for standalone nodes.
+   */
+  groupName?: string | null;
   /** Head node id when role is worker. null otherwise. */
   headId: string | null;
   /** RoCE links this node participates in (from this node's perspective). */

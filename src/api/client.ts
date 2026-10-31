@@ -952,3 +952,93 @@ export function nearestBenchReferences(id: string, limit?: number): Promise<Benc
   const q = limit ? `?limit=${limit}` : "";
   return apiFetch(`/api/bench-results/${encodeURIComponent(id)}/references${q}`);
 }
+
+// ─── Spark groups (SC5d, issue #75) ─────────────────────
+/** One spark group page on the Topology tab; members[0] is the head (rank 0). */
+export interface SparkGroup {
+  id: string;
+  name: string;
+  members: string[];
+}
+
+/** A registered node and whether it may join a group (GB10 Sparks only). */
+export interface GroupsNode {
+  nodeId: string;
+  name: string;
+  spark: boolean;
+  reason: string;
+}
+
+/** One RoCE link in the computed plan for the current grouping. */
+export interface RocePlanLink {
+  from: string;
+  to: string;
+  fromIf: string | null;
+  toIf: string | null;
+  groupId: string | null;
+  action: "enable" | "disable";
+  targetSpeedMbps: number | null;
+  currentSpeedMbps: number | null;
+  currentUp: boolean;
+  change: boolean;
+  reason: string;
+}
+
+export interface RocePlan {
+  links: RocePlanLink[];
+  interfaces: Array<{ nodeId: string; ifName: string; action: "enable" | "disable"; speedMbps: number | null; peer: string }>;
+  groups: Array<{
+    groupId: string;
+    size: number;
+    tp: number;
+    linkSpeedMbps: number | null;
+    expectedLinks: number;
+    missingLinks: Array<[string, string]>;
+  }>;
+  changes: number;
+  warnings: string[];
+  todo: string[];
+}
+
+/** GET/PUT /api/fleet/groups response. */
+export interface GroupsView {
+  version: 1;
+  switchPresent: boolean;
+  groups: SparkGroup[];
+  maxGroupSize: number;
+  nodes: GroupsNode[];
+  plan: RocePlan;
+}
+
+/** POST /api/fleet/groups/roce-apply response (dry run). */
+export interface RoceApplyResult {
+  ok: boolean;
+  dryRun: boolean;
+  implemented: boolean;
+  commands?: string[];
+  message?: string;
+  error?: string;
+  nodes?: Array<{ nodeId: string; commands?: string[]; message?: string; error?: string }>;
+}
+
+export function fetchGroups(): Promise<GroupsView> {
+  return apiFetch("/api/fleet/groups");
+}
+
+export function saveGroups(doc: { groups: SparkGroup[]; switchPresent: boolean }): Promise<GroupsView> {
+  return apiFetch("/api/fleet/groups", { method: "PUT", body: JSON.stringify(doc) });
+}
+
+/** Apply the RoCE plan. Dry run unless dryRun:false + confirm:true (which answers 501 for now). */
+export function applyRocePlan(body: { dryRun: boolean; confirm?: boolean }): Promise<RoceApplyResult> {
+  return apiFetch("/api/fleet/groups/roce-apply", { method: "POST", body: JSON.stringify(body) });
+}
+
+/** The groups API as one injectable object (Topology tab; tests pass fakes). */
+export interface GroupsApi {
+  fetch: () => Promise<GroupsView>;
+  save: (doc: { groups: SparkGroup[]; switchPresent: boolean }) => Promise<GroupsView>;
+  apply: (body: { dryRun: boolean; confirm?: boolean }) => Promise<RoceApplyResult>;
+}
+
+export const groupsApi: GroupsApi = { fetch: fetchGroups, save: saveGroups, apply: applyRocePlan };

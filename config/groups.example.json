@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "switchPresent": false,
+  "groups": [
+    { "id": "tp2", "name": "tp2", "members": ["gx10-102c", "gx10-25ed"] }
+  ]
+}
