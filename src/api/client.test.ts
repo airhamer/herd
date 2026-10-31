@@ -1,29 +1,37 @@
+// URL shapes of the history endpoints (docs/specs/unit-history.md §9).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getGpuHistory, getUnitHistory } from "./client";
 
-function stubFetch(payload: unknown = {}) {
-  const fn = vi.fn(async (_input: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => payload }));
-  vi.stubGlobal("fetch", fn);
-  return fn;
+function recordRequests(body: unknown) {
+  const urls: string[] = [];
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (url: string) => {
+      urls.push(url);
+      return { ok: true, status: 200, json: async () => body };
+    }),
+  );
+  return urls;
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
+afterEach(() => vi.unstubAllGlobals());
 
-describe("unit history endpoints", () => {
-  it("fetches /api/sparks/:id/history with the whitelisted range, id URL-encoded", async () => {
-    const fn = stubFetch({ enabled: false });
-    await getUnitHistory("a b", "30d");
-    expect(fn).toHaveBeenCalledTimes(1);
-    expect(fn.mock.calls[0][0]).toBe("/api/sparks/a%20b/history?range=30d");
+describe("history client", () => {
+  it("asks for one range of a unit, escaping the id", async () => {
+    const urls = recordRequests({ enabled: false });
+    await expect(getUnitHistory("rack/2 node", "24h")).resolves.toEqual({ enabled: false });
+    expect(urls).toEqual(["/api/sparks/rack%2F2%20node/history?range=24h"]);
   });
 
-  it("fetches /api/sparks/:id/gpu-history with an optional windowMs", async () => {
-    const fn = stubFetch({ t: [], u: [], c: [], p: [], gpus: [] });
-    await getGpuHistory("s1");
-    expect(fn.mock.calls[0][0]).toBe("/api/sparks/s1/gpu-history");
-    await getGpuHistory("s1", 48 * 3600_000);
-    expect(fn.mock.calls[1][0]).toBe("/api/sparks/s1/gpu-history?windowMs=172800000");
+  it("adds windowMs to the GPU history request only when given", async () => {
+    const urls = recordRequests({ t: [], u: [], c: [], p: [], gpus: [] });
+    await getGpuHistory("n1");
+    await getGpuHistory("n1", 0);
+    await getGpuHistory("n1", 3_600_000);
+    expect(urls).toEqual([
+      "/api/sparks/n1/gpu-history",
+      "/api/sparks/n1/gpu-history?windowMs=0",
+      "/api/sparks/n1/gpu-history?windowMs=3600000",
+    ]);
   });
 });

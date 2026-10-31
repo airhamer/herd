@@ -331,9 +331,10 @@ const fleetEnergyRuntime = createFleetEnergyRuntime({
   monitors,
 });
 
-// ─── Unit history (so a fresh page can draw the last hours at once) ────
-// GPU: a dense ~2 s series for 8 h, always on. The 48 h / 30 d bucketed tiers
-// only with Settings → metricsHistory on (read every tick, so no restart).
+// ─── Unit history (docs/specs/unit-history.md) ──────────
+// The GPU raw series (8 h dense + 7 d by minute) is always recorded; the
+// 48 h / 30 d buckets only while settings.metricsHistory is true. The flag is
+// re-read on every sample, so toggling it needs no restart.
 const metricsHistoryEnabled = () => getSettings().metricsHistory === true;
 const unitHistory = new UnitHistory({
   file: process.env.GPU_HISTORY_JSON_PATH || path.join(ROOT, "config", "gpu-history.json"),
@@ -1116,8 +1117,8 @@ app.put("/api/settings", (req, res) => {
   }
 });
 
-// GET /api/sparks/:id/gpu-history (GPU raw tier, newest last) and /api/sparks/:id/history
-// (bucketed tiers, whitelisted ranges). Registered before the generic :id/metrics route.
+// /api/sparks/:id/gpu-history and /api/sparks/:id/history; these must be
+// registered ahead of the catch-all :id/metrics handler below.
 registerUnitHistoryRoutes(app, {
   store: unitHistory,
   hasUnit: (id) => Boolean(registry.getSpark(id)),
@@ -2291,9 +2292,10 @@ function buildSnapshotPayload(sparks = orderedSnapshots()) {
     sparks,
     refreshInterval: getSettings().pollIntervalMs,
   };
-  // Present only while alerts are on; without it the UI derives rows itself.
-  const alerts = alertsRuntime.snapshotBlock();
-  if (alerts) payload.alerts = alerts;
+  // The alerts block exists only while alerting is switched on; the UI falls
+  // back to its own exception rows when the field is missing.
+  const alertBlock = alertsRuntime.snapshotBlock();
+  if (alertBlock) payload.alerts = alertBlock;
   return JSON.stringify(payload);
 }
 
@@ -2337,8 +2339,8 @@ function startBroadcast() {
   const interval = getSettings().pollIntervalMs;
   broadcastTimer = setInterval(() => {
     const sparks = orderedSnapshots();
-    // Alerts are evaluated once per fleet snapshot, before it goes out, so the
-    // payload carries the alerts this very snapshot produced.
+    // Run the alert rules on this tick's fleet first, so the payload built
+    // next already reflects what they decided.
     alertsRuntime.tick(sparks);
     const payload = buildSnapshotPayload(sparks);
     // Skip the broadcast entirely when nothing changed since the last tick.

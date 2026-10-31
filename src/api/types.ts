@@ -187,8 +187,8 @@ export interface GpuThrottle {
   smClockMaxMHz: number | null;
   /** Current SM clock as % of max (0–100). null when clocks unavailable. */
   smClockPct: number | null;
-  /** Max graphics clock locked with `nvidia-smi -lgc` (MHz), from the sparkdash
-   *  gpu-clock-cap marker on the host. null/absent when no lock is recorded. */
+  /** Graphics clock ceiling (MHz) recorded by the gpu-clock-cap marker; null or
+   *  missing when no lock is known (docs/specs/gpu-clock-cap.md). */
   clockCapMHz?: number | null;
   /** Human-readable active reasons (tooltip). */
   detail: string;
@@ -283,44 +283,46 @@ export interface NetworkMetrics {
   wolMac?: string | null;
 }
 
-// ─── RoCE / RDMA (server/collectors/roce.js) ──────────────
+// ─── RoCE / RDMA (docs/specs/roce.md §2) ──────────────────
 export interface RoceQos {
-  /** "pcp" or "dscp" (mlnx_qos "Priority trust state"). */
+  /** mlnx_qos trust mode, lower case ("pcp", "dscp"). */
   trust: string | null;
-  /** Priorities with PFC enabled; [] means PFC is off everywhere; null when mlnx_qos is unavailable. */
+  /** Priorities with PFC on ([] = off on all); null when mlnx_qos gave nothing. */
   pfcPriorities: number[] | null;
   cableLen: number | null;
-  /** priority -> DSCP values, present in DSCP trust mode. */
+  /** DSCP values per priority (DSCP trust mode only). */
   dscpMap: Record<string, number[]> | null;
 }
 
 export interface RoceDevice {
-  /** RDMA device, e.g. "rocep1s0f0". */
+  /** RDMA device name. */
   name: string;
-  /** Its network interface, e.g. "enp1s0f0np0". */
+  /** Attached network interface, when there is one. */
   netdev: string | null;
   state: string | null;
   physState: string | null;
   active: boolean;
-  /** Was ACTIVE at some point while sparkDash watched; an uncabled port never is. */
+  /** ACTIVE at least once since herd started watching (uncabled ports never are). */
   everActive: boolean;
   rateGbps: number | null;
   linkLayer: string | null;
   operstate: string | null;
   mtu: number | null;
   speedMbps: number | null;
+  /** Bytes per second since the previous read; null on the first read. */
   rxBps: number | null;
   txBps: number | null;
   rxErrors: number | null;
   txErrors: number | null;
   rxDropped: number | null;
   txDropped: number | null;
-  /** RDMA hw_counters, lifetime totals. */
+  /** Lifetime hw_counters values. */
   counters: Record<string, number>;
-  /** Change since the previous sample. */
+  /** Growth of each counter since the previous read. */
   deltas: Record<string, number>;
-  loss: { rising: string[]; streak: number };
-  /** ethtool -S subset (discards, CRC, pause frames, per-priority). */
+  /** Rising loss counters; streak = reads in a row, ethStreak = slow samples in a row with port drops. */
+  loss: { rising: string[]; streak: number; ethStreak?: number };
+  /** Selected ethtool -S counters. */
   eth: Record<string, number> | null;
   flowControl: { rx: boolean | null; tx: boolean | null } | null;
   qos: RoceQos | null;
@@ -1221,17 +1223,17 @@ export interface ScheduleUpdateRequest {
   cron?: string;
   mirrorCron?: boolean;
 }
-// ─── Unit history (GET /api/sparks/:id/history) ──────────
+// ─── Unit history (docs/specs/unit-history.md §5, §9) ────
 export type MetricsHistoryRange = "1h" | "6h" | "24h" | "7d" | "30d";
 
-/** One series in one bucket. `min` only on memFreeMB (headroom's low point). */
+/** Average and peak of a series over one bucket; `min` is only sent for memFreeMB. */
 export interface HistoryStat {
   avg: number;
   max: number;
   min?: number;
 }
 
-/** Unit-level series: %, °C, W, MB, bytes/s. */
+/** Unit series: percentages, °C, watts, megabytes and bytes per second. */
 export type HistoryUnitSeries =
   | "gpuUtil"
   | "gpuTemp"
@@ -1244,32 +1246,30 @@ export type HistoryUnitSeries =
   | "netRx"
   | "netTx";
 
-/** Per LLM endpoint: tok/s, and the KV pool fill as 0–1. */
+/** LLM endpoint series: decode and prefill tok/s, KV cache fill as a 0–1 fraction. */
 export type HistoryLlmSeries = "genTps" | "prefillTps" | "kvUsage";
 
-/** A bucket; a series the unit did not report in it is absent (a gap). */
+/** One bucket, keyed by its start time; series missing from it are gaps. */
 export type HistoryPoint = { t: number } & Partial<Record<HistoryUnitSeries, HistoryStat>>;
 export type HistoryLlmPoint = { t: number } & Partial<Record<HistoryLlmSeries, HistoryStat>>;
 
 export interface MetricsHistoryData {
   enabled: true;
   range: MetricsHistoryRange;
-  /** Bucket width of the points; a jump larger than this is a gap. */
+  /** Width of one bucket in ms. */
   stepMs: number;
-  /** Window the range covers (epoch ms); the x-axis spans exactly this. */
+  /** The requested window in epoch ms; charts span exactly from..to. */
   from: number;
   to: number;
   points: HistoryPoint[];
   llm: Array<{ port: number; points: HistoryLlmPoint[] }>;
 }
 
+/** `{ enabled: false }` while Settings → Metrics history is off. */
 export type MetricsHistoryResponse = MetricsHistoryData | { enabled: false };
 
-// ─── GPU raw history (GET /api/sparks/:id/gpu-history) ───
-/**
- * Parallel arrays, newest last. `p` may hold nulls (power unknown). `gpus`
- * lists the cards of a multi-GPU host, each with arrays parallel to `t`.
- */
+// ─── Raw GPU history (GET /api/sparks/:id/gpu-history) ───
+/** One card of a multi-GPU host; arrays line up with the response's `t`. */
 export interface GpuHistoryDevice {
   index: number;
   name: string | null;
@@ -1278,6 +1278,7 @@ export interface GpuHistoryDevice {
   p: Array<number | null>;
 }
 
+/** Parallel arrays, oldest first; `p` is null where power was unknown. */
 export interface GpuHistoryResponse {
   t: number[];
   u: number[];

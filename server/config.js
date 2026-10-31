@@ -23,11 +23,11 @@ const FLEET_ENERGY_JSON_PATH =
   process.env.FLEET_ENERGY_JSON_PATH || path.join(ROOT, "config", "fleet-energy.json");
 // Long-run monthly energy totals; outlives the 31-day window (docs/specs/monthly-energy.md).
 const FLEET_ENERGY_MONTHLY_JSON_PATH = process.env.FLEET_ENERGY_MONTHLY_JSON_PATH || path.join(ROOT, "config", "fleet-energy-monthly.json");
-// Opt-in 48 h / 30 d unit history (Settings → metricsHistory); never written while it is off.
+// Bucketed unit history; only written while settings.metricsHistory is on.
 const METRICS_HISTORY_JSON_PATH =
   process.env.METRICS_HISTORY_JSON_PATH ||
   path.join(ROOT, "config", "metrics-history.json");
-/** Alert rule switches, channel settings (no URLs — those are in the secrets store) and the firing set; mode 0600. */
+/** Alert state (mode 0600): which rules are on, per-channel options and what is firing. Webhook URLs live in the secrets store instead. */
 const ALERTS_JSON_PATH =
   process.env.ALERTS_JSON_PATH || path.join(ROOT, "config", "alerts.json");
 

@@ -33,35 +33,40 @@ export function parseKernelErrors(raw) {
   return { xid, oomKills, lastXid };
 }
 
-// nvidia-smi / NVML cannot read back a `nvidia-smi -lgc` lock (no getter
-// exists; clocks.max.* is the hardware max). Whoever sets the lock drops a
-// one-line marker "<maxMHz> [<boot_id>]" so the dashboard can show it. A
-// boot_id that no longer matches means the box rebooted and the lock is gone.
-// DISPLAY ONLY in this fork: the fleet collectors stay read-only; the setter
-// (upstream 6de1082/de0866e/d94450b/b54c5dd) is deliberately NOT ported.
-export const CLOCK_CAP_FILES = [
-  "/run/sparkdash/gpu-clock-cap",
-  "$HOME/.config/sparkdash/gpu-clock-cap",
-];
-const CLOCK_CAP_CMD =
-  `cat ${CLOCK_CAP_FILES.join(" ")} 2>/dev/null | head -1; cat /proc/sys/kernel/random/boot_id 2>/dev/null || true`;
+// GPU clock cap (docs/specs/gpu-clock-cap.md; LIC2 clean-room rewrite).
+// A `nvidia-smi -lgc` lock cannot be queried, so the tool that applies it
+// leaves a marker "<MHz> [boot_id]"; herd only reads it, never sets a lock.
+export const CLOCK_CAP_FILES = ["/run/sparkdash/gpu-clock-cap", "$HOME/.config/sparkdash/gpu-clock-cap"];
+const BOOT_ID_FILE = "/proc/sys/kernel/random/boot_id";
+// One line, so it can sit among the "; "-joined commands of the remote GPU probe.
+const CLOCK_CAP_PROBE =
+  `for f in ${CLOCK_CAP_FILES.map((f) => `"${f}"`).join(" ")}; do [ -s "$f" ] && { head -n 1 "$f"; break; }; done; ` +
+  `cat ${BOOT_ID_FILE} 2>/dev/null; true`;
+const UUID_LINE = /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i;
 
 /**
- * Parse CLOCK_CAP_CMD output (marker line, then the current boot_id).
- * Exported for tests. Returns the locked max graphics clock in MHz, or null.
- * @param {unknown} raw
+ * Capped max graphics clock in MHz from "<marker line>\n<boot id>", or null
+ * (no marker, junk, or a marker written before the last reboot).
+ * @param {unknown} text
  * @returns {number|null}
  */
-export function parseClockCap(raw) {
-  const lines = String(raw ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
-  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-  const capLine = lines.find((l) => /^\d+(\s|$)/.test(l)); // first token must be wholly numeric — a bare boot_id line (e.g. "139dcc9e-…") starts with digits and must NOT parse as a cap
-  if (!capLine) return null;
-  const [mhzRaw, markerBoot] = capLine.split(/\s+/);
-  const mhz = Number.parseInt(mhzRaw, 10);
-  if (!Number.isFinite(mhz) || mhz <= 0) return null;
-  const currentBoot = lines.filter((l) => uuid.test(l)).pop();
-  if (markerBoot && currentBoot && markerBoot.toLowerCase() !== currentBoot.toLowerCase()) return null;
+export function parseClockCap(text) {
+  const rows = String(text ?? "")
+    .split(/\r?\n/)
+    .map((row) => row.trim())
+    .filter((row) => row !== "");
+  let mhz = null;
+  let stampedBoot = null;
+  for (const row of rows) {
+    const [first, second] = row.split(/\s+/);
+    if (!/^\d+$/.test(first)) continue;
+    mhz = Number(first);
+    stampedBoot = second ?? null;
+    break;
+  }
+  if (!(mhz > 0)) return null;
+  const bootNow = rows.filter((row) => UUID_LINE.test(row)).at(-1);
+  if (stampedBoot && bootNow && stampedBoot.toLowerCase() !== bootNow.toLowerCase()) return null;
   return mhz;
 }
 
@@ -277,26 +282,25 @@ export class SystemCollector {
   }
 
   /**
-   * RoCE / RDMA state of this unit (see roce.js), or null when it has no RDMA devices
-   * (or is a Windows / macOS unit). Throttled internally: calling it every poll is fine.
+   * RoCE / RDMA ports (docs/specs/roce.md §3): null for Windows and macOS
+   * units or when there is no RDMA hardware, undefined when the read failed
+   * (callers keep their previous value). The sampler rate-limits itself.
    */
   async collectRoce() {
     if (this.isWindows || this.isMac) return null;
-    this._roceSampler ??= new RoceSampler({
-      run: (script) =>
-        this.spark.isLocal
-          ? this._hasHostProc()
-            ? this._execOnHost(script)
-            : this._exec(script)
-          : sshExec(this.spark, script, { timeoutMs: 8000 }),
-    });
-    try {
-      return await this._roceSampler.sample();
-    } catch (err) {
-      console.error(`[SystemCollector] RoCE error for ${this.spark.id}:`, err.message);
-      return undefined; // could not read: the caller keeps its previous value
+    if (!this._roceSampler) {
+      const runScript = (script) => {
+        if (!this.spark.isLocal) return sshExec(this.spark, script, { timeoutMs: 8000 });
+        return this._hasHostProc() ? this._execOnHost(script) : this._exec(script);
+      };
+      this._roceSampler = new RoceSampler({ run: runScript });
     }
+    return this._roceSampler.sample().catch((err) => {
+      console.error(`[SystemCollector] RoCE read failed for ${this.spark.id}:`, err.message);
+      return undefined;
+    });
   }
+
 
   /** Collect unified memory metrics. */
   async collectUnifiedMemory() {
@@ -578,32 +582,24 @@ export class SystemCollector {
     };
   }
 
-  /** Stamp a `nvidia-smi -lgc` cap (MHz or null) onto a throttle object. */
+  /** Records a clock cap on a throttle object; null leaves it untouched. */
   _applyClockCap(throttle, capMHz) {
-    if (capMHz == null || !throttle) return;
-    throttle.clockCapMHz = capMHz;
+    if (!throttle || capMHz == null) return;
     const note = `Clock locked ≤ ${capMHz} MHz`;
-    throttle.detail =
-      throttle.detail === "Clocks not limited" ? note : `${throttle.detail} · ${note}`;
+    throttle.clockCapMHz = capMHz;
+    throttle.detail = throttle.detail && throttle.detail !== "Clocks not limited" ? `${throttle.detail} · ${note}` : note;
   }
 
-  /** Local-host twin of CLOCK_CAP_CMD: read the marker and boot_id directly. */
+  /** Reads the clock-cap marker on this host (local units). */
   async _readLocalClockCap() {
-    const home = process.env.HOME || "";
-    const files = CLOCK_CAP_FILES.map((f) => f.replace("$HOME", home));
-    let marker = "";
-    for (const f of files) {
-      try {
-        marker = (await fs.promises.readFile(f, "utf8")).split("\n")[0];
-        if (marker.trim()) break;
-      } catch {}
+    const readText = (file) => fs.promises.readFile(file, "utf8").catch(() => "");
+    const home = process.env.HOME ?? "";
+    for (const pattern of CLOCK_CAP_FILES) {
+      const firstLine = (await readText(pattern.replace("$HOME", home))).split("\n", 1)[0];
+      if (firstLine.trim() === "") continue;
+      return parseClockCap(`${firstLine}\n${await readText(BOOT_ID_FILE)}`);
     }
-    if (!marker.trim()) return null;
-    let boot = "";
-    try {
-      boot = await fs.promises.readFile("/proc/sys/kernel/random/boot_id", "utf8");
-    } catch {}
-    return parseClockCap(`${marker}\n${boot}`);
+    return null;
   }
 
   _defaultThrottle() {
@@ -1144,7 +1140,7 @@ export class SystemCollector {
         "echo '---'",
         "grep -E 'MemTotal|MemAvailable' /proc/meminfo 2>/dev/null",
         "echo '---'",
-        CLOCK_CAP_CMD,
+        CLOCK_CAP_PROBE,
       ].join("; ");
 
       const output = await executor(this.spark, cmd);
