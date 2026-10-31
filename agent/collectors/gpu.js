@@ -9,10 +9,18 @@
  * OS pool (MemTotal from /proc/meminfo), vramUsed to the compute-apps sum, and
  * vramAvailable to MemAvailable.
  *
+ * Those fallbacks apply ONLY to a GPU positively identified as unified memory
+ * (nvidia-smi name GB10). A discrete GPU (RTX, A100, H100, L4, …) has its own
+ * VRAM: used/total come from nvidia-smi alone and free = total − used. System
+ * RAM (MemTotal/MemAvailable) never stands in for VRAM there, so CPU-side and
+ * GPU-side free memory stay separate. "[N/A]" memory alone does not make a GPU
+ * unified.
+ *
  * Issue #26: also reports `gpuAllocMB` (sum of ALL compute apps, not just the
- * top 5 in `processes`) and `unifiedMemory` (true when nvidia-smi gives no
- * memory.total, i.e. the GPU draws from the OS pool, as on GB10). The cards use
+ * top 5 in `processes`) and `unifiedMemory` (true only for GB10). The cards use
  * them to carve the model's share out of MemTotal − MemAvailable.
+ *
+ * Multi-GPU: as before, the metrics describe the first GPU nvidia-smi lists.
  *
  * NOTE: the per-process VRAM field is `used_gpu_memory` (the actual
  * nvidia-smi field; the task spec's "utilities.gpu.memory.usage" does not
@@ -22,7 +30,7 @@ import { runShell, readTextFile, parseSmiNumber } from "./util.js";
 import fs from "node:fs";
 
 const GPU_QUERY =
-  "--query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,memory.used,memory.total --format=csv,noheader,nounits";
+  "--query-gpu=temperature.gpu,utilization.gpu,power.draw,power.limit,memory.used,memory.total,name --format=csv,noheader,nounits";
 const APPS_QUERY =
   "--query-compute-apps=pid,process_name,used_gpu_memory --format=csv,noheader,nounits";
 
@@ -31,11 +39,17 @@ const APPS_QUERY =
  * @param {{ exec?: (cmd: string) => Promise<string>, readFile?: (path: string) => Promise<string>, smiPath?: string }} [deps]
  * @returns {Promise<{temperature:number, usage:number, powerDraw:number, powerLimit:number, vramUsedMB:number, vramTotalMB:number, vramPercentage:number, vramAvailableMB:number, processes:Array<{pid:number, name:string, vramMB:number}>, gpuAllocMB:number, unifiedMemory:boolean} | null>}
  */
+/** Positive unified-memory identification: the GB10 superchip (DGX Spark, ASUS Ascent GX10, …). */
+export function isUnifiedGpuName(name) {
+  return typeof name === "string" && /\bGB10\b/i.test(name);
+}
+
 export async function collectGpu({ exec = runShell, readFile = readTextFile, smiPath = "nvidia-smi" } = {}) {
   // Try NVIDIA
   try {
     const out = await exec(`${smiPath} ${GPU_QUERY} 2>/dev/null`);
-    const line = out.split("\n").map((l) => l.trim()).filter(Boolean)[0] || "";
+    const gpuLines = out.split("\n").map((l) => l.trim()).filter(Boolean);
+    const line = gpuLines[0] || "";
     const p = line.split(",").map((s) => s.trim());
     if (p.length >= 6) {
       const temperature = parseSmiNumber(p[0]);
@@ -44,6 +58,7 @@ export async function collectGpu({ exec = runShell, readFile = readTextFile, smi
       const powerLimit = parseSmiNumber(p[3]) ?? 0;
       const smiUsed = parseSmiNumber(p[4]);
       const smiTotal = parseSmiNumber(p[5]);
+      const unifiedMemory = isUnifiedGpuName(p[6]);
 
       // OS-visible pool (GB10 unified-memory fallback; also feeds available).
       // Prefer host /proc/meminfo (mounted by installer) for accurate GB10 vram fallback.
@@ -81,11 +96,21 @@ export async function collectGpu({ exec = runShell, readFile = readTextFile, smi
         appsSumMB = 0;
       }
 
-      const memUsedMB = memTotalMB - (memAvailMB ?? memTotalMB);
-      const vramUsedMB = Math.round(smiUsed != null && smiUsed > 0 ? smiUsed : (appsSumMB > 0 ? appsSumMB : memUsedMB));
-      const vramTotalMB = smiTotal != null && smiTotal > 0 ? Math.round(smiTotal) : memTotalMB;
-      const vramAvailableMB =
-        memAvailMB != null ? memAvailMB : Math.max(0, vramTotalMB - vramUsedMB);
+      let vramUsedMB, vramTotalMB, vramAvailableMB;
+      if (unifiedMemory) {
+        // GB10: the GPU draws from the OS pool (unchanged sparkDash semantics).
+        const memUsedMB = memTotalMB - (memAvailMB ?? memTotalMB);
+        vramUsedMB = Math.round(smiUsed != null && smiUsed > 0 ? smiUsed : (appsSumMB > 0 ? appsSumMB : memUsedMB));
+        vramTotalMB = smiTotal != null && smiTotal > 0 ? Math.round(smiTotal) : memTotalMB;
+        vramAvailableMB = memAvailMB != null ? memAvailMB : Math.max(0, vramTotalMB - vramUsedMB);
+      } else {
+        // Discrete: dedicated VRAM from nvidia-smi only. The compute-apps sum
+        // stands in for an [N/A] memory.used only on a single-GPU box (on
+        // several GPUs it would mix other cards' allocations into GPU 0).
+        vramUsedMB = Math.round(smiUsed != null ? smiUsed : gpuLines.length === 1 ? appsSumMB : 0);
+        vramTotalMB = smiTotal != null && smiTotal > 0 ? Math.round(smiTotal) : 0;
+        vramAvailableMB = vramTotalMB > 0 ? Math.max(0, vramTotalMB - vramUsedMB) : 0;
+      }
       const vramPercentage =
         vramTotalMB > 0
           ? Math.min(100, Math.max(0, Math.round((vramUsedMB / vramTotalMB) * 100)))
@@ -104,7 +129,7 @@ export async function collectGpu({ exec = runShell, readFile = readTextFile, smi
           vramAvailableMB,
           processes,
           gpuAllocMB: Math.round(appsSumMB),
-          unifiedMemory: !(smiTotal != null && smiTotal > 0),
+          unifiedMemory,
         };
       }
     }
@@ -182,13 +207,6 @@ export async function collectGpu({ exec = runShell, readFile = readTextFile, smi
     const best = cards[0];
 
     const vramPercentage = best.vramTotalMB > 0 ? Math.min(100, Math.round((best.vramUsedMB / best.vramTotalMB) * 100)) : 0;
-    let memAvailMB = null;
-    try {
-      const meminfoPath = (await readFile("/host/proc/meminfo").catch(() => null)) ? "/host/proc/meminfo" : "/proc/meminfo";
-      const meminfo = await readFile(meminfoPath);
-      const avail = meminfo.match(/MemAvailable:\s+(\d+)\s+kB/);
-      memAvailMB = avail ? Math.round(parseInt(avail[1], 10) / 1024) : null;
-    } catch {}
 
     return {
       temperature: best.temperature,
@@ -198,8 +216,11 @@ export async function collectGpu({ exec = runShell, readFile = readTextFile, smi
       vramUsedMB: best.vramUsedMB,
       vramTotalMB: best.vramTotalMB,
       vramPercentage,
-      vramAvailableMB: memAvailMB != null ? memAvailMB : Math.max(0, best.vramTotalMB - best.vramUsedMB),
+      // Dedicated VRAM: free = total − used, never system MemAvailable.
+      vramAvailableMB: Math.max(0, best.vramTotalMB - best.vramUsedMB),
       processes: [],
+      gpuAllocMB: 0,
+      unifiedMemory: false,
     };
   } catch {}
 

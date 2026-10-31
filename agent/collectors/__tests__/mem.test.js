@@ -98,3 +98,19 @@ test("mem: returns null when MemTotal is zero", async () => {
     null
   );
 });
+
+test("mem: discrete-GPU / CPU-only host reports system RAM only (VRAM never enters MemMetrics)", async () => {
+  // 64 GiB x86 box with a 24 GiB card: meminfo knows nothing about VRAM, so neither does mem.
+  const raw = "MemTotal: 67108864 kB\nMemAvailable: 41943040 kB\nCached: 10485760 kB\nSwapTotal: 8388608 kB\nSwapFree: 8388608 kB\n";
+  const m = await collectMem({ readFile: async () => raw });
+  assert.deepEqual(m, {
+    usedMB: 24576,
+    totalMB: 65536,
+    availableMB: 40960,
+    percentage: 38,
+    cachedMB: 10240,
+    swapTotalMB: 8192,
+    swapFreeMB: 8192,
+  });
+  assert.equal("gpuAllocMB" in m, false);
+});
