@@ -224,7 +224,8 @@ describe("ServiceManagerPage", () => {
     await flush();
     const text = container.textContent ?? "";
     expect(text).toContain("TP2 group · tp2-aeon");
-    expect(text).toContain("Per-spark breakdown");
+    // SC9: the group view shows group-level facts only — no member rows.
+    expect(text).not.toContain("Per-spark breakdown");
     expect(text).toContain("Available here for shard");
     expect(text).toContain("20.6 GB"); // groupAvailableMB 21072 MB
   });
