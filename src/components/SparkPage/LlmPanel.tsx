@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { NormalizedEngineGrid } from "../ui/NormalizedEngineMetrics";
 import type { LlmMetrics, LlmBenchTarget } from "../../api/types";
 import { setLlmApiKey, updateLlmPort, updateLlmPorts } from "../../api/client";
 import { Sparkline } from "../ui/Sparkline";
@@ -775,6 +776,8 @@ export function LlmPanel({
               </div>
             </>
           )}
+
+          <NormalizedEngineGrid windows={llm?.normalized} />
 
           <LlmTrendChart sparkId={sparkId} llmPort={llmPort} />
           <LlmDailyChart sparkId={sparkId} llmPort={llmPort} />

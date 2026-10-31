@@ -1,3 +1,4 @@
+import type { NormalizedEngineWindows } from "../../shared/types";
 // ─── Spark config (matches server/sparks.json) ────────────
 export interface SparkConfig {
   id: string;
@@ -421,6 +422,8 @@ export interface LlmMetrics {
   specAcceptLength?: number | null;
   /** Source tier, window and approximate flag for each non-null value (STAT1). */
   valueSources?: Partial<Record<string, LlmValueSource>>;
+  /** STAT2: normalized engine record per rolling window ("60", "300"). null when unreachable. */
+  normalized?: NormalizedEngineWindows | null;
   /** vLLM KV cache usage fraction (0–1). null when backend !== vllm or unreachable. */
   kvCacheUsage?: number | null;
   /** vLLM running request count. null when unavailable. */
@@ -1295,6 +1298,13 @@ export type {
   ComponentActionTraffic,
   ComponentActionResult,
   ComponentActionPlan,
+  // STAT2 normalized engine metrics.
+  AgentLlmEntry,
+  EngineSourceTier,
+  NormalizedEngineField,
+  NormalizedEngineValue,
+  NormalizedEngineRecord,
+  NormalizedEngineWindows,
 } from "../../shared/types";
 
 // ─── Fleet updates (docs/SPEC-UPDATES.md §6/§9) ────

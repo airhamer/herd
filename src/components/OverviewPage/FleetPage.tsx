@@ -168,6 +168,7 @@ export function FleetPage({ nodes, topology, requests, memory, onSelectNode, ene
                 topology={node.topology}
                 memory={node.memory}
                 polledAt={node.polledAt}
+                llm={node.llm}
                 onSelect={onSelectNode}
               />
             );
