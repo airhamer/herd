@@ -74,6 +74,7 @@ import { testSparkConnectivity } from "./connectivity.js";
 import { inspectStartupPreflight, logStartupPreflight } from "./startupPreflight.js";
 import { randomUUID } from "node:crypto";
 import { loadNodes, listNodes, getNode, addNode, updateNode, removeNode, claimNode } from "./fleet/registry.js";
+import { bootstrapStacksForFleet } from "./fleet/stacksBootstrap.js";
 import { hasNodeSshPassword, setNodeSshPassword, deleteNodeSshPassword } from "./fleet/nodeCredentials.js";
 import { createFleetConnection } from "./fleet/connection.js";
 import { createLinuxSshFleet } from "./fleet/linuxSshCollector.js";
@@ -1202,6 +1203,17 @@ app.get("/api/components", (_req, res) => {
   }).filter((s) => s && s.nodeId);
   joinComponentState(components, nodeSnaps);
   res.json({ components, warnings });
+});
+
+/**
+ * SC10 stacks (issue #19): the hardcoded pre-defined bootstrap stacks (POC
+ * step 1, the Hasso recipes — agent/catalog/stacks-catalog.js) scoped over
+ * the fleet/node registry, each entry defaulted tp=1 for a single machine /
+ * tp=x for an x-machine group. Read-only projection; the stacks UI consumes
+ * this to list available stacks. Server/fleet/stacksBootstrap.js.
+ */
+app.get("/api/stacks", (_req, res) => {
+  res.json({ stacks: bootstrapStacksForFleet(listNodes()) });
 });
 
 // ─── Fleet updates API (Batch 5, docs/SPEC-UPDATES.md §6) ───
