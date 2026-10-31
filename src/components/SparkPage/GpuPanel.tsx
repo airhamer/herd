@@ -161,11 +161,11 @@ export function GpuPanel({ gpu, cpu, sparkId, temperatureUnit, className }: GpuP
               <span className="text-[10px] uppercase tracking-wide text-muted">SM clock</span>
               <span className="font-tabular text-xs text-text">{clockCaption}</span>
             </div>
-            {t?.clockCapMHz != null ? (
-              <div className="text-[10px] text-muted" title="Locked with nvidia-smi -lgc">
-                <span className="font-tabular">cap {t.clockCapMHz} MHz</span>
-              </div>
-            ) : null}
+            {typeof t?.clockCapMHz === "number" && (
+              <p className="font-tabular text-[10px] text-muted" title="Locked with nvidia-smi -lgc">
+                {`cap ${t.clockCapMHz} MHz`}
+              </p>
+            )}
             <div className="h-1.5 overflow-hidden rounded-full bg-border">
               <div
                 className={`h-full rounded-full transition-[width] duration-300 ease-out ${barColor}`}

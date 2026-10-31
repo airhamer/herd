@@ -187,8 +187,8 @@ export interface GpuThrottle {
   smClockMaxMHz: number | null;
   /** Current SM clock as % of max (0–100). null when clocks unavailable. */
   smClockPct: number | null;
-  /** Max graphics clock locked with `nvidia-smi -lgc` (MHz), from the sparkdash
-   *  gpu-clock-cap marker on the host. null/absent when no lock is recorded. */
+  /** Graphics clock ceiling (MHz) recorded by the gpu-clock-cap marker; null or
+   *  missing when no lock is known (docs/specs/gpu-clock-cap.md). */
   clockCapMHz?: number | null;
   /** Human-readable active reasons (tooltip). */
   detail: string;
@@ -283,44 +283,46 @@ export interface NetworkMetrics {
   wolMac?: string | null;
 }
 
-// ─── RoCE / RDMA (server/collectors/roce.js) ──────────────
+// ─── RoCE / RDMA (docs/specs/roce.md §2) ──────────────────
 export interface RoceQos {
-  /** "pcp" or "dscp" (mlnx_qos "Priority trust state"). */
+  /** mlnx_qos trust mode, lower case ("pcp", "dscp"). */
   trust: string | null;
-  /** Priorities with PFC enabled; [] means PFC is off everywhere; null when mlnx_qos is unavailable. */
+  /** Priorities with PFC on ([] = off on all); null when mlnx_qos gave nothing. */
   pfcPriorities: number[] | null;
   cableLen: number | null;
-  /** priority -> DSCP values, present in DSCP trust mode. */
+  /** DSCP values per priority (DSCP trust mode only). */
   dscpMap: Record<string, number[]> | null;
 }
 
 export interface RoceDevice {
-  /** RDMA device, e.g. "rocep1s0f0". */
+  /** RDMA device name. */
   name: string;
-  /** Its network interface, e.g. "enp1s0f0np0". */
+  /** Attached network interface, when there is one. */
   netdev: string | null;
   state: string | null;
   physState: string | null;
   active: boolean;
-  /** Was ACTIVE at some point while sparkDash watched; an uncabled port never is. */
+  /** ACTIVE at least once since herd started watching (uncabled ports never are). */
   everActive: boolean;
   rateGbps: number | null;
   linkLayer: string | null;
   operstate: string | null;
   mtu: number | null;
   speedMbps: number | null;
+  /** Bytes per second since the previous read; null on the first read. */
   rxBps: number | null;
   txBps: number | null;
   rxErrors: number | null;
   txErrors: number | null;
   rxDropped: number | null;
   txDropped: number | null;
-  /** RDMA hw_counters, lifetime totals. */
+  /** Lifetime hw_counters values. */
   counters: Record<string, number>;
-  /** Change since the previous sample. */
+  /** Growth of each counter since the previous read. */
   deltas: Record<string, number>;
-  loss: { rising: string[]; streak: number };
-  /** ethtool -S subset (discards, CRC, pause frames, per-priority). */
+  /** Rising loss counters; streak = reads in a row, ethStreak = slow samples in a row with port drops. */
+  loss: { rising: string[]; streak: number; ethStreak?: number };
+  /** Selected ethtool -S counters. */
   eth: Record<string, number> | null;
   flowControl: { rx: boolean | null; tx: boolean | null } | null;
   qos: RoceQos | null;
