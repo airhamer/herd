@@ -1892,3 +1892,106 @@ export interface BenchUpgradeResponse {
   } | null;
   rules: { default_noise_pct: number; quality_alpha: number; worth_it: string };
 }
+
+// ─── SC8 downtime/execute flow (server/fleet/downtimeSequencer.js) ────────
+//
+// "Shutdown sequence to free, then startup (parallel per stack); preview +
+// live" (IMPLEMENTATION_PLAN.md SC8). The plan input names what changes; the
+// preview derives the ordered sequences; execute walks the preview over the
+// existing component-action seam (ComponentActionRequest/Result, §Actions).
+// Parallelism is structural: each phase is an array of waves — steps within
+// one wave run in parallel (they belong to different stacks), waves run in
+// order (one stack's own steps stay sequential in dependency order).
+
+/**
+ * One component change inside a stack plan entry. `components` is given in
+ * DEPENDENCY ORDER (what must come up first is listed first); the preview
+ * derives reverse-dependency order for shutdown. `freesBytes` is the memory
+ * the component sustains while stopped (for stop steps); unknown = null/omitted
+ * and counts 0 in the projection (honest under-promise). For start/restart it
+ * is ignored: a restart's stop half is internal and frees no sustained memory.
+ */
+export interface StackPlanComponentAction {
+  /** Spark this component lives on; must be one of the stack's `nodes`. */
+  nodeId: string;
+  /** Catalog component id (same grammar buildComponentAction validates). */
+  component: string;
+  /** Desired verb. stop → shutdown phase; start/restart → startup phase. */
+  action: ComponentActionType;
+  /** Bytes sustained-freed by this stop; null/omitted = unknown (counts 0). */
+  freesBytes?: number | null;
+}
+
+/** One stack's plan entry. */
+export interface StackPlanEntry {
+  /** Stable Stack.id; unique across the plan. */
+  stackId: string;
+  /** Sparks this stack spans; every component's nodeId must be listed here. */
+  nodes: string[];
+  /** Component actions in DEPENDENCY ORDER. */
+  components: StackPlanComponentAction[];
+}
+
+/** Input to buildDowntimePreview. */
+export interface StackDowntimePlan {
+  stacks: StackPlanEntry[];
+  /** Memory the plan must free to be feasible. Default 0. */
+  targetFreeBytes?: number;
+}
+
+/** One sequenced step inside a DowntimePreview wave. */
+export interface DowntimeSequenceStep {
+  stackId: string;
+  nodeId: string;
+  componentId: string;
+  /** Verb this step executes. */
+  type: ComponentActionType;
+  /** Sustained bytes freed (stop steps with known footprint; else null). */
+  freesBytes: number | null;
+}
+
+/** buildDowntimePreview result: pure, deterministic, network-free. */
+export interface DowntimePreview {
+  /** Waves of stops, per stack reverse-dependency order; wave i of stack k holds step i. */
+  shutdownSequence: DowntimeSequenceStep[][];
+  /** Waves of starts/restarts, per stack dependency order. */
+  startupSequence: DowntimeSequenceStep[][];
+  /** freeBytesProjected >= targetFreeBytes. */
+  feasible: boolean;
+  /** Sum of shutdown steps' known freesBytes (unknown counts 0). */
+  freeBytesProjected: number;
+  /** Echo of the plan's target. */
+  targetFreeBytes: number;
+}
+
+/** One per-step outcome of a live executeDowntimeSequence walk. */
+export interface DowntimeStepResult {
+  phase: "shutdown" | "startup";
+  /** Wave index within the phase. */
+  wave: number;
+  stackId: string;
+  nodeId: string;
+  componentId: string;
+  type: ComponentActionType;
+  /** Server-minted idempotency key; null when the step never dispatched. */
+  actionId: string | null;
+  ok: boolean;
+  /** HTTP status from the proxy seam; null when the step never dispatched. */
+  status: number | null;
+  /** Failure/skip reason; null on success. */
+  error: string | null;
+}
+
+/** executeDowntimeSequence report: fail-closed walk over the preview. */
+export interface DowntimeExecutionReport {
+  /** True only when every step of every wave succeeded. */
+  ok: boolean;
+  /** Steps actually dispatched (pre-flight failures and skipped siblings never dial). */
+  executed: number;
+  /** Per-step records in dispatch order. */
+  results: DowntimeStepResult[];
+  /** Where the walk stopped; null when it completed. */
+  stoppedAt: { phase: "shutdown" | "startup"; wave: number } | null;
+  /** Present when the infeasible-preview guard refused the run. */
+  error?: string;
+}
