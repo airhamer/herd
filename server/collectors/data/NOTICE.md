@@ -1,4 +1,40 @@
-# Quality bench data: third-party notices
+# Bench data and code: third-party notices
+
+## AEON Bench Pod: `server/collectors/aeonPerf.js` (#43)
+
+The AEON concurrency ladder adapts the prompt sets and the aggregation rules
+of AEON Bench Pod `mvp/pod/perf_grid.py`
+(<https://github.com/AEON-7/Aeon-Bench-Pod>) so Herd's numbers line up with
+AEON's board. The 20 prompts (4 per category, including the generated
+~1,500-token long prompts) are reproduced unchanged; the wave, percentile and
+aggregate rules are ported to JavaScript. AEON Bench Pod is published under
+the MIT licence, which is compatible with Herd's MIT licence.
+
+```
+MIT License
+
+Copyright (c) 2026 AEON-7
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+# Quality bench data
 
 The Quality bench (`server/collectors/QualityBench.js`, #42) bundles two
 third-party evaluation samples. Both are published under the MIT licence,

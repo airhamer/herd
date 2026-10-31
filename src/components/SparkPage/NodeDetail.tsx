@@ -28,6 +28,7 @@ import { formatAgo } from "../OverviewPage/FleetCard";
 import { LaneBudgetPanel } from "./LaneBudgetPanel";
 import { GuardPanel } from "./GuardPanel";
 import { MemoryHealthPanel } from "./MemoryHealthPanel";
+import { NodeBenchPanel } from "./NodeBenchPanel";
 
 export interface NodeDetailProps {
   nodeId: string;
@@ -551,6 +552,9 @@ export function NodeDetail(props: NodeDetailProps) {
           poolTotalMB={gpu?.vramTotalMB ?? null}
           recipeFootprints={recipeFootprints}
         />
+
+        {/* Decode benches incl. the AEON ladder against running lanes (BENCH3) */}
+        <NodeBenchPanel nodeId={nodeId} nodeName={nodeName} lanes={lanes} versions={versions} />
 
         {/* Guard proxy status (S4.1b) — fleet-level; the panel self-fetches */}
         <GuardPanel />
