@@ -962,8 +962,11 @@ export interface LlmBenchTarget {
   tls: boolean;
 }
 
-/** Decode bench protocol: Herd's own waves, or AEON's aeon-perf-v1 ladder (BENCH3). */
-export type DecodeBenchProtocol = "herd" | "aeon-perf-v1";
+/** Decode bench protocol: Herd's own waves, AEON's aeon-perf-v1 ladder (BENCH3) or Hasso's battery v1 (BENCH4). */
+export type DecodeBenchProtocol = "herd" | "aeon-perf-v1" | "hasso-battery-v1";
+
+/** Hasso battery parts: bench.sh (streamed probes) and bench-matrix.sh (two-call delta). */
+export type HassoPart = "bench" | "matrix";
 
 /** Which API a decode bench runs under: a Spark or an agent node lane. */
 export type DecodeBenchScope = "spark" | "node";
@@ -978,8 +981,11 @@ export interface DecodeBenchConfig {
   suiteVersion?: string;
   temperature?: number;
   categories?: string[];
-  /** AEON: total requests the ladder sends. */
+  /** AEON / Hasso: total requests the run sends. */
   requests?: number;
+  /** Hasso: bench-matrix.sh BATTERY_VERSION and the parts run. */
+  batteryVersion?: number;
+  parts?: HassoPart[];
   /** Output-shape label only — not guided decoding / JSON schema. */
   promptType?: DecodeBenchPromptType;
   /** On-demand remote host (Tailscale HTTPS, etc.). */
@@ -1081,6 +1087,8 @@ export interface DecodeBenchProgress {
   message: string;
   /** AEON ladder: category running now, and request counts. */
   currentCategory?: string | null;
+  /** Hasso battery: part running now. */
+  currentPart?: HassoPart | null;
   requestsDone?: number;
   requestsTotal?: number;
 }
@@ -1128,6 +1136,77 @@ export interface AeonLadderRun {
   levels: AeonLevel[];
 }
 
+/** One streamed bench.sh run. */
+export interface HassoBenchRun {
+  /** (out − 1) / (t_last − t_first); null = "not timed". */
+  tps: number | null;
+  completionTokens: number | null;
+  ttftMs: number | null;
+  decodeMs: number | null;
+}
+
+export interface HassoBenchProbe {
+  key: string;
+  name: string;
+  temperature: number;
+  maxTokens: number;
+  /** Counts toward the greedy median (code, reasoning). */
+  inMedian: boolean;
+  runs: HassoBenchRun[];
+  median: number | null;
+}
+
+export interface HassoMatrixCall {
+  wallS: number;
+  tokens: number;
+}
+
+export interface HassoMatrixProbe {
+  key: string;
+  name: string;
+  lang: string;
+  short: HassoMatrixCall;
+  long: HassoMatrixCall;
+  deltaTokens: number;
+  deltaS: number;
+  /** Null when the sample was refused as unreliable. */
+  tps: number | null;
+  reliable: boolean;
+  reason: string | null;
+}
+
+export interface HassoBatteryRun {
+  suite: "hasso-battery-v1";
+  batteryVersion: number;
+  parts: HassoPart[];
+  model: string | null;
+  bench: {
+    probes: HassoBenchProbe[];
+    greedyMedian: number | null;
+    greedyRuns: number;
+    untimed: number;
+  } | null;
+  matrix: {
+    batteryVersion: number;
+    warmup: { wallS: number; tokens: number; discarded: boolean } | null;
+    probes: HassoMatrixProbe[];
+  } | null;
+}
+
+export interface HassoBatteryDefaults {
+  suite: "hasso-battery-v1";
+  suiteVersion: string;
+  batteryVersion: number;
+  parts: HassoPart[];
+  runsPerProbe: number;
+  benchProbes: Array<{ key: string; name: string; temperature: number; maxTokens: number; inMedian: boolean }>;
+  matrixProbes: Array<{ key: string; name: string; lang: string }>;
+  matrixMaxTokens: [number, number];
+  minDeltaTokens: number;
+  minDeltaS: number;
+  requests: number;
+}
+
 export interface DecodeBenchJob {
   benchId: string;
   sparkId: string;
@@ -1139,6 +1218,8 @@ export interface DecodeBenchJob {
   results: DecodeBenchLevelResult[];
   /** AEON ladder runs only. */
   aeon?: AeonLadderRun;
+  /** Hasso battery runs only. */
+  hasso?: HassoBatteryRun;
   /** Agent-node runs only. */
   nodeId?: string;
   error: string | null;
@@ -1177,6 +1258,7 @@ export interface DecodeBenchDefaults {
   defaultPromptType: DecodeBenchPromptType;
   protocols?: DecodeBenchProtocol[];
   aeon?: AeonLadderDefaults;
+  hasso?: HassoBatteryDefaults;
 }
 
 export interface DecodeBenchListResponse {
@@ -1201,6 +1283,8 @@ export interface StartDecodeBenchRequest {
   tls?: boolean;
   /** "aeon-perf-v1": AEON ladder (concurrencies ⊆ 1/4/8/16/32, 256 tokens). */
   protocol?: DecodeBenchProtocol;
+  /** Hasso battery parts to run (default both). */
+  parts?: HassoPart[];
 }
 
 // ─── LLM prefill benchmark ───────────────────────────────

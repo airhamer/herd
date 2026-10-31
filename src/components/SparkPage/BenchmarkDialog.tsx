@@ -284,12 +284,12 @@ export function BenchmarkDialog({
           }
           return;
         }
-        // AEON ladder runs share the history; they have their own dialog.
+        // AEON ladder and Hasso battery runs share the history; they have their own dialogs.
         const last =
-          data.last && data.last.config?.protocol !== "aeon-perf-v1"
+          data.last && (data.last.config?.protocol ?? "herd") === "herd"
             ? data.last
             : (data.history || []).find(
-                (j) => j.config?.protocol !== "aeon-perf-v1" && (j.config?.port == null || j.config.port === benchPort)
+                (j) => (j.config?.protocol ?? "herd") === "herd" && (j.config?.port == null || j.config.port === benchPort)
               ) || null;
         if (last) {
           setJob(last);

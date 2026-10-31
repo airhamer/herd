@@ -4,6 +4,7 @@ import { Panel } from "../ui/Panel";
 import { ActivityIcon } from "../ui/icons";
 import { AeonLadderDialog } from "./AeonLadderDialog";
 import { BenchmarkDialog } from "./BenchmarkDialog";
+import { HassoBatteryDialog } from "./HassoBatteryDialog";
 
 const LAUNCHER_BTN =
   "rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs font-medium text-text transition-colors hover:border-accent hover:bg-accent-soft";
@@ -41,7 +42,7 @@ export function nodeBenchEndpoints(lanes: NodeLanes | null | undefined, versions
   return [...byPort.values()].sort((a, b) => a.port - b.port);
 }
 
-/** Decode benches against an agent node's running LLM lanes (BENCH3). */
+/** Decode benches (incl. AEON ladder, Hasso battery) against an agent node's running LLM lanes (BENCH3/BENCH4). */
 export function NodeBenchPanel({
   nodeId,
   nodeName,
@@ -54,7 +55,7 @@ export function NodeBenchPanel({
   versions: VersionInfo[];
 }) {
   const endpoints = nodeBenchEndpoints(lanes, versions);
-  const [open, setOpen] = useState<{ kind: "aeon" | "decode"; ep: NodeBenchEndpoint } | null>(null);
+  const [open, setOpen] = useState<{ kind: "aeon" | "hasso" | "decode"; ep: NodeBenchEndpoint } | null>(null);
   return (
     <Panel title="LLM benchmarks" icon={<ActivityIcon />} bodyClassName="space-y-2">
       {endpoints.length === 0 ? (
@@ -70,6 +71,9 @@ export function NodeBenchPanel({
               <button type="button" className={LAUNCHER_BTN} onClick={() => setOpen({ kind: "aeon", ep })}>
                 AEON ladder
               </button>
+              <button type="button" className={LAUNCHER_BTN} onClick={() => setOpen({ kind: "hasso", ep })}>
+                Hasso battery
+              </button>
               <button type="button" className={LAUNCHER_BTN} onClick={() => setOpen({ kind: "decode", ep })}>
                 Decode bench
               </button>
@@ -78,12 +82,23 @@ export function NodeBenchPanel({
         </ul>
       )}
       <p className="text-[10px] leading-snug text-muted">
-        Runs from the dashboard host over the LAN to the lane port. AEON ladder results are stored with AEON's metric
-        definitions in the bench results store.
+        Runs from the dashboard host over the LAN to the lane port. AEON ladder and Hasso battery results are stored with
+        their own metric definitions in the bench results store.
       </p>
       {open && (
         <AeonLadderDialog
           open={open.kind === "aeon"}
+          onClose={() => setOpen(null)}
+          targetId={nodeId}
+          scope="node"
+          port={open.ep.port}
+          modelId={open.ep.modelId}
+          title={nodeName}
+        />
+      )}
+      {open && (
+        <HassoBatteryDialog
+          open={open.kind === "hasso"}
           onClose={() => setOpen(null)}
           targetId={nodeId}
           scope="node"

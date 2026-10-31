@@ -128,6 +128,9 @@ export function fromDecodeJob(job, opts = {}) {
   if (job.config?.protocol === AEON_SUITE.suite && job.aeon && Array.isArray(job.aeon.levels)) {
     return fromAeonDecodeJob(job, opts);
   }
+  if (job.config?.protocol === HASSO_SUITE.suite && job.hasso) {
+    return fromHassoDecodeJob(job, opts);
+  }
   const cfg = job.config || {};
   const base = baseRecord({
     bench: "DecodeBench",
@@ -374,6 +377,152 @@ function aeonMetrics(cell) {
     row("ttft_p95", "aeon.ttft_p95_linear.v1", cell.ttft_ms_p95),
     row("tpot_p95", "aeon.tpot_p95_linear.v1", cell.tpot_ms_p95),
   ];
+}
+
+// ─── DecodeBench, Hasso battery v1 ─────────────────────────────────────
+
+/** Suite of DecodeBench runs that used Hasso's battery (DecodeBench `protocol`). */
+export const HASSO_SUITE = Object.freeze({ suite: "hasso-battery-v1", suite_version: "1" });
+
+/**
+ * Records of a Hasso battery run, all single-stream:
+ *   hasso.bench.greedy_median   bench.sh headline (hasso.single_stream_greedy_median.v1)
+ *   hasso.bench.<probe>         each bench.sh probe (hasso.bench_probe_median.v1)
+ *   hasso.matrix.<workload>     each battery v1 workload (hasso.matrix_two_call_delta.v1);
+ *                               a refused sample is stored with value null, valid false.
+ *
+ * @param {any} job
+ * @param {{ provenance?: Provenance, importedFrom?: object, recordedAt?: string }} [opts]
+ */
+export function fromHassoDecodeJob(job, opts = {}) {
+  const cfg = job.config || {};
+  const h = job.hasso || {};
+  const base = baseRecord({
+    bench: "DecodeBench",
+    runId: `decode:${job.benchId}`,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+    status: job.status,
+    nodeId: job.nodeId || job.sparkId,
+    modelId: cfg.modelId ?? h.model ?? null,
+    provenance: opts.provenance,
+    importedFrom: opts.importedFrom,
+  });
+  const run = { ...base.run, ...HASSO_SUITE };
+  const jobRaw = { ...job };
+  delete jobRaw.results;
+  delete jobRaw.hasso;
+  const val = (v) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
+  const metric = (definition, value, n) => {
+    const v = val(value);
+    return {
+      metric: "decode_tps_stream",
+      definition,
+      source: "client",
+      value: v,
+      n: v === null || !(Number.isInteger(n) && n > 0) ? null : n,
+      ...(v === null ? { valid: false } : {}),
+    };
+  };
+  const record = (caseId, conditions, settings, metrics, raw) =>
+    makeResult({
+      id: `${run.run_id}:${caseId}`,
+      recorded_at: opts.recordedAt,
+      run,
+      host: base.host,
+      lane: base.lane,
+      conditions: {
+        concurrency: 1,
+        context_tokens: null,
+        // Hasso sends no thinking flags: the engine default applies.
+        thinking: null,
+        client_location: base.clientLocation,
+        ...conditions,
+      },
+      settings: {
+        case_id: caseId,
+        port: cfg.port ?? null,
+        battery_version: h.batteryVersion ?? 1,
+        parts: cfg.parts ?? h.parts ?? null,
+        tokens_source: "client",
+        ...settings,
+      },
+      metrics,
+      raw: { job: jobRaw, ...raw },
+    });
+
+  const out = [];
+  const bench = h.bench;
+  if (bench && Array.isArray(bench.probes)) {
+    const greedyProbes = bench.probes.filter((p) => p.inMedian);
+    if (greedyProbes.length && greedyProbes.every((p) => Array.isArray(p.runs) && p.runs.length > 0)) {
+      out.push(
+        record(
+          "hasso.bench.greedy_median",
+          { max_tokens: greedyProbes[0].maxTokens ?? 1200, temperature: 0, prompt_set: `${HASSO_SUITE.suite}/bench/greedy` },
+          {
+            method: "streamed, (out − 1) / (t_last − t_first)",
+            probes: greedyProbes.map((p) => p.key),
+            runs_per_probe: 2,
+            untimed_runs: bench.untimed ?? 0,
+          },
+          [metric("hasso.single_stream_greedy_median.v1", bench.greedyMedian, bench.greedyRuns)],
+          { bench: { greedyMedian: bench.greedyMedian, greedyRuns: bench.greedyRuns, untimed: bench.untimed } }
+        )
+      );
+    }
+    for (const p of bench.probes) {
+      if (!Array.isArray(p.runs) || !p.runs.length) continue;
+      const timed = p.runs.filter((r) => val(r.tps) !== null).length;
+      out.push(
+        record(
+          `hasso.bench.${p.key}`,
+          {
+            max_tokens: p.maxTokens ?? null,
+            temperature: typeof p.temperature === "number" ? p.temperature : null,
+            prompt_set: `${HASSO_SUITE.suite}/bench/${p.key}`,
+          },
+          {
+            probe: p.name ?? p.key,
+            in_greedy_median: Boolean(p.inMedian),
+            run_tps: p.runs.map((r) => val(r.tps)),
+            untimed_runs: p.runs.length - timed,
+          },
+          [metric("hasso.bench_probe_median.v1", p.median, timed)],
+          { probe: p }
+        )
+      );
+    }
+  }
+  const matrix = h.matrix;
+  if (matrix && Array.isArray(matrix.probes)) {
+    for (const p of matrix.probes) {
+      out.push(
+        record(
+          `hasso.matrix.${p.key}`,
+          { max_tokens: 680, temperature: 0, prompt_set: `${HASSO_SUITE.suite}/matrix/${p.key}` },
+          {
+            probe: p.name ?? p.key,
+            lang: p.lang ?? null,
+            method: "two-call delta, temperature 0, max_tokens 80/680",
+            short_max_tokens: 80,
+            short_tokens: p.short?.tokens ?? null,
+            short_wall_s: p.short?.wallS ?? null,
+            long_tokens: p.long?.tokens ?? null,
+            long_wall_s: p.long?.wallS ?? null,
+            delta_tokens: p.deltaTokens ?? null,
+            delta_s: p.deltaS ?? null,
+            reliable: Boolean(p.reliable),
+            refused_reason: p.reliable ? null : p.reason ?? null,
+            warmup_discarded: Boolean(matrix.warmup),
+          },
+          [metric("hasso.matrix_two_call_delta.v1", p.reliable ? p.tps : null, null)],
+          { probe: p }
+        )
+      );
+    }
+  }
+  return out;
 }
 
 // ─── PrefillBench ─────────────────────────────────────────────────────

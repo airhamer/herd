@@ -1835,10 +1835,13 @@ app.get("/api/sparks/:id/llm/daily", (req, res) => {
 /**
  * Decode throughput benchmark (streaming, post-first-token tok/s).
  *
- * POST body: { port?, concurrencies: number[], maxTokens?, promptType?, protocol? }
+ * POST body: { port?, concurrencies: number[], maxTokens?, promptType?, protocol?, parts? }
  * promptType is structured | prose | code | json (default structured).
  * protocol "aeon-perf-v1" runs AEON's ladder (BENCH3): `concurrencies` is a
  * subset of 1/4/8/16/32 (default all), maxTokens is fixed at 256.
+ * protocol "hasso-battery-v1" runs Hasso's bench.sh + bench-matrix.sh
+ * battery (BENCH4): `parts` ⊆ ["bench", "matrix"] (default both), no
+ * concurrencies or maxTokens.
  * Returns immediately with a bench job; poll GET for progress/results.
  */
 app.post("/api/sparks/:id/llm/bench", async (req, res) => {
@@ -1909,6 +1912,7 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
       maxTokens: req.body?.maxTokens,
       promptType: req.body?.promptType,
       protocol: req.body?.protocol,
+      parts: req.body?.parts,
       debug: benchDebug,
       apiKey: target.apiKey,
       host: target.host,
@@ -2017,7 +2021,7 @@ app.delete("/api/sparks/:id/llm/bench/:benchId", (req, res) => {
 });
 
 // ─── Agent-node decode bench (BENCH3) ────────────────────────────────────
-// Same DecodeBench (herd or AEON aeon-perf-v1 protocol) against an LLM lane
+// Same DecodeBench (herd, AEON aeon-perf-v1 or Hasso battery v1 protocol) against an LLM lane
 // the node agent reports, reached at <node lanIp>:<lane port>.
 
 function nodeBenchContext(req, res) {
@@ -2057,6 +2061,7 @@ app.post("/api/fleet/nodes/:id/llm/bench", async (req, res) => {
       maxTokens: body.maxTokens,
       promptType: body.promptType,
       protocol: body.protocol,
+      parts: body.parts,
     });
     let prov = null;
     try {

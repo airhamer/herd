@@ -14,6 +14,7 @@ import { BenchmarkDialog } from "./BenchmarkDialog";
 import { PrefillBenchDialog } from "./PrefillBenchDialog";
 import { QualityBenchDialog } from "./QualityBenchDialog";
 import { AeonLadderDialog } from "./AeonLadderDialog";
+import { HassoBatteryDialog } from "./HassoBatteryDialog";
 import { LlmDailyChart } from "./LlmDailyChart";
 import { parseLlmTargetInput } from "../../shared/llmTarget.js";
 import { LlmTrendChart } from "./LlmTrendChart";
@@ -85,6 +86,8 @@ function LlmLaunchers({
   onRemoteQuality,
   onAeon,
   onRemoteAeon,
+  onHasso,
+  onRemoteHasso,
 }: {
   sparkId: string;
   llmPort: number;
@@ -97,6 +100,8 @@ function LlmLaunchers({
   onRemoteQuality: (target: LlmBenchTarget) => void;
   onAeon: () => void;
   onRemoteAeon: (target: LlmBenchTarget) => void;
+  onHasso: () => void;
+  onRemoteHasso: (target: LlmBenchTarget) => void;
 }) {
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [hostDraft, setHostDraft] = useState(() => readStoredRemote().host);
@@ -125,7 +130,7 @@ function LlmLaunchers({
     }
   };
 
-  const launchRemote = (kind: "decode" | "prefill" | "quality" | "aeon") => {
+  const launchRemote = (kind: "decode" | "prefill" | "quality" | "aeon" | "hasso") => {
     try {
       const p = parseLlmTargetInput(hostDraft, portDraft, tls);
       persist(p);
@@ -136,6 +141,7 @@ function LlmLaunchers({
       if (kind === "decode") onRemoteDecode(p);
       else if (kind === "quality") onRemoteQuality(p);
       else if (kind === "aeon") onRemoteAeon(p);
+      else if (kind === "hasso") onRemoteHasso(p);
       else onRemotePrefill(p);
     } catch (err: unknown) {
       setRemoteError(err instanceof Error ? err.message : String(err));
@@ -211,6 +217,14 @@ function LlmLaunchers({
         title="AEON aeon-perf-v1 ladder: c1/4/8/16/32 × 5 categories, 256 tokens, temperature 0. Stored with AEON's metric definitions."
       >
         Run AEON ladder
+      </button>
+      <button
+        type="button"
+        onClick={onHasso}
+        className={`${LAUNCHER_BTN} w-full`}
+        title="Hasso battery v1: bench.sh greedy median (4 streamed probes) and bench-matrix.sh two-call delta (8 workloads × EN/FR/DE, 80 vs 680 tokens). Unreliable samples are refused."
+      >
+        Run Hasso battery
       </button>
       {remoteOpen && (
         <div className="space-y-2 rounded border border-border bg-surface-elevated p-2">
@@ -288,6 +302,13 @@ function LlmLaunchers({
               className={`${LAUNCHER_BTN} flex-1`}
             >
               AEON
+            </button>
+            <button
+              type="button"
+              onClick={() => launchRemote("hasso")}
+              className={`${LAUNCHER_BTN} flex-1`}
+            >
+              Hasso
             </button>
           </div>
         </div>
@@ -484,6 +505,15 @@ export function LlmPanel({
   const openRemoteAeon = useCallback((target: LlmBenchTarget) => {
     setRemoteTarget(target);
     setAeonOpen(true);
+  }, []);
+  const [hassoOpen, setHassoOpen] = useState(false);
+  const openLocalHasso = useCallback(() => {
+    setRemoteTarget(null);
+    setHassoOpen(true);
+  }, []);
+  const openRemoteHasso = useCallback((target: LlmBenchTarget) => {
+    setRemoteTarget(target);
+    setHassoOpen(true);
   }, []);
   /** Which vLLM metric info tip is open (kvCache | requests | ttftP95 | preempts). */
   const [metricInfoId, setMetricInfoId] = useState<string | null>(null);
@@ -734,6 +764,8 @@ export function LlmPanel({
             onRemoteQuality={openRemoteQuality}
             onAeon={openLocalAeon}
             onRemoteAeon={openRemoteAeon}
+            onHasso={openLocalHasso}
+            onRemoteHasso={openRemoteHasso}
           />
           <LlmDailyChart sparkId={sparkId} llmPort={llmPort} />
         </div>
@@ -1068,6 +1100,8 @@ export function LlmPanel({
             onRemoteQuality={openRemoteQuality}
             onAeon={openLocalAeon}
             onRemoteAeon={openRemoteAeon}
+            onHasso={openLocalHasso}
+            onRemoteHasso={openRemoteHasso}
           />
         </div>
       )}
@@ -1104,6 +1138,16 @@ export function LlmPanel({
       <AeonLadderDialog
         open={aeonOpen}
         onClose={() => setAeonOpen(false)}
+        targetId={sparkId}
+        scope="spark"
+        port={llmPort}
+        modelId={remoteTarget ? null : llm?.modelId ?? null}
+        remoteTarget={remoteTarget}
+        title={sparkName ?? null}
+      />
+      <HassoBatteryDialog
+        open={hassoOpen}
+        onClose={() => setHassoOpen(false)}
         targetId={sparkId}
         scope="spark"
         port={llmPort}

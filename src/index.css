@@ -3131,3 +3131,10 @@ a.showcase-btn {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
+
+/* Hasso battery dialog (BENCH4) */
+.hasso-headline {
+  margin-left: 0.35rem;
+  color: var(--color-accent);
+  font-variant-numeric: tabular-nums;
+}
