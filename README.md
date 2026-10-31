@@ -554,6 +554,17 @@ Each configured LLM port gets its own `LlmProbe` instance running in parallel. P
 
 Every snapshot also carries `totalPromptTokens` / `totalCachedTokens` (null when the engine does not expose them), engine-native decode/prefill tok/s and mean queue time on vLLM and SGLang (formulas from hasso5703's MIT-licensed dashboard), and `valueSources`: the source tier (`counter` / `native` / `proxy` / `client`), window and approximate flag of each non-null value. Unmeasured values are `null`, never 0.
 
+#### Normalized engine metrics
+
+`normalized` holds one record per rolling window (`"60"` and `"300"` seconds) with the same fields for every engine: `decode_tps`, `prefill_tps`, `ttft_s`, `queue_s`, `running`, `waiting`, `kv_pct`, `cache_reuse`, `acc_len`, `idle_share`, `throughput_tps`. Each value is `{ value, valid, source, windowS, approximate, samples }`:
+
+- **vLLM / SGLang** — differences of the engine's own counters between the oldest and newest read in the window (Hasso's Window(300 s) formulas): decode = decode tokens after the first over decode time, prefill = computed prefill tokens over prefill time, TTFT and queue = mean of requests in the window, cache hit = Δcached / Δprompt, acceptance length, SGLang idle share, throughput = Δgenerated / covered time.
+- **Other engines** — the busy-time-weighted mean of the probe's per-poll rates (idle polls left out), marked `approximate`.
+- **Levels** (`running`, `waiting`, `kv_pct`) are the newest reading (`windowS: 0`) with the window's `peak`.
+- A counter that goes backwards (engine restart) or a different engine/model on the port starts the window again (`resets`). Unmeasured values are `null` with `valid: false`; speeds are `null` while idle, throughput is a measured 0.
+
+Fleet node agents export the raw vLLM/SGLang counters as `llm[].engineCounters`; the dashboard server windows them per node and port and adds `llm[].normalized` to the snapshot. The Spark LLM panel shows the grid with a 1 min / 5 min toggle; Fleet node cards show decode · TTFT · KV under each running model, with the source tier.
+
 Rates are derived from per-probe cumulative counter diffs (or SGLang sticky throughput while it moves). Multiple ports can be added or removed at runtime without restarting the monitor.
 
 Live probes still use the LAN IP on remote units. **Decode and prefill benches** try that same HTTP target first; if it is closed they open an SSH local-forward onto the remote’s `127.0.0.1` so loopback-bound servers (ds4 `start.sh` default) can still be measured. The tunnel is torn down when the job finishes or is cancelled.

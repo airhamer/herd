@@ -268,6 +268,61 @@ export function hassoRates(engine, prev, cur) {
   };
 }
 
+/**
+ * STAT2 (#35): the cumulative counters EngineWindow differences, under its
+ * engine-neutral names (server/metrics/EngineWindow.js ENGINE_COUNTER_NAMES),
+ * read off a vLLM or SGLang /metrics page. Names follow Hasso's NAMES table.
+ * Prompt / cached totals are not read here: the probe passes its own.
+ * @param {"vllm"|"sglang"} engine
+ * @param {string} txt
+ * @returns {Record<string, number|null>}
+ */
+export function engineWindowCounters(engine, txt) {
+  if (engine === "vllm") {
+    const v = (n) => promSum(txt, `vllm:${n}`);
+    const generated = v("generation_tokens_total");
+    const ttftCount = v("time_to_first_token_seconds_count");
+    return {
+      generated,
+      // vLLM's ITL count is steps, so decoded = generated tokens, less the
+      // first tokens (TTFT count) the ITL sum never timed.
+      decoded: generated,
+      first: ttftCount,
+      itlSum: v("inter_token_latency_seconds_sum"),
+      prefillComputed: v("request_prefill_kv_computed_tokens_sum"),
+      prefillSeconds: v("request_prefill_time_seconds_sum"),
+      queueSum: v("request_queue_time_seconds_sum"),
+      queueCount: v("request_queue_time_seconds_count"),
+      ttftSum: v("time_to_first_token_seconds_sum"),
+      ttftCount,
+      specAccepted: v("spec_decode_num_accepted_tokens_total"),
+      specDrafts: v("spec_decode_num_drafts_total"),
+      specVerify: null,
+      idleSeconds: null,
+    };
+  }
+  const v = (n, where) => promFirst(txt, [`sglang:${n}`, `sglang_${n}`], where);
+  const decoded = v("inter_token_latency_seconds_count");
+  return {
+    generated: v("generation_tokens_total"),
+    // SGLang's ITL count is already tokens and holds no first tokens.
+    decoded,
+    first: decoded == null ? null : 0,
+    itlSum: v("inter_token_latency_seconds_sum"),
+    prefillComputed: v("realtime_tokens_total", { mode: "prefill_compute" }),
+    prefillSeconds: v("per_stage_req_latency_seconds_sum", { stage: "prefill_forward" }),
+    queueSum: v("queue_time_seconds_sum"),
+    queueCount: v("queue_time_seconds_count"),
+    ttftSum: v("time_to_first_token_seconds_sum"),
+    ttftCount: v("time_to_first_token_seconds_count"),
+    specAccepted: null,
+    specDrafts: null,
+    specVerify: v("spec_verify_calls_total"),
+    // Only when a data line carries it: a missing counter must not read as busy.
+    idleSeconds: v("scheduler_idle_seconds_total"),
+  };
+}
+
 // ─── Detection signatures ──────────────────────────────────────────────────
 
 /** Strata /health carries service: "strata". */

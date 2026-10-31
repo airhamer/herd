@@ -12,6 +12,7 @@ import {
   backendFromOwnedBy,
   clampCached,
   counterDeltas,
+  engineWindowCounters,
   hassoRates,
   healthLooksLikeStrata,
   metricsLookLikeSplash,
@@ -31,8 +32,14 @@ import {
   modelsLookLikeLmStudio,
   vllmHassoCounters,
 } from "./llmEngines.js";
+import { EngineWindows } from "../metrics/EngineWindow.js";
 
 const FAIL_RESET_THRESHOLD = 3;
+/**
+ * STAT2 (#35): backends whose lifetime totals are not monotonic engine
+ * counters (llama.cpp slot counters are per task) or that publish none.
+ */
+const NO_WINDOW_TOTALS = new Set(["llama.cpp", "lmstudio", "ollama", "tabbyapi"]);
 const REDETECT_INTERVAL_MS = 60_000;
 /** Current SGLang names first. Deprecated aliases still work but log a warning per hit. */
 const SGLANG_SERVER_INFO_PATHS = ["/server_info", "/get_server_info"];
@@ -273,6 +280,11 @@ export class LlmProbe {
     this._tfPrefillWindow = [];
     /** Previous TensorFold TTFT sum/count. */
     this._tfTtftPrev = null;
+    /** STAT2: this poll's /metrics counters for the engine windows (vLLM / SGLang). */
+    this._winCounters = null;
+    /** STAT2: rolling 60 s / 300 s windows; a new detection starts them again. */
+    if (this._engineWindows) this._engineWindows.clear();
+    else this._engineWindows = new EngineWindows();
   }
 
   /**
@@ -336,6 +348,13 @@ export class LlmProbe {
 
   /** Probe the LLM server and return a snapshot. */
   async probe() {
+    const snap = await this._probeOnce();
+    snap.normalized = this._feedEngineWindows(snap);
+    return snap;
+  }
+
+  async _probeOnce() {
+    this._winCounters = null;
     try {
       const shouldDetect =
         this.serverIsOpenAI === null ||
@@ -1934,6 +1953,7 @@ export class LlmProbe {
     this.totalPromptTokens = cur.prompt;
     this.totalCachedTokens = clampCached(cur.cached, cur.prompt);
     const prev = this._hassoPrev?.engine === "vllm" ? this._hassoPrev.counters : null;
+    this._winCounters = engineWindowCounters("vllm", txt);
     const rates = hassoRates("vllm", prev, cur);
     this.engineDecodeTps = rates.decodeTps;
     this.enginePrefillTps = rates.prefillTps;
@@ -1990,6 +2010,7 @@ export class LlmProbe {
     // Legacy SGLang left kvCacheUsage null; fill it only when the engine says.
     if (kv != null) this.kvCacheUsage = round(kv, 4);
     const cur = sglangHassoCounters(txt);
+    this._winCounters = engineWindowCounters("sglang", txt);
     const prev = this._hassoPrev?.engine === "sglang" ? this._hassoPrev.counters : null;
     const rates = hassoRates("sglang", prev, cur);
     this.engineDecodeTps = rates.decodeTps;
@@ -2372,7 +2393,65 @@ export class LlmProbe {
       specAcceptLength: null,
       installedModels: null,
       valueSources: {},
+      normalized: null,
     };
+  }
+
+  // ─── STAT2: windowed, normalized engine metrics ──────────
+  /**
+   * Feed this poll into the 60 s / 300 s engine windows and return their
+   * normalized records, or null when the engine is not readable.
+   * @param {Record<string, any>} snap
+   */
+  _feedEngineWindows(snap) {
+    const backend = snap?.backend;
+    if (!snap?.available || !backend) return null;
+    const vs = snap.valueSources ?? {};
+    const tier = BACKEND_SOURCE[backend] ?? "counter";
+    const fin = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+    const srcOf = (...fields) => {
+      for (const f of fields) if (vs[f]?.source) return vs[f].source;
+      return tier;
+    };
+    /** @type {Record<string, number|null>} */
+    const counters = { ...(this._winCounters ?? {}) };
+    let counterSource = this._winCounters ? "counter" : srcOf("totalOutputTokens");
+    if (!NO_WINDOW_TOTALS.has(backend)) {
+      counters.prompt = fin(snap.totalPromptTokens);
+      counters.cached = fin(snap.totalCachedTokens);
+      if (counters.generated == null) {
+        // SGLang without /metrics: its totals are real only when /server_info carries them.
+        const totalsReal = backend !== "sglang" || this._sglangTotalsPolled === true;
+        counters.generated = totalsReal ? fin(snap.totalOutputTokens) : null;
+        if (!this._winCounters) counterSource = srcOf("totalOutputTokens");
+      }
+    }
+    const running =
+      fin(snap.requestsRunning) ?? (snap.slotsTotal > 0 ? fin(snap.slotsActive) : null);
+    const kv = fin(snap.kvCacheUsage);
+    this._engineWindows.add({
+      t: this._now(),
+      key: `${backend}|${snap.modelId ?? ""}`,
+      counters,
+      counterSource,
+      rates: {
+        decodeTps: fin(snap.engineDecodeTps) ?? fin(snap.generationTps),
+        prefillTps: fin(snap.enginePrefillTps) ?? fin(snap.prefillTps),
+        ttftS: fin(snap.ttftSeconds),
+      },
+      rateSources: {
+        decodeTps: snap.engineDecodeTps != null ? srcOf("engineDecodeTps") : srcOf("generationTps"),
+        prefillTps: snap.enginePrefillTps != null ? srcOf("enginePrefillTps") : srcOf("prefillTps"),
+        ttftS: srcOf("ttftSeconds"),
+      },
+      levels: { running, waiting: fin(snap.requestsWaiting), kvPct: kv == null ? null : kv * 100 },
+      levelSources: {
+        running: srcOf("requestsRunning", "slotsActive"),
+        waiting: srcOf("requestsWaiting"),
+        kvPct: srcOf("kvCacheUsage"),
+      },
+    });
+    return this._engineWindows.records();
   }
 
   // ─── HTTP helpers ────────────────────────────────────────
