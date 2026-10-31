@@ -691,6 +691,77 @@ export interface StacksFile {
  * /telemetry endpoint. This is the primary data structure the dashboard
  * server polls and the frontend renders.
  */
+// ─── Normalized engine metrics (STAT2, #35) ────────────────────────────────
+// server/metrics/EngineWindow.js turns each engine's counters into one record
+// per rolling window that reads the same for every engine.
+
+/** Where a value came from (Page §3): counter < native < proxy < client. */
+export type EngineSourceTier = "counter" | "native" | "proxy" | "client";
+
+export type NormalizedEngineField =
+  | "decode_tps"
+  | "prefill_tps"
+  | "ttft_s"
+  | "queue_s"
+  | "running"
+  | "waiting"
+  | "kv_pct"
+  | "cache_reuse"
+  | "acc_len"
+  | "idle_share"
+  | "throughput_tps";
+
+export interface NormalizedEngineValue {
+  /** null when unmeasured: never 0 for "unknown". */
+  value: number | null;
+  /** false exactly when value is null. */
+  valid: boolean;
+  /** Tier of the input; may be set on a null value whose source had nothing to measure. */
+  source: EngineSourceTier | null;
+  /** Seconds the value spans; 0 for an instantaneous level, null when unmeasured. */
+  windowS: number | null;
+  /** True when the value only approximates the engine's own measure. */
+  approximate: boolean;
+  /** Reads behind the value (counter differences: reads in the window; rate means: busy reads). */
+  samples: number;
+  /** Levels only: the window's peak. */
+  peak?: number | null;
+}
+
+export interface NormalizedEngineRecord {
+  /** Window span in seconds (60 or 300). */
+  spanS: number;
+  /** Seconds between the window's oldest and newest read. */
+  coveredS: number;
+  /** Reads in the window. */
+  reads: number;
+  /** When the window (re)started: first read after an engine change or counter reset (ms epoch). */
+  startedAt: number | null;
+  /** Times the window started again after an engine change or counter reset. */
+  resets: number;
+  values: Record<NormalizedEngineField, NormalizedEngineValue>;
+}
+
+/** Normalized records keyed by window span in seconds ("60", "300"). */
+export type NormalizedEngineWindows = Record<string, NormalizedEngineRecord>;
+
+/**
+ * One node-agent LLM port probe (agent/collectors/llm.js), attached to the
+ * snapshot as `llm`. Only the fields the dashboard reads are typed here.
+ */
+export interface AgentLlmEntry {
+  port: number;
+  backend: string | null;
+  modelId: string | null;
+  kvCacheUsage?: number | null;
+  requestsRunning?: number | null;
+  requestsWaiting?: number | null;
+  /** STAT2: raw cumulative engine counters (vLLM / SGLang Prometheus). */
+  engineCounters?: Record<string, number | null> | null;
+  /** STAT2: added by the dashboard server's fleet poller. */
+  normalized?: NormalizedEngineWindows | null;
+}
+
 export interface NodeAgentSnapshot {
   /** Node id (matches registry id). */
   nodeId: string;
@@ -748,6 +819,11 @@ export interface NodeAgentSnapshot {
    * (SC5+ ETA calc / UI) treat both as "no history".
    */
   stackHistory?: Record<string, CategoryHistory> | null;
+  /**
+   * Raw LLM port probes. Optional: an agent with no LLM ports omits it.
+   * STAT2: the dashboard server adds `normalized` to each entry.
+   */
+  llm?: AgentLlmEntry[];
   /** Last time this snapshot was polled (ms epoch). */
   polledAt: number;
 }

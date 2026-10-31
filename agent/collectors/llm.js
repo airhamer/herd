@@ -124,6 +124,10 @@ function defaultLlm(port) {
     e2eP95Seconds: null,
     itlP95Seconds: null,
     mtpAcceptanceRate: null,
+    // STAT2 (#35): raw cumulative engine counters for the dashboard's
+    // windowed metrics (server/metrics/EngineWindow.js). null when the
+    // engine serves no Prometheus page.
+    engineCounters: null,
   };
 }
 
@@ -245,6 +249,97 @@ function getPromMetric(body, name) {
     }
   }
   return found ? sum : null;
+}
+
+/**
+ * Sum of `name` over the series whose `key` label equals `value`.
+ * @param {string} body
+ * @param {string} name
+ * @param {string} key
+ * @param {string} value
+ * @returns {number | null}
+ */
+function getPromMetricWhere(body, name, key, value) {
+  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`^${esc}\\{([^}]*)\\}\\s+([\\d.eE+-]+)\\s*$`, "gm");
+  const want = `${key}="${value}"`;
+  let sum = 0;
+  let found = false;
+  let m;
+  while ((m = re.exec(body)) !== null) {
+    if (!m[1].split(",").some((l) => l.trim() === want)) continue;
+    const v = parseFloat(m[2]);
+    if (Number.isFinite(v)) {
+      sum += v;
+      found = true;
+    }
+  }
+  return found ? sum : null;
+}
+
+/**
+ * STAT2 (#35): the cumulative counters the dashboard's EngineWindow
+ * differences, under its engine-neutral names. Metric names follow
+ * hasso5703's dashboard (dgx-spark-qwen38, dashboard/engine_metrics.py, MIT;
+ * notice in server/collectors/llmEngines.js). null when the page carries no
+ * engine counter at all.
+ * @param {"vllm"|"sglang"} engine
+ * @param {string} txt
+ * @returns {Record<string, number|null> | null}
+ */
+export function engineCounters(engine, txt) {
+  if (!txt) return null;
+  /** @type {Record<string, number|null>} */
+  let out;
+  if (engine === "vllm") {
+    const v = (n) => getPromMetric(txt, `vllm:${n}`);
+    const generated = v("generation_tokens_total");
+    const ttftCount = v("time_to_first_token_seconds_count");
+    out = {
+      generated,
+      prompt: v("prompt_tokens_total"),
+      cached: v("prompt_tokens_cached_total"),
+      // ITL count is steps: decoded = generated less the first tokens.
+      decoded: generated,
+      first: ttftCount,
+      itlSum: v("inter_token_latency_seconds_sum"),
+      prefillComputed: v("request_prefill_kv_computed_tokens_sum"),
+      prefillSeconds: v("request_prefill_time_seconds_sum"),
+      queueSum: v("request_queue_time_seconds_sum"),
+      queueCount: v("request_queue_time_seconds_count"),
+      ttftSum: v("time_to_first_token_seconds_sum"),
+      ttftCount,
+      specAccepted: v("spec_decode_num_accepted_tokens_total"),
+      specDrafts: v("spec_decode_num_drafts_total"),
+      specVerify: null,
+      idleSeconds: null,
+    };
+  } else {
+    const v = (n) => getPromMetric(txt, `sglang:${n}`) ?? getPromMetric(txt, `sglang_${n}`);
+    const w = (n, k, val) =>
+      getPromMetricWhere(txt, `sglang:${n}`, k, val) ?? getPromMetricWhere(txt, `sglang_${n}`, k, val);
+    const decoded = v("inter_token_latency_seconds_count");
+    out = {
+      generated: v("generation_tokens_total"),
+      prompt: v("prompt_tokens_total"),
+      cached: w("cached_tokens_total", "cache_source", "device") ?? v("cached_tokens_total"),
+      // ITL count is already tokens and holds no first tokens.
+      decoded,
+      first: decoded == null ? null : 0,
+      itlSum: v("inter_token_latency_seconds_sum"),
+      prefillComputed: w("realtime_tokens_total", "mode", "prefill_compute"),
+      prefillSeconds: w("per_stage_req_latency_seconds_sum", "stage", "prefill_forward"),
+      queueSum: v("queue_time_seconds_sum"),
+      queueCount: v("queue_time_seconds_count"),
+      ttftSum: v("time_to_first_token_seconds_sum"),
+      ttftCount: v("time_to_first_token_seconds_count"),
+      specAccepted: null,
+      specDrafts: null,
+      specVerify: v("spec_verify_calls_total"),
+      idleSeconds: v("scheduler_idle_seconds_total"),
+    };
+  }
+  return Object.values(out).some((x) => x != null) ? out : null;
 }
 
 /**
@@ -395,6 +490,13 @@ async function probePort(port, fetchFn, headers) {
       const load = await fetchSglangLoad(fetchFn, base, headers);
       m.requestsRunning = load?.running ?? null;
       m.requestsWaiting = load?.waiting ?? null;
+      // Prometheus is optional on SGLang (--enable-metrics).
+      const txt = await fetchText(fetchFn, `${base}/metrics`, headers);
+      if (txt) {
+        m.engineCounters = engineCounters("sglang", txt);
+        const kv = getPromMetric(txt, "sglang:token_usage") ?? getPromMetric(txt, "sglang_token_usage");
+        if (kv != null && m.kvCacheUsage == null) m.kvCacheUsage = kv;
+      }
       return m;
     }
 
@@ -431,7 +533,10 @@ async function probePort(port, fetchFn, headers) {
       m.backend = "vllm";
       applyVllmModel(m, model);
       const txt = await fetchText(fetchFn, `${base}/metrics`, headers);
-      if (txt) applyVllmMetrics(m, txt);
+      if (txt) {
+        applyVllmMetrics(m, txt);
+        m.engineCounters = engineCounters("vllm", txt);
+      }
       return m;
     }
 
