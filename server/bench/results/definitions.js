@@ -78,6 +78,15 @@ const LIST = [
       "Mean of Showcase per-stream decode rates; token counts may be estimated from streamed characters when the engine sends no usage, so not comparable with DecodeBench.",
     url: null,
   },
+  {
+    name: "aeon.decode_tps_mean.v1",
+    metric: "decode_tps_stream",
+    owner: "AEON",
+    comparable: "stream_post_first_token_mean",
+    formula:
+      "AEON aeon-perf-v1 decode_tps_mean: mean over successful requests of (output_tokens − 1) / (t_last_token − t_first_token).",
+    url: "https://github.com/AEON-7/Aeon-Bench-Pod/blob/main/mvp/pod/perf_grid.py",
+  },
   // ── Aggregate decode: concurrent window ────────────────────────────
   {
     name: "herd.decode.agg_window.v1",
@@ -101,8 +110,9 @@ const LIST = [
     metric: "agg_window_tps",
     owner: "AEON",
     comparable: "agg_concurrent_window",
-    formula: "AEON wave_peak_concurrent_window: Σ tokens over the concurrent window of a wave.",
-    url: null,
+    formula:
+      "AEON wave_peak_concurrent_window (aeon-perf-v1 agg_decode_tps): requests run in waves of `concurrency`; a wave's rate is Σ output tokens / (max t_last_token − min t_first_token); the cell reports the peak wave, and a one-request wave reports that request's decode rate. Level overall = best category cell.",
+    url: "https://github.com/AEON-7/Aeon-Bench-Pod/blob/main/mvp/pod/perf_grid.py",
   },
   // ── Aggregate decode: sum of per-stream rates ──────────────────────
   {
@@ -118,8 +128,9 @@ const LIST = [
     metric: "agg_sum_tps",
     owner: "AEON",
     comparable: "agg_sum_of_stream_rates",
-    formula: "AEON agg_saturated_est: Σ of per-stream mean decode rates.",
-    url: null,
+    formula:
+      "AEON agg_saturated_est (aeon-perf-v1): mean per-stream decode rate × concurrency, i.e. the Σ of per-stream rates of a full wave.",
+    url: "https://github.com/AEON-7/Aeon-Bench-Pod/blob/main/mvp/pod/perf_grid.py",
   },
   {
     name: "mia.agg_sum_per_request.v1",
@@ -146,6 +157,14 @@ const LIST = [
     comparable: "prefill_concurrent_window",
     formula: "Σ prompt tokens of a DecodeBench wave / (max t_first_token − min t_request_start).",
     url: null,
+  },
+  {
+    name: "aeon.prefill_tps_mean.v1",
+    metric: "prefill_tps",
+    owner: "AEON",
+    comparable: "prefill_per_request_mean",
+    formula: "AEON aeon-perf-v1 prefill_tps_mean: mean over requests of prompt_tokens / TTFT (s), every prompt cache-busted.",
+    url: "https://github.com/AEON-7/Aeon-Bench-Pod/blob/main/mvp/pod/perf_grid.py",
   },
   // ── Engine counters ────────────────────────────────────────────────
   {
@@ -180,6 +199,22 @@ const LIST = [
     comparable: "client_tpot_p95",
     formula: "p95 (nearest rank) over streams of 1000 / per-stream decode tok/s, in ms per output token.",
     url: null,
+  },
+  {
+    name: "aeon.ttft_p95_linear.v1",
+    metric: "ttft_p95",
+    owner: "AEON",
+    comparable: "client_ttft_p95_linear",
+    formula: "AEON aeon-perf-v1 ttft_ms_p95: 95th percentile (linear interpolation) of client TTFT over successful requests.",
+    url: "https://github.com/AEON-7/Aeon-Bench-Pod/blob/main/mvp/pod/perf_grid.py",
+  },
+  {
+    name: "aeon.tpot_p95_linear.v1",
+    metric: "tpot_p95",
+    owner: "AEON",
+    comparable: "client_tpot_p95_linear",
+    formula: "AEON aeon-perf-v1 tpot_ms_p95: 95th percentile (linear interpolation) of 1000 / per-request decode tok/s.",
+    url: "https://github.com/AEON-7/Aeon-Bench-Pod/blob/main/mvp/pod/perf_grid.py",
   },
   // ── Quality / energy (populated by later bench issues) ─────────────
   {

@@ -2799,3 +2799,38 @@ html {
   background: color-mix(in srgb, var(--color-info, var(--color-accent)) 14%, transparent);
   color: var(--color-info, var(--color-accent));
 }
+
+/* ─── AEON concurrency ladder (#43) ───────────────────── */
+.aeon-table th:first-child,
+.aeon-table td:first-child {
+  white-space: nowrap;
+}
+.aeon-table__agg {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+.aeon-sheet code {
+  font-size: 0.625rem;
+}
+.node-bench-lanes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+.node-bench-lane {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+}
+.node-bench-lane__label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}

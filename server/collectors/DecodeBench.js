@@ -36,6 +36,24 @@ import {
   DECODE_CODE_WARMUP_PROMPT,
 } from "../../src/shared/llmPrompts.js";
 import { formatLlmBaseUrl } from "../../src/shared/llmTarget.js";
+import {
+  AEON_CATEGORIES,
+  AEON_LADDER,
+  AEON_MAX_TOKENS,
+  AEON_SUITE_ID,
+  AEON_SUITE_VERSION,
+  aeonCaseId,
+  aeonCellWaves,
+  aeonRequestBody,
+  aeonRequestCount,
+  aeonRequestRow,
+  aggregateCell,
+  aggregateLevel,
+  normalizeAeonLadder,
+} from "./aeonPerf.js";
+
+/** Decode bench protocols: Herd's own (default) and AEON's aeon-perf-v1 ladder. */
+export const DECODE_PROTOCOLS = Object.freeze(["herd", AEON_SUITE_ID]);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -420,6 +438,138 @@ async function runConcurrencyWave({
 }
 
 /**
+ * One AEON aeon-perf-v1 level: each category runs alone, in waves of `conc`
+ * simultaneous streams; the next wave starts when the previous one drains
+ * (perf_grid.py run_direct_grid). No warmup, no thinking flags, no
+ * ignore_eos — the request body is exactly AEON's.
+ *
+ * @returns {Promise<{ level: object, wave: object }>} AEON level + Herd-shaped summary wave
+ */
+async function runAeonLevel({
+  baseUrl,
+  modelId,
+  conc,
+  abortSignal,
+  apiKey = null,
+  nonce,
+  onRequestDone = null,
+  onCategory = null,
+  requestImpl = runStreamingRequest,
+}) {
+  const url = `${baseUrl}/v1/chat/completions`;
+  /** @type {Record<string, { cell: any, waves: object[][], wallS: number, requests: object[], errors: object[] }>} */
+  const cells = {};
+  let model = null;
+  for (const cat of AEON_CATEGORIES) {
+    if (abortSignal?.aborted) break;
+    onCategory?.(cat);
+    const waves = aeonCellWaves(cat, conc, nonce);
+    /** @type {object[][]} */
+    const okWaves = [];
+    /** @type {object[]} */
+    const errors = [];
+    const t0 = performance.now();
+    for (const prompts of waves) {
+      if (abortSignal?.aborted) break;
+      const results = await Promise.all(
+        prompts.map(async (prompt) => {
+          const ctrl = new AbortController();
+          const onAbort = () => ctrl.abort();
+          if (abortSignal) {
+            if (abortSignal.aborted) ctrl.abort();
+            else abortSignal.addEventListener("abort", onAbort, { once: true });
+          }
+          const timer = setTimeout(() => ctrl.abort(), PER_REQUEST_TIMEOUT_MS);
+          try {
+            return await requestImpl(url, aeonRequestBody(modelId, prompt), ctrl.signal, { apiKey });
+          } catch (err) {
+            return { error: err?.message || String(err) };
+          } finally {
+            clearTimeout(timer);
+            if (abortSignal) abortSignal.removeEventListener("abort", onAbort);
+          }
+        })
+      );
+      const okRows = [];
+      results.forEach((r, i) => {
+        if (r?.model && !model) model = r.model;
+        if (r?.error) {
+          errors.push({ category: cat, error: String(r.error).slice(0, 300), prompt_head: prompts[i].slice(0, 80) });
+        } else {
+          okRows.push(aeonRequestRow(r, cat));
+        }
+        onRequestDone?.();
+      });
+      okWaves.push(okRows);
+    }
+    const wallS = (performance.now() - t0) / 1000;
+    const cell = aggregateCell(okWaves, wallS, { conc, nErrors: errors.length });
+    cell.cell_wall_s = round2Fixed(wallS, 3);
+    cell.case_id = aeonCaseId(cat, conc);
+    cells[cat] = { cell, waves: okWaves, wallS, requests: okWaves.flat().map(compactAeonRow), errors };
+  }
+
+  const { overall, wallClockS } = aggregateLevel(cells, conc);
+  overall.case_id = aeonCaseId("overall", conc);
+  /** @type {Record<string, object>} */
+  const categories = {};
+  for (const [cat, c] of Object.entries(cells)) {
+    categories[cat] = { ...c.cell, requests: c.requests, errors: c.errors };
+  }
+  const nErr = overall.n_errors;
+  const total = overall.n + nErr;
+  const level = { conc, wallClockS, overall, categories };
+  const ok = Object.values(cells).flatMap((c) => c.waves.flat());
+  const rates = ok.map((r) => r.decode_tps).filter((v) => typeof v === "number");
+  const wave = {
+    concurrency: conc,
+    streamsOk: overall.n,
+    streamsFailed: nErr,
+    meanDecodeTps: overall.decode_tps_mean ?? 0,
+    medianDecodeTps: round2(median(rates)),
+    minDecodeTps: rates.length ? round2(Math.min(...rates)) : 0,
+    maxDecodeTps: rates.length ? round2(Math.max(...rates)) : 0,
+    meanTtftMs: overall.ttft_ms_mean ?? 0,
+    medianTtftMs: overall.ttft_ms_p50 ?? 0,
+    aggregateDecodeTps: overall.agg_decode_tps ?? 0,
+    aggSumDecodeTps: overall.agg_saturated_est ?? 0,
+    meanPrefillTps: overall.prefill_tps_mean ?? 0,
+    medianPrefillTps: 0,
+    aggregatePrefillTps: 0,
+    totalPrefillTokens: overall.input_tokens_total,
+    totalDecodeTokens: Math.max(0, overall.output_tokens_total - overall.n),
+    totalCompletionTokens: overall.output_tokens_total,
+    durationMs: round2(wallClockS * 1000),
+    error:
+      total > 0 && nErr === total
+        ? Object.values(cells).flatMap((c) => c.errors)[0]?.error || "All streams failed"
+        : nErr
+          ? `${nErr} of ${total} requests failed`
+          : null,
+    streams: [],
+    model: model || modelId || null,
+  };
+  return { level, wave };
+}
+
+function round2Fixed(v, nd) {
+  const f = 10 ** nd;
+  return Math.round(v * f) / f;
+}
+
+/** Per-request row kept in history: decode window relative to the cell's first token. */
+function compactAeonRow(r) {
+  return {
+    ttft_ms: r.ttft_ms,
+    decode_tps: r.decode_tps,
+    prefill_tps: r.prefill_tps,
+    e2e_ms: r.e2e_ms,
+    output_tokens: r.output_tokens,
+    input_tokens: r.input_tokens,
+  };
+}
+
+/**
  * Job manager: one active job per spark, short history persisted to disk
  * so last results survive page refresh and process restart.
  *
@@ -437,6 +587,8 @@ export class DecodeBenchManager {
     this.historyBySpark = new Map();
     this.historyPath = historyPath;
     this.activePath = activePath;
+    /** Stream request override for tests (AEON protocol); null = runStreamingRequest. */
+    this.requestImpl = null;
     this._loadHistory();
     this._recoverInterruptedActive();
   }
@@ -708,7 +860,18 @@ export class DecodeBenchManager {
       host: rawHost = null,
       tls: rawTls = false,
       owner = null,
+      protocol: rawProtocol = "herd",
+      nodeId = null,
+      nonce = null,
     } = opts;
+
+    const protocol = rawProtocol == null || rawProtocol === "" ? "herd" : String(rawProtocol);
+    if (!DECODE_PROTOCOLS.includes(protocol)) {
+      const err = new Error(`protocol must be one of ${DECODE_PROTOCOLS.join(", ")}`);
+      err.status = 400;
+      throw err;
+    }
+    const aeon = protocol === AEON_SUITE_ID;
 
     if (this.activeBySpark.has(sparkId)) {
       const err = new Error("A benchmark is already running for this Spark");
@@ -716,16 +879,25 @@ export class DecodeBenchManager {
       throw err;
     }
 
-    const concurrencies = normalizeConcurrencies(rawConc);
+    const concurrencies = aeon ? normalizeAeonLadder(rawConc) : normalizeConcurrencies(rawConc);
     if (!concurrencies.length) {
-      const err = new Error("Select at least one concurrency level (1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 24, or 32)");
+      const err = new Error(
+        aeon
+          ? `Select at least one AEON ladder level (${AEON_LADDER.join(", ")})`
+          : "Select at least one concurrency level (1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 24, or 32)"
+      );
       err.status = 400;
       throw err;
     }
 
-    let maxTokens = Number(rawMax);
+    let maxTokens = aeon ? AEON_MAX_TOKENS : Number(rawMax);
     if (!Number.isFinite(maxTokens)) maxTokens = DEFAULT_MAX_TOKENS;
     maxTokens = Math.round(maxTokens);
+    if (aeon && rawMax != null && Number(rawMax) !== AEON_MAX_TOKENS) {
+      const err = new Error(`The AEON ladder always uses ${AEON_MAX_TOKENS} max tokens`);
+      err.status = 400;
+      throw err;
+    }
     if (maxTokens < MIN_MAX_TOKENS || maxTokens > MAX_MAX_TOKENS) {
       const err = new Error(`maxTokens must be between ${MIN_MAX_TOKENS} and ${MAX_MAX_TOKENS}`);
       err.status = 400;
@@ -739,8 +911,8 @@ export class DecodeBenchManager {
       throw err;
     }
 
-    const promptType = normalizeDecodeBenchType(rawType);
-    const debugOn = Boolean(debug);
+    const promptType = aeon ? null : normalizeDecodeBenchType(rawType);
+    const debugOn = Boolean(debug) && !aeon;
     const benchId = randomUUID();
     const abort = new AbortController();
     const job = {
@@ -749,12 +921,22 @@ export class DecodeBenchManager {
       status: "running",
       startedAt: Date.now(),
       completedAt: null,
+      nodeId: nodeId ? String(nodeId) : null,
       config: {
         port: p,
         modelId: modelId || null,
         concurrencies,
         maxTokens,
         promptType,
+        ...(aeon
+          ? {
+              protocol: AEON_SUITE_ID,
+              suiteVersion: AEON_SUITE_VERSION,
+              temperature: 0,
+              categories: [...AEON_CATEGORIES],
+              requests: aeonRequestCount(concurrencies),
+            }
+          : {}),
         ...(debugOn ? { debug: true } : {}),
         ...(rawHost
           ? { host: String(rawHost).trim(), tls: Boolean(rawTls) }
@@ -765,8 +947,10 @@ export class DecodeBenchManager {
         completedLevels: 0,
         totalLevels: concurrencies.length,
         message: "Starting…",
+        ...(aeon ? { currentCategory: null, requestsDone: 0, requestsTotal: aeonRequestCount(concurrencies) } : {}),
       },
       results: [],
+      ...(aeon ? { aeon: { suite: AEON_SUITE_ID, nonce: nonce || randomUUID().replace(/-/g, "").slice(0, 6), levels: [] } } : {}),
       error: null,
       _abort: abort,
       _debug: debugOn,
@@ -825,7 +1009,8 @@ export class DecodeBenchManager {
         }
       }
       const baseUrl = formatLlmBaseUrl({ host, port, tls });
-      if (!job._abort.signal.aborted) {
+      const aeon = job.config.protocol === AEON_SUITE_ID;
+      if (!job._abort.signal.aborted && !aeon) {
         if (!String(job.progress.message || "").startsWith("Warming up")) {
           job.progress.message = "Warming up…";
         }
@@ -850,8 +1035,43 @@ export class DecodeBenchManager {
         }
 
         job.progress.currentConcurrency = c;
-        job.progress.message = `Running concurrency ${c}…`;
+        job.progress.message = aeon ? `AEON ladder c${c}…` : `Running concurrency ${c}…`;
         this._checkpointActive();
+
+        if (aeon) {
+          const { level, wave } = await runAeonLevel({
+            baseUrl,
+            modelId: job.config.modelId,
+            conc: c,
+            abortSignal: job._abort.signal,
+            apiKey: job._apiKey,
+            nonce: job.aeon.nonce,
+            requestImpl: this.requestImpl || runStreamingRequest,
+            onCategory: (cat) => {
+              job.progress.currentCategory = cat;
+              job.progress.message = `AEON ladder c${c} · ${cat}`;
+              this._checkpointActive();
+            },
+            onRequestDone: () => {
+              job.progress.requestsDone += 1;
+            },
+          });
+          if (job._abort.signal.aborted) {
+            if (job.status === "running") {
+              job.status = "cancelled";
+              job.error = "Cancelled by user";
+              job.progress.message = "Cancelled";
+            }
+            break;
+          }
+          if (wave.model && !job.config.modelId) job.config.modelId = wave.model;
+          job.aeon.levels.push(level);
+          job.results.push(wave);
+          job.progress.completedLevels += 1;
+          job.progress.currentCategory = null;
+          this._checkpointActive();
+          continue;
+        }
 
         const wave = await runConcurrencyWave({
           baseUrl,
@@ -945,7 +1165,21 @@ export class DecodeBenchManager {
   }
 }
 
-export { ALLOWED_CONCURRENCIES, DEFAULT_MAX_TOKENS, normalizeConcurrencies };
+/**
+ * Arguments for validateDecodeBudget for a start request body: herd counts
+ * one stream per concurrency level; the AEON ladder counts every request
+ * (5 categories × max(4, c) per rung) at 256 tokens.
+ * @param {any} body
+ * @returns {[number[], number]}
+ */
+export function decodeBudgetArgs(body) {
+  if (body?.protocol === AEON_SUITE_ID) {
+    return [normalizeAeonLadder(body?.concurrencies).map((c) => aeonRequestCount([c])), AEON_MAX_TOKENS];
+  }
+  return [normalizeConcurrencies(body?.concurrencies), body?.maxTokens ?? 400];
+}
+
+export { ALLOWED_CONCURRENCIES, DEFAULT_MAX_TOKENS, normalizeConcurrencies, runAeonLevel };
 
 function normalizeConcurrencies(raw) {
   if (!Array.isArray(raw)) return [];
@@ -969,6 +1203,8 @@ function publicJob(job) {
     config: { ...job.config },
     progress: { ...job.progress },
     results: job.results,
+    ...(job.aeon ? { aeon: job.aeon } : {}),
+    ...(job.nodeId ? { nodeId: job.nodeId } : {}),
     error: job.error,
     durationMs:
       job.completedAt != null
@@ -987,4 +1223,15 @@ export const DECODE_BENCH_DEFAULTS = {
   maxMaxTokens: MAX_MAX_TOKENS,
   promptTypes: [...DECODE_BENCH_TYPES],
   defaultPromptType: DECODE_BENCH_DEFAULT_TYPE,
+  protocols: [...DECODE_PROTOCOLS],
+  aeon: {
+    suite: AEON_SUITE_ID,
+    suiteVersion: AEON_SUITE_VERSION,
+    ladder: [...AEON_LADDER],
+    maxTokens: AEON_MAX_TOKENS,
+    temperature: 0,
+    categories: [...AEON_CATEGORIES],
+    promptsPerCategory: 4,
+    requests: aeonRequestCount([...AEON_LADDER]),
+  },
 };
