@@ -114,6 +114,18 @@ function tagCollectionResult(result, successful) {
  * In Phase 2, this is the LOCAL path only (no SSH).
  * Remote path added in Phase 3.
  */
+/**
+ * VRAM on a discrete-GPU (or CPU-only) "host" unit: dedicated card memory,
+ * never system RAM. Total is nvidia-smi's memory.total (0 when unknown, e.g.
+ * no GPU or [N/A]); free = total − used, including when idle (used 0).
+ * Unlike a GB10 Spark there is no fallback to MemTotal / MemAvailable or the
+ * 128 GB Spark spec, so RAM and VRAM stay separate figures.
+ */
+export function discreteVram(usedMB, totalMB) {
+  const total = totalMB > 0 ? totalMB : 0;
+  return { total, available: total > 0 ? Math.max(0, total - usedMB) : 0 };
+}
+
 export class SystemCollector {
   constructor(spark) {
     this.spark = spark;
@@ -395,8 +407,10 @@ export class SystemCollector {
         computeSum += app.vramMB;
       }
       computeAppsQueried = true;
-      // Prefer live compute-apps for used (including 0 = cleared).
-      if (used == null || used === 0) used = computeSum;
+      // Prefer live compute-apps for used (including 0 = cleared). A discrete
+      // host's measured memory.used (0 when idle) is its own card's figure and
+      // stays as reported; the compute-apps sum can span several cards.
+      if (used == null || (used === 0 && this.spark.kind !== "host")) used = computeSum;
     } catch {
       /* Docker without host PID ns often fails/empties here — file fallback below */
     }
@@ -442,12 +456,7 @@ export class SystemCollector {
     let totalMB = Math.round(total || 0);
 
     if (this.spark.kind === "host") {
-      // Discrete GPU VRAM: trust nvidia-smi's memory.total (e.g. 24 GB L4), and
-      // only fall back to the OS pool / Spark spec when nvidia-smi says N/A.
-      // Free VRAM = total − used (unlike the shared pool, GPU memory is dedicated).
-      if (totalMB <= 0 && memTotalMB > 0) totalMB = memTotalMB;
-      else if (totalMB <= 0) totalMB = DGX_SPARK.MEMORY_HBM_SIZE_GB * 1024; // Convert to MB
-      if (totalMB > 0 && usedMB > 0) availableMB = Math.max(0, totalMB - usedMB);
+      ({ total: totalMB, available: availableMB } = discreteVram(usedMB, totalMB));
     } else {
       // GB10 shared HBM pool: prefer the OS-visible pool (MemTotal) as the total,
       // fall back to nvidia-smi, then the hardware spec (HBM) only if nothing known.
@@ -1172,7 +1181,7 @@ export class SystemCollector {
         this.nvidiaComputeAppsCache.set(app.pid, { name: app.name, vramMB: app.vramMB });
         computeSum += app.vramMB;
       }
-      if ((used == null || used === 0) && computeSum > 0) used = computeSum;
+      if ((used == null || (used === 0 && this.spark.kind !== "host")) && computeSum > 0) used = computeSum;
 
       // Unified-memory pool: prefer MemTotal (OS-visible) so VRAM and Unified
       // Memory panels share the same base. Available = MemAvailable (real free).
@@ -1184,10 +1193,7 @@ export class SystemCollector {
       const usedMB = Math.round(used || 0);
       let totalMB = Math.round(total || 0);
       if (this.spark.kind === "host") {
-        // Discrete GPU VRAM: trust nvidia-smi's memory.total; free VRAM = total − used.
-        if (totalMB <= 0 && memTotalMB > 0) totalMB = memTotalMB;
-        else if (totalMB <= 0) totalMB = DGX_SPARK.MEMORY_HBM_SIZE_GB * 1024; // Convert to MB
-        if (totalMB > 0 && usedMB > 0) availableMB = Math.max(0, totalMB - usedMB);
+        ({ total: totalMB, available: availableMB } = discreteVram(usedMB, totalMB));
       } else {
         // GB10 shared HBM pool: prefer the OS-visible pool (MemTotal) as the total,
         // fall back to nvidia-smi, then the hardware spec (HBM) only if nothing known.
