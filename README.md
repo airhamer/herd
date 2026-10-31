@@ -563,7 +563,7 @@ Every snapshot also carries `totalPromptTokens` / `totalCachedTokens` (null when
 - **Levels** (`running`, `waiting`, `kv_pct`) are the newest reading (`windowS: 0`) with the window's `peak`.
 - A counter that goes backwards (engine restart) or a different engine/model on the port starts the window again (`resets`). Unmeasured values are `null` with `valid: false`; speeds are `null` while idle, throughput is a measured 0.
 
-Fleet node agents export the raw vLLM/SGLang counters as `llm[].engineCounters`; the dashboard server windows them per node and port and adds `llm[].normalized` to the snapshot. The Spark LLM panel shows the grid with a 1 min / 5 min toggle; Fleet node cards show decode · TTFT · KV under each running model, with the source tier.
+Fleet node agents (0.4+) export each engine's raw cumulative counters as `llm[].engineCounters` (vLLM, SGLang, ds4, q27, TensorFold, Splash, llama.cpp, Strata, EXL3, FreeToken, Locals), stamped with the agent's monotonic clock in `llm[].engineCountersMeta`; the dashboard server windows them per node and port and adds `llm[].normalized` to the snapshot. The Spark LLM panel shows the grid with a 1 min / 5 min toggle; Fleet node cards show decode · TTFT · KV under each running model, with the source tier.
 
 Rates are derived from per-probe cumulative counter diffs (or SGLang sticky throughput while it moves). Multiple ports can be added or removed at runtime without restarting the monitor.
 

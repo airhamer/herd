@@ -1,7 +1,9 @@
 // STAT2 (#35): raw engine counters the dashboard windows (EngineWindow).
 import test from "node:test";
 import assert from "node:assert/strict";
-import { collectLlm, engineCounters } from "../llm.js";
+import { collectLlm, engineCounters, ENGINE_COUNTER_KEYS } from "../llm.js";
+
+const NONE = Object.fromEntries(ENGINE_COUNTER_KEYS.map((k) => [k, null]));
 
 function http(status, body) {
   return { ok: status >= 200 && status < 300, status, json: async () => JSON.parse(body), text: async () => body };
@@ -46,6 +48,7 @@ const SGLANG = [
 
 test("engineCounters: vLLM names, decoded = generated, first = TTFT count", () => {
   assert.deepEqual(engineCounters("vllm", VLLM), {
+    ...NONE,
     generated: 1000, prompt: 8000, cached: 6000, decoded: 1000, first: 20, itlSum: 50,
     prefillComputed: 2000, prefillSeconds: 1, queueSum: 1, queueCount: 20, ttftSum: 4, ttftCount: 20,
     specAccepted: 600, specDrafts: 300, specVerify: null, idleSeconds: null,
@@ -54,6 +57,7 @@ test("engineCounters: vLLM names, decoded = generated, first = TTFT count", () =
 
 test("engineCounters: SGLang labelled series, prefill_forward only, device cache, no idle line = null", () => {
   assert.deepEqual(engineCounters("sglang", SGLANG), {
+    ...NONE,
     generated: 1000, prompt: 5000, cached: 4000, decoded: 990, first: 0, itlSum: 30,
     prefillComputed: 1000, prefillSeconds: 2, queueSum: 0.1, queueCount: 10, ttftSum: 3, ttftCount: 10,
     specAccepted: null, specDrafts: null, specVerify: 300, idleSeconds: null,

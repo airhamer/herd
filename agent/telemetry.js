@@ -34,7 +34,7 @@ import { collectComfy } from "./collectors/comfy.js";
 import { collectTailscale } from "./collectors/tailscale.js";
 import { readTextFile, parseUptimeSeconds } from "./collectors/util.js";
 
-export const AGENT_VERSION = "0.3.0";
+export const AGENT_VERSION = "0.4.0";
 
 /**
  * Derive quantization from a model id/path reference.
