@@ -45,12 +45,16 @@ Names are append-only (`owner.what.vN`). Only definitions in the same
 | Aggregate, concurrent window | `herd.decode.agg_window.v1`, `sparkdash.agg_window.v1`, `aeon.wave_peak_concurrent_window.v1` |
 | Aggregate, sum of stream rates | `herd.decode.agg_sum.v1`, `aeon.agg_saturated_est.v1`, `mia.agg_sum_per_request.v1` |
 | Single-stream greedy median | `hasso.single_stream_greedy_median.v1` |
-| Per-stream mean | `herd.decode.stream_mean.v1` (DecodeBench); Showcase has its own estimated variant |
-| Prefill | `herd.prefill.single_request.v1` (cold, salted); `herd.decode.prefill_window.v1` (concurrent) |
-| Latency | `herd.ttft.client_first_token.v1` (p50), `…_p95.v1`, `herd.tpot.client_stream.v1` |
+| Per-stream mean | `herd.decode.stream_mean.v1` (DecodeBench), `aeon.decode_tps_mean.v1` (AEON ladder); Showcase has its own estimated variant |
+| Prefill | `herd.prefill.single_request.v1` (cold, salted); `herd.decode.prefill_window.v1` (concurrent); `aeon.prefill_tps_mean.v1` (per-request mean) |
+| Latency | `herd.ttft.client_first_token.v1` (p50), `…_p95.v1`, `herd.tpot.client_stream.v1`; AEON ladder p95s `aeon.ttft_p95_linear.v1`, `aeon.tpot_p95_linear.v1` |
 | Engine counter | `herd.engine.generation_tps_counter.v1` |
 | Quality / energy | `herd.quality.item_pass_rate.v1`, `reference.accuracy_published.v1`, `herd.energy.gpu_power_wave.v1` |
 | Quality, mean of categories | `herd.quality.category_mean.v1` (Quality bench overall, see [QUALITY-BENCH.md](./QUALITY-BENCH.md)) |
+
+The AEON ladder (DecodeBench `protocol: "aeon-perf-v1"`) stores one record per
+cell, `perf.direct.<category>.c<n>` and `perf.direct.overall.c<n>`, with suite
+`aeon-perf-v1`. See [AEON-LADDER.md](./AEON-LADDER.md).
 
 ## Compare
 

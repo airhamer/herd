@@ -125,6 +125,9 @@ function baseRecord({ bench, runId, startedAt, completedAt, status, nodeId, mode
  */
 export function fromDecodeJob(job, opts = {}) {
   if (!job || !job.benchId || !Array.isArray(job.results)) return [];
+  if (job.config?.protocol === AEON_SUITE.suite && job.aeon && Array.isArray(job.aeon.levels)) {
+    return fromAeonDecodeJob(job, opts);
+  }
   const cfg = job.config || {};
   const base = baseRecord({
     bench: "DecodeBench",
@@ -132,7 +135,7 @@ export function fromDecodeJob(job, opts = {}) {
     startedAt: job.startedAt,
     completedAt: job.completedAt,
     status: job.status,
-    nodeId: job.sparkId,
+    nodeId: job.nodeId || job.sparkId,
     modelId: cfg.modelId ?? null,
     provenance: opts.provenance,
     importedFrom: opts.importedFrom,
@@ -256,6 +259,121 @@ function waveEnergy(wave) {
     window_s: Math.round(wave.durationMs) / 1000,
     approximate: true,
   };
+}
+
+// ─── DecodeBench, AEON aeon-perf-v1 ladder ──────────────────────────────
+
+/** Suite of DecodeBench runs that used AEON's ladder (DecodeBench `protocol`). */
+export const AEON_SUITE = Object.freeze({ suite: "aeon-perf-v1", suite_version: "1" });
+
+/**
+ * One record per AEON cell: `perf.direct.<category>.c<n>` for each category
+ * and `perf.direct.overall.c<n>` for the level, the row names AEON's
+ * to_results() uses. Both aggregates are stored: the peak wave window under
+ * `agg_window_tps` (aeon.wave_peak_concurrent_window.v1) and decode × conc
+ * under `agg_sum_tps` (aeon.agg_saturated_est.v1).
+ *
+ * @param {any} job
+ * @param {{ provenance?: Provenance, importedFrom?: object, recordedAt?: string }} [opts]
+ */
+export function fromAeonDecodeJob(job, opts = {}) {
+  const cfg = job.config || {};
+  const base = baseRecord({
+    bench: "DecodeBench",
+    runId: `decode:${job.benchId}`,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+    status: job.status,
+    nodeId: job.nodeId || job.sparkId,
+    modelId: cfg.modelId ?? null,
+    provenance: opts.provenance,
+    importedFrom: opts.importedFrom,
+  });
+  const anyErrors = job.aeon.levels.some((lv) => (lv?.overall?.n_errors || 0) > 0);
+  const run = {
+    ...base.run,
+    ...AEON_SUITE,
+    status: base.run.status === "completed" && anyErrors ? "partial" : base.run.status,
+    reference_url: null,
+  };
+  const jobRaw = { ...job };
+  delete jobRaw.results;
+  delete jobRaw.aeon;
+
+  const out = [];
+  for (const level of job.aeon.levels) {
+    if (!level || !Number.isInteger(level.conc)) continue;
+    const cells = [
+      ...Object.entries(level.categories || {}).map(([cat, cell]) => ({ scope: cat, cell })),
+      { scope: "overall", cell: level.overall },
+    ];
+    for (const { scope, cell } of cells) {
+      if (!cell) continue;
+      const caseId = `perf.direct.${scope.toLowerCase()}.c${level.conc}`;
+      const cellRaw = { ...cell };
+      out.push(
+        makeResult({
+          id: `${run.run_id}:${caseId}`,
+          recorded_at: opts.recordedAt,
+          run,
+          host: base.host,
+          lane: base.lane,
+          conditions: {
+            concurrency: level.conc,
+            context_tokens: null,
+            max_tokens: Number.isInteger(cfg.maxTokens) ? cfg.maxTokens : 256,
+            temperature: 0,
+            // AEON sends no thinking flags: the engine default applies.
+            thinking: null,
+            prompt_set: `${AEON_SUITE.suite}/${scope.toLowerCase()}`,
+            client_location: base.clientLocation,
+          },
+          settings: {
+            case_id: caseId,
+            scope,
+            port: cfg.port ?? null,
+            ladder: cfg.concurrencies ?? null,
+            isolation: "per_category",
+            agg_source: cell.agg_source ?? null,
+            tokens_source: cell.tokens_source ?? "client",
+            wave_count: cell.wave_count ?? null,
+            n_errors: cell.n_errors ?? 0,
+            cell_wall_s: scope === "overall" ? level.wallClockS ?? null : cell.cell_wall_s ?? null,
+            tokens_per_wall_s: cell.tokens_per_wall_s ?? null,
+            nonce: job.aeon.nonce ?? null,
+          },
+          metrics: aeonMetrics(cell),
+          raw: { job: jobRaw, level_conc: level.conc, cell: cellRaw },
+        })
+      );
+    }
+  }
+  return out;
+}
+
+function aeonMetrics(cell) {
+  const n = Number.isInteger(cell.n) && cell.n > 0 ? cell.n : null;
+  const val = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const row = (metric, definition, value, extra = {}) => ({
+    metric,
+    definition,
+    source: "client",
+    value: val(value),
+    n: val(value) === null ? null : n,
+    ...(val(value) === null ? { valid: false } : {}),
+    ...extra,
+  });
+  return [
+    row("agg_window_tps", "aeon.wave_peak_concurrent_window.v1", cell.agg_decode_tps, {
+      window_s: val(cell.concurrent_window_s),
+    }),
+    row("agg_sum_tps", "aeon.agg_saturated_est.v1", cell.agg_saturated_est),
+    row("decode_tps_stream", "aeon.decode_tps_mean.v1", cell.decode_tps_mean),
+    row("prefill_tps", "aeon.prefill_tps_mean.v1", cell.prefill_tps_mean),
+    row("ttft_p50", "herd.ttft.client_first_token.v1", cell.ttft_ms_p50),
+    row("ttft_p95", "aeon.ttft_p95_linear.v1", cell.ttft_ms_p95),
+    row("tpot_p95", "aeon.tpot_p95_linear.v1", cell.tpot_ms_p95),
+  ];
 }
 
 // ─── PrefillBench ─────────────────────────────────────────────────────

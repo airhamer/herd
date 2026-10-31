@@ -962,11 +962,24 @@ export interface LlmBenchTarget {
   tls: boolean;
 }
 
+/** Decode bench protocol: Herd's own waves, or AEON's aeon-perf-v1 ladder (BENCH3). */
+export type DecodeBenchProtocol = "herd" | "aeon-perf-v1";
+
+/** Which API a decode bench runs under: a Spark or an agent node lane. */
+export type DecodeBenchScope = "spark" | "node";
+
 export interface DecodeBenchConfig {
   port: number;
   modelId: string | null;
   concurrencies: number[];
   maxTokens: number;
+  /** Absent on herd runs. */
+  protocol?: DecodeBenchProtocol;
+  suiteVersion?: string;
+  temperature?: number;
+  categories?: string[];
+  /** AEON: total requests the ladder sends. */
+  requests?: number;
   /** Output-shape label only — not guided decoding / JSON schema. */
   promptType?: DecodeBenchPromptType;
   /** On-demand remote host (Tailscale HTTPS, etc.). */
@@ -1032,8 +1045,10 @@ export interface DecodeBenchLevelResult {
   maxDecodeTps: number;
   meanTtftMs: number;
   medianTtftMs: number;
-  /** Client: total post-first-token tokens / concurrent decode window */
+  /** Client: total post-first-token tokens / concurrent decode window (AEON: peak wave window) */
   aggregateDecodeTps: number;
+  /** AEON only: agg_saturated_est = mean per-stream decode × concurrency. */
+  aggSumDecodeTps?: number;
   meanPrefillTps: number;
   medianPrefillTps: number;
   /** Sum prompt tokens / concurrent TTFT window (min start → max first token) */
@@ -1064,6 +1079,53 @@ export interface DecodeBenchProgress {
   completedLevels: number;
   totalLevels: number;
   message: string;
+  /** AEON ladder: category running now, and request counts. */
+  currentCategory?: string | null;
+  requestsDone?: number;
+  requestsTotal?: number;
+}
+
+/** One AEON cell (perf_grid.py `_agg` fields). */
+export interface AeonCell {
+  n: number;
+  n_errors: number;
+  ttft_ms_mean: number | null;
+  ttft_ms_p50: number | null;
+  ttft_ms_p95: number | null;
+  decode_tps_mean: number | null;
+  prefill_tps_mean: number | null;
+  e2e_ms_mean: number | null;
+  tpot_ms_mean: number | null;
+  tpot_ms_p50: number | null;
+  tpot_ms_p95: number | null;
+  output_tokens_total: number;
+  input_tokens_total: number;
+  /** Peak wave concurrent window (aeon.wave_peak_concurrent_window.v1). */
+  agg_decode_tps: number | null;
+  agg_source: string | null;
+  concurrent_window_s: number | null;
+  /** decode_tps_mean × conc (aeon.agg_saturated_est.v1). */
+  agg_saturated_est: number | null;
+  conc: number | null;
+  wave_count: number | null;
+  tokens_per_wall_s: number | null;
+  tokens_source: string;
+  case_id: string;
+  cell_wall_s?: number;
+  errors?: Array<{ category: string; error: string; prompt_head: string }>;
+}
+
+export interface AeonLevel {
+  conc: number;
+  wallClockS: number | null;
+  overall: AeonCell;
+  categories: Record<string, AeonCell>;
+}
+
+export interface AeonLadderRun {
+  suite: "aeon-perf-v1";
+  nonce: string;
+  levels: AeonLevel[];
 }
 
 export interface DecodeBenchJob {
@@ -1075,8 +1137,35 @@ export interface DecodeBenchJob {
   config: DecodeBenchConfig & { debug?: boolean };
   progress: DecodeBenchProgress;
   results: DecodeBenchLevelResult[];
+  /** AEON ladder runs only. */
+  aeon?: AeonLadderRun;
+  /** Agent-node runs only. */
+  nodeId?: string;
   error: string | null;
   durationMs: number;
+}
+
+export interface AeonLadderDefaults {
+  suite: "aeon-perf-v1";
+  suiteVersion: string;
+  ladder: number[];
+  maxTokens: number;
+  temperature: number;
+  categories: string[];
+  promptsPerCategory: number;
+  requests: number;
+}
+
+/** LLM endpoint an agent node reports (GET /api/fleet/nodes/:id/llm/bench). */
+export interface NodeLlmEndpoint {
+  port: number;
+  modelId: string | null;
+  engine: string | null;
+  engineVersion: string | null;
+  quantization: string | null;
+  contextLength: number | null;
+  lane: string | null;
+  pool: string | null;
 }
 
 export interface DecodeBenchDefaults {
@@ -1086,6 +1175,8 @@ export interface DecodeBenchDefaults {
   maxMaxTokens: number;
   promptTypes: DecodeBenchPromptType[];
   defaultPromptType: DecodeBenchPromptType;
+  protocols?: DecodeBenchProtocol[];
+  aeon?: AeonLadderDefaults;
 }
 
 export interface DecodeBenchListResponse {
@@ -1094,6 +1185,8 @@ export interface DecodeBenchListResponse {
   last: DecodeBenchJob | null;
   history: DecodeBenchJob[];
   defaults: DecodeBenchDefaults;
+  /** Node scope only. */
+  endpoints?: NodeLlmEndpoint[];
 }
 
 export interface StartDecodeBenchRequest {
@@ -1106,6 +1199,8 @@ export interface StartDecodeBenchRequest {
   /** On-demand remote LLM host (hostname or URL). Skips this Spark's LAN/SSH path. */
   host?: string;
   tls?: boolean;
+  /** "aeon-perf-v1": AEON ladder (concurrencies ⊆ 1/4/8/16/32, 256 tokens). */
+  protocol?: DecodeBenchProtocol;
 }
 
 // ─── LLM prefill benchmark ───────────────────────────────

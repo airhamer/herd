@@ -7,7 +7,7 @@ import {
   listDecodeBench,
   startDecodeBench,
 } from "../../api/client";
-import type { DecodeBenchJob, DecodeBenchPromptType, LlmBenchTarget } from "../../api/types";
+import type { DecodeBenchJob, DecodeBenchPromptType, DecodeBenchScope, LlmBenchTarget } from "../../api/types";
 import { useModalPresence } from "../../hooks/useModalPresence";
 import { BenchCopyButton } from "./BenchCopyButton";
 import { buildDecodeShareCard, shareCardFileName } from "./benchShareCard";
@@ -27,7 +27,10 @@ const DEFAULT_PROMPT_TYPE: DecodeBenchPromptType = DECODE_BENCH_DEFAULT_TYPE;
 interface BenchmarkDialogProps {
   open: boolean;
   onClose: () => void;
+  /** Spark id, or agent node id when `scope` is "node". */
   sparkId: string;
+  /** "node": bench an agent-node lane via /api/fleet/nodes/:id (BENCH3). */
+  scope?: DecodeBenchScope;
   llmPort: number;
   modelId: string | null;
   remoteTarget?: LlmBenchTarget | null;
@@ -158,6 +161,7 @@ export function BenchmarkDialog({
   open,
   onClose,
   sparkId,
+  scope = "spark",
   llmPort,
   modelId,
   remoteTarget = null,
@@ -209,7 +213,7 @@ export function BenchmarkDialog({
     (benchId: string) => {
       stopPoll();
       pollRef.current = setInterval(() => {
-        void getDecodeBench(sparkId, benchId)
+        void getDecodeBench(sparkId, benchId, scope)
           .then((j) => {
             setJob(j);
             setError(null);
@@ -218,7 +222,7 @@ export function BenchmarkDialog({
           .catch((err: Error) => {
             // Server --watch / restart can drop the in-memory job for a moment.
             // Recover via list, or show a clear interrupt message instead of a bare 404.
-            void listDecodeBench(sparkId, benchPort)
+            void listDecodeBench(sparkId, benchPort, scope)
               .then((data) => {
                 if (data.active) {
                   setJob(data.active);
@@ -257,7 +261,7 @@ export function BenchmarkDialog({
           });
       }, 800);
     },
-    [sparkId, benchPort, stopPoll]
+    [sparkId, benchPort, scope, stopPoll]
   );
 
   useEffect(() => {
@@ -269,7 +273,7 @@ export function BenchmarkDialog({
     setError(null);
     let cancelled = false;
     setLoadingLast(true);
-    listDecodeBench(sparkId, benchPort)
+    listDecodeBench(sparkId, benchPort, scope)
       .then((data) => {
         if (cancelled) return;
         if (data.active) {
@@ -280,9 +284,16 @@ export function BenchmarkDialog({
           }
           return;
         }
-        if (data.last) {
-          setJob(data.last);
-          applyJobConfig(data.last);
+        // AEON ladder runs share the history; they have their own dialog.
+        const last =
+          data.last && data.last.config?.protocol !== "aeon-perf-v1"
+            ? data.last
+            : (data.history || []).find(
+                (j) => j.config?.protocol !== "aeon-perf-v1" && (j.config?.port == null || j.config.port === benchPort)
+              ) || null;
+        if (last) {
+          setJob(last);
+          applyJobConfig(last);
           return;
         }
       })
@@ -296,7 +307,7 @@ export function BenchmarkDialog({
       cancelled = true;
       stopPoll();
     };
-  }, [open, sparkId, benchPort, stopPoll, startPolling, applyJobConfig]);
+  }, [open, sparkId, benchPort, scope, stopPoll, startPolling, applyJobConfig]);
 
   useEffect(() => () => stopPoll(), [stopPoll]);
 
@@ -344,7 +355,7 @@ export function BenchmarkDialog({
         ...(remoteTarget
           ? { host: remoteTarget.host, tls: remoteTarget.tls }
           : {}),
-      });
+      }, scope);
       setJob(started);
       startPolling(started.benchId);
     } catch (err: unknown) {
@@ -358,7 +369,7 @@ export function BenchmarkDialog({
   const handleCancel = async () => {
     if (!job || job.status !== "running") return;
     try {
-      const j = await cancelDecodeBench(sparkId, job.benchId);
+      const j = await cancelDecodeBench(sparkId, job.benchId, scope);
       setJob(j);
       startPolling(job.benchId);
     } catch (err: unknown) {
@@ -376,7 +387,7 @@ export function BenchmarkDialog({
     if (!job || job.status === "running") return;
     setError(null);
     try {
-      await clearDecodeBenchHistory(sparkId, benchPort);
+      await clearDecodeBenchHistory(sparkId, benchPort, scope);
       stopPoll();
       setJob(null);
     } catch (err: unknown) {

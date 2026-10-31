@@ -26,8 +26,9 @@ import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js
 import {
   decodeBenchManager,
   DECODE_BENCH_DEFAULTS,
-  normalizeConcurrencies,
+  decodeBudgetArgs,
 } from "./collectors/DecodeBench.js";
+import { describeNodeProvenance, nodeBenchKey, nodeLlmEndpoints, resolveNodeBenchTarget } from "./fleet/nodeBench.js";
 import {
   prefillBenchManager,
   PREFILL_BENCH_DEFAULTS,
@@ -1834,8 +1835,10 @@ app.get("/api/sparks/:id/llm/daily", (req, res) => {
 /**
  * Decode throughput benchmark (streaming, post-first-token tok/s).
  *
- * POST body: { port?, concurrencies: number[], maxTokens?, promptType? }
+ * POST body: { port?, concurrencies: number[], maxTokens?, promptType?, protocol? }
  * promptType is structured | prose | code | json (default structured).
+ * protocol "aeon-perf-v1" runs AEON's ladder (BENCH3): `concurrencies` is a
+ * subset of 1/4/8/16/32 (default all), maxTokens is fixed at 256.
  * Returns immediately with a bench job; poll GET for progress/results.
  */
 app.post("/api/sparks/:id/llm/bench", async (req, res) => {
@@ -1876,7 +1879,7 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
   }
   const port = target.port;
   try {
-    validateDecodeBudget(normalizeConcurrencies(req.body?.concurrencies), req.body?.maxTokens ?? 400);
+    validateDecodeBudget(...decodeBudgetArgs(req.body));
   } catch (err) {
     return res.status(err.status || 429).json({ error: err.message });
   }
@@ -1905,6 +1908,7 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
       concurrencies: req.body?.concurrencies,
       maxTokens: req.body?.maxTokens,
       promptType: req.body?.promptType,
+      protocol: req.body?.protocol,
       debug: benchDebug,
       apiKey: target.apiKey,
       host: target.host,
@@ -2008,6 +2012,102 @@ app.delete("/api/sparks/:id/llm/bench/:benchId", (req, res) => {
   const spark = registry.getSpark(req.params.id);
   if (!spark) return res.status(404).json({ error: "Spark not found" });
   const job = decodeBenchManager.cancel(spark.id, req.params.benchId);
+  if (!job) return res.status(404).json({ error: "Benchmark not found" });
+  res.json(job);
+});
+
+// ─── Agent-node decode bench (BENCH3) ────────────────────────────────────
+// Same DecodeBench (herd or AEON aeon-perf-v1 protocol) against an LLM lane
+// the node agent reports, reached at <node lanIp>:<lane port>.
+
+function nodeBenchContext(req, res) {
+  const rec = getNode(req.params.id);
+  if (!rec) {
+    res.status(404).json({ error: "Node not found" });
+    return null;
+  }
+  return { rec, key: nodeBenchKey(rec.id), snapshot: fleetConnection ? fleetConnection.getSnapshot(rec.id) : null };
+}
+
+app.post("/api/fleet/nodes/:id/llm/bench", async (req, res) => {
+  if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
+    return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+  }
+  const ctx = nodeBenchContext(req, res);
+  if (!ctx) return;
+  const body = req.body || {};
+  let target;
+  try {
+    target = resolveNodeBenchTarget(ctx.rec, ctx.snapshot, body);
+    await assertAllowedTarget(target.host, new Set([target.host]));
+    validateDecodeBudget(...decodeBudgetArgs(body));
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+  try {
+    if (!consumeBenchStartQuota(req, res)) return;
+    const job = decodeBenchManager.start({
+      sparkId: ctx.key,
+      nodeId: ctx.rec.id,
+      lanIp: target.host,
+      host: target.host,
+      port: target.port,
+      modelId: target.modelId,
+      concurrencies: body.concurrencies,
+      maxTokens: body.maxTokens,
+      promptType: body.promptType,
+      protocol: body.protocol,
+    });
+    let prov = null;
+    try {
+      prov = describeNodeProvenance(ctx.rec, ctx.snapshot, target);
+    } catch {
+      prov = null;
+    }
+    benchResultsRecorder.noteStart("DecodeBench", job.benchId, prov);
+    res.status(202).json(job);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get("/api/fleet/nodes/:id/llm/bench", (req, res) => {
+  const ctx = nodeBenchContext(req, res);
+  if (!ctx) return;
+  const port = req.query.port != null && req.query.port !== "" ? parseInt(String(req.query.port), 10) : null;
+  res.json({
+    active: decodeBenchManager.getActive(ctx.key),
+    last: decodeBenchManager.getLast(ctx.key, Number.isInteger(port) ? port : null),
+    history: decodeBenchManager.getHistory(ctx.key),
+    defaults: DECODE_BENCH_DEFAULTS,
+    endpoints: nodeLlmEndpoints(ctx.snapshot),
+  });
+});
+
+app.delete("/api/fleet/nodes/:id/llm/bench", (req, res) => {
+  const ctx = nodeBenchContext(req, res);
+  if (!ctx) return;
+  if (decodeBenchManager.getActive(ctx.key)) {
+    return res.status(409).json({ error: "Cannot clear history while a benchmark is running" });
+  }
+  const portRaw = req.query.port ?? req.body?.port;
+  const port = portRaw != null && portRaw !== "" ? parseInt(String(portRaw), 10) : null;
+  decodeBenchManager.clearHistory(ctx.key, Number.isInteger(port) ? port : null);
+  res.json({ success: true });
+});
+
+app.get("/api/fleet/nodes/:id/llm/bench/:benchId", (req, res) => {
+  const ctx = nodeBenchContext(req, res);
+  if (!ctx) return;
+  const job = decodeBenchManager.getJob(req.params.benchId);
+  if (!job || job.sparkId !== ctx.key) return res.status(404).json({ error: "Benchmark not found" });
+  res.json(job);
+});
+
+app.delete("/api/fleet/nodes/:id/llm/bench/:benchId", (req, res) => {
+  const ctx = nodeBenchContext(req, res);
+  if (!ctx) return;
+  const job = decodeBenchManager.cancel(ctx.key, req.params.benchId);
   if (!job) return res.status(404).json({ error: "Benchmark not found" });
   res.json(job);
 });

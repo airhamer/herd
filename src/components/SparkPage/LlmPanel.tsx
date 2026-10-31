@@ -13,6 +13,7 @@ import {
 import { BenchmarkDialog } from "./BenchmarkDialog";
 import { PrefillBenchDialog } from "./PrefillBenchDialog";
 import { QualityBenchDialog } from "./QualityBenchDialog";
+import { AeonLadderDialog } from "./AeonLadderDialog";
 import { LlmDailyChart } from "./LlmDailyChart";
 import { parseLlmTargetInput } from "../../shared/llmTarget.js";
 import { LlmTrendChart } from "./LlmTrendChart";
@@ -82,6 +83,8 @@ function LlmLaunchers({
   onRemotePrefill,
   onQuality,
   onRemoteQuality,
+  onAeon,
+  onRemoteAeon,
 }: {
   sparkId: string;
   llmPort: number;
@@ -92,6 +95,8 @@ function LlmLaunchers({
   onRemotePrefill: (target: LlmBenchTarget) => void;
   onQuality: () => void;
   onRemoteQuality: (target: LlmBenchTarget) => void;
+  onAeon: () => void;
+  onRemoteAeon: (target: LlmBenchTarget) => void;
 }) {
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [hostDraft, setHostDraft] = useState(() => readStoredRemote().host);
@@ -120,7 +125,7 @@ function LlmLaunchers({
     }
   };
 
-  const launchRemote = (kind: "decode" | "prefill" | "quality") => {
+  const launchRemote = (kind: "decode" | "prefill" | "quality" | "aeon") => {
     try {
       const p = parseLlmTargetInput(hostDraft, portDraft, tls);
       persist(p);
@@ -130,6 +135,7 @@ function LlmLaunchers({
       setRemoteError(null);
       if (kind === "decode") onRemoteDecode(p);
       else if (kind === "quality") onRemoteQuality(p);
+      else if (kind === "aeon") onRemoteAeon(p);
       else onRemotePrefill(p);
     } catch (err: unknown) {
       setRemoteError(err instanceof Error ? err.message : String(err));
@@ -197,6 +203,14 @@ function LlmLaunchers({
         title="Accuracy over fixed item sets (QA, reasoning, arithmetic, state tracking, GSM8K, MMLU). Compare runs with McNemar."
       >
         Run quality benchmark
+      </button>
+      <button
+        type="button"
+        onClick={onAeon}
+        className={`${LAUNCHER_BTN} w-full`}
+        title="AEON aeon-perf-v1 ladder: c1/4/8/16/32 × 5 categories, 256 tokens, temperature 0. Stored with AEON's metric definitions."
+      >
+        Run AEON ladder
       </button>
       {remoteOpen && (
         <div className="space-y-2 rounded border border-border bg-surface-elevated p-2">
@@ -267,6 +281,13 @@ function LlmLaunchers({
               className={`${LAUNCHER_BTN} flex-1`}
             >
               Quality
+            </button>
+            <button
+              type="button"
+              onClick={() => launchRemote("aeon")}
+              className={`${LAUNCHER_BTN} flex-1`}
+            >
+              AEON
             </button>
           </div>
         </div>
@@ -454,6 +475,15 @@ export function LlmPanel({
   const openRemoteQuality = useCallback((target: LlmBenchTarget) => {
     setRemoteTarget(target);
     setQualityBenchOpen(true);
+  }, []);
+  const [aeonOpen, setAeonOpen] = useState(false);
+  const openLocalAeon = useCallback(() => {
+    setRemoteTarget(null);
+    setAeonOpen(true);
+  }, []);
+  const openRemoteAeon = useCallback((target: LlmBenchTarget) => {
+    setRemoteTarget(target);
+    setAeonOpen(true);
   }, []);
   /** Which vLLM metric info tip is open (kvCache | requests | ttftP95 | preempts). */
   const [metricInfoId, setMetricInfoId] = useState<string | null>(null);
@@ -702,6 +732,8 @@ export function LlmPanel({
             onRemotePrefill={openRemotePrefill}
             onQuality={openLocalQuality}
             onRemoteQuality={openRemoteQuality}
+            onAeon={openLocalAeon}
+            onRemoteAeon={openRemoteAeon}
           />
           <LlmDailyChart sparkId={sparkId} llmPort={llmPort} />
         </div>
@@ -1034,6 +1066,8 @@ export function LlmPanel({
             onRemotePrefill={openRemotePrefill}
             onQuality={openLocalQuality}
             onRemoteQuality={openRemoteQuality}
+            onAeon={openLocalAeon}
+            onRemoteAeon={openRemoteAeon}
           />
         </div>
       )}
@@ -1066,6 +1100,16 @@ export function LlmPanel({
         llmPort={llmPort}
         modelId={remoteTarget ? null : llm?.modelId ?? null}
         remoteTarget={remoteTarget}
+      />
+      <AeonLadderDialog
+        open={aeonOpen}
+        onClose={() => setAeonOpen(false)}
+        targetId={sparkId}
+        scope="spark"
+        port={llmPort}
+        modelId={remoteTarget ? null : llm?.modelId ?? null}
+        remoteTarget={remoteTarget}
+        title={sparkName ?? null}
       />
     </Panel>
   );

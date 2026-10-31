@@ -9,6 +9,7 @@ import type {
   EventsQuery,
   EventsResponse,
   DecodeBenchListResponse,
+  DecodeBenchScope,
   FleetEnergy,
   FleetShowcaseListResponse,
   FleetShowcaseSessionState,
@@ -235,12 +236,20 @@ export function refreshSparkMetric(
 }
 
 // ─── LLM decode benchmark ─────────────────────────────
+/** Decode bench API root: a Spark, or an agent node's lanes (BENCH3). */
+function decodeBenchRoot(id: string, scope: DecodeBenchScope): string {
+  return scope === "node"
+    ? `/api/fleet/nodes/${encodeURIComponent(id)}/llm/bench`
+    : `/api/sparks/${id}/llm/bench`;
+}
+
 /** Start an async decode bench (returns 202 job). */
 export function startDecodeBench(
   id: string,
-  body: StartDecodeBenchRequest
+  body: StartDecodeBenchRequest,
+  scope: DecodeBenchScope = "spark"
 ): Promise<DecodeBenchJob> {
-  return apiFetch(`/api/sparks/${id}/llm/bench`, {
+  return apiFetch(decodeBenchRoot(id, scope), {
     method: "POST",
     body: JSON.stringify(body),
   });
@@ -248,37 +257,41 @@ export function startDecodeBench(
 
 export function getDecodeBench(
   id: string,
-  benchId: string
+  benchId: string,
+  scope: DecodeBenchScope = "spark"
 ): Promise<DecodeBenchJob> {
-  return apiFetch(`/api/sparks/${id}/llm/bench/${benchId}`);
+  return apiFetch(`${decodeBenchRoot(id, scope)}/${benchId}`);
 }
 
 export function listDecodeBench(
   id: string,
-  port?: number
+  port?: number,
+  scope: DecodeBenchScope = "spark"
 ): Promise<DecodeBenchListResponse> {
   const q =
     port != null && Number.isInteger(port) ? `?port=${encodeURIComponent(port)}` : "";
-  return apiFetch(`/api/sparks/${id}/llm/bench${q}`);
+  return apiFetch(`${decodeBenchRoot(id, scope)}${q}`);
 }
 
 export function cancelDecodeBench(
   id: string,
-  benchId: string
+  benchId: string,
+  scope: DecodeBenchScope = "spark"
 ): Promise<DecodeBenchJob> {
-  return apiFetch(`/api/sparks/${id}/llm/bench/${benchId}`, {
+  return apiFetch(`${decodeBenchRoot(id, scope)}/${benchId}`, {
     method: "DELETE",
   });
 }
 
-/** Clear finished benchmark history for a Spark (optionally one LLM port). */
+/** Clear finished benchmark history for a Spark or node (optionally one LLM port). */
 export function clearDecodeBenchHistory(
   id: string,
-  port?: number
+  port?: number,
+  scope: DecodeBenchScope = "spark"
 ): Promise<{ success: boolean }> {
   const q =
     port != null && Number.isInteger(port) ? `?port=${encodeURIComponent(port)}` : "";
-  return apiFetch(`/api/sparks/${id}/llm/bench${q}`, { method: "DELETE" });
+  return apiFetch(`${decodeBenchRoot(id, scope)}${q}`, { method: "DELETE" });
 }
 
 // ─── LLM prefill benchmark ────────────────────────────
