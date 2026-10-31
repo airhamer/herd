@@ -7,6 +7,7 @@ import type {
   VersionInfo,
 } from "../../../shared/types";
 import { ServiceManagerPage } from "./ServiceManagerPage";
+import type { GroupPlanForNode } from "./MemoryBudget";
 
 const NOW = 1_800_000_000_000;
 
@@ -181,5 +182,69 @@ describe("ServiceManagerPage", () => {
       button(container, "Switch image-sd")?.click();
     });
     expect(onSwitch).toHaveBeenCalledWith("image-sd");
+  });
+
+  it("SC3: threads groupPlan + groupAvailableMB into the MemoryBudget panel (unlocked)", async () => {
+    const groupPlan: GroupPlanForNode = {
+      groupId: "tp2-aeon",
+      tp: 2,
+      perSparkMB: 98_304,
+      groupTotalMB: 196_608,
+      groupTotalMemMB: 245_760,
+      groupFreeMemMB: 120_000,
+      sparks: [
+        {
+          nodeId: "gx10-1c2c",
+          head: true,
+          totalMB: 131_072,
+          usedMB: 110_000,
+          freeMB: 21_072,
+          plannedMB: 98_304,
+          projectedFreeMB: 22_768,
+          makeRoom: [],
+          feasible: true,
+        },
+      ],
+      estimated: true,
+      fits: true,
+    };
+    const { container } = render(
+      <ServiceManagerPage
+        nodeId="gx10-1c2c"
+        nodeName="Node 1"
+        services={[]}
+        memory={memory({ groupAvailableMB: 21_072 })}
+        versions={[]}
+        groupPlan={groupPlan}
+        onStart={vi.fn()}
+        onStop={vi.fn()}
+        onSwitch={vi.fn()}
+      />
+    );
+    await flush();
+    const text = container.textContent ?? "";
+    expect(text).toContain("TP2 group · tp2-aeon");
+    expect(text).toContain("Per-spark breakdown");
+    expect(text).toContain("Available here for shard");
+    expect(text).toContain("20.6 GB"); // groupAvailableMB 21072 MB
+  });
+
+  it("SC3: without groupPlan the page stays the single-node view", async () => {
+    const { container } = render(
+      <ServiceManagerPage
+        nodeId="gx10-1c2c"
+        nodeName="Node 1"
+        services={[]}
+        memory={memory({ needMakeRoom: false, makeRoom: [], services: [] })}
+        versions={[]}
+        onStart={vi.fn()}
+        onStop={vi.fn()}
+        onSwitch={vi.fn()}
+      />
+    );
+    await flush();
+    const text = container.textContent ?? "";
+    expect(text).not.toContain("Per-spark breakdown");
+    expect(text).not.toContain("Available here for shard");
   });
 });

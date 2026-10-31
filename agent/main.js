@@ -282,7 +282,9 @@ export function buildLiveState(recipes, live = {}) {
  *    report-only: the agent reserves nothing on its own (wantMB 0), so the
  *    panel shows total/used/free + per-service footprints; needMakeRoom is
  *    false until an orchestrator asks for a reservation through the catalog
- *    seam.
+ *    seam. SC3: a running TP recipe (tpSize > 1) additionally passes
+ *    opts.group { perSparkMB } so the spark reports whether it can host its
+ *    shard for the group (groupAvailableMB, group-driven make-room).
  *  - requests: one RequestStat per live LLM probe (backend != null) plus the
  *    ComfyUI probe, built from the probe's running/waiting counters and the
  *    vLLM finished counter (vllm:request_success_total). No live engines →
@@ -320,6 +322,19 @@ export function enrichSnapshot(snapshot, opts = {}) {
 
   const mem = snap.mem;
   if (mem && Number.isFinite(mem.totalMB) && Number.isFinite(mem.usedMB)) {
+    // SC3 recipe integration: a RUNNING llm recipe with tpSize > 1 is a TP
+    // group member; its recipe footprint is the per-spark shard need. The
+    // group plan must fit in every member, so the per-spark budget drives
+    // needMakeRoom off it (groupAvailableMB surfaces the headroom).
+    const tpRecipe = (Array.isArray(recipes) ? recipes : []).find((r) => {
+      if (!r || typeof r !== "object" || r.kind !== "llm") return false;
+      if (!Number.isInteger(r.tpSize) || r.tpSize <= 1) return false;
+      if (!Number.isFinite(r.footprintMB) || r.footprintMB <= 0) return false;
+      return snap.services.some(
+        (s) => s.name === r.name && s.kind === "llm" && s.status === "running"
+      );
+    });
+    const groupOpts = tpRecipe ? { group: { sparkIds: [], perSparkMB: tpRecipe.footprintMB } } : {};
     try {
       snap.memory = computeMemoryBudget(
         mem.totalMB,
@@ -332,7 +347,7 @@ export function enrichSnapshot(snapshot, opts = {}) {
           needed: s.active,
         })),
         0,
-        { nodeId }
+        { nodeId, ...groupOpts }
       );
     } catch {
       snap.memory = null;

@@ -498,6 +498,12 @@ export function NodeDetail(props: NodeDetailProps) {
                 <DetailRow label="Free" value={formatMb(memory.freeMB)} />
                 <DetailRow label="Services used" value={formatMb(memory.servicesUsedMB)} />
                 <DetailRow label="Other used" value={formatMb(memory.otherUsedMB)} />
+                {/* SC3: headroom for a TP group's per-spark shard (agent
+                    budget groupAvailableMB — unlocked, always shown when a
+                    TP group context is active on this spark). */}
+                {memory.groupAvailableMB != null && Number.isFinite(memory.groupAvailableMB) && (
+                  <DetailRow label="Free for TP shard" value={formatMb(memory.groupAvailableMB)} />
+                )}
               </div>
               {memory.needMakeRoom && (
                 <div className="rounded border border-danger/40 bg-danger/10 px-2 py-1 text-[11px] font-medium text-danger">
