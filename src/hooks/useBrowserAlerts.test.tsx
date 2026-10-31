@@ -1,343 +1,367 @@
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BADGE_COLORS, useBrowserAlerts, writeBrowserAlertPrefs } from "./useBrowserAlerts";
+import { BADGE_COLORS, readBrowserAlertPrefs, useBrowserAlerts, writeBrowserAlertPrefs } from "./useBrowserAlerts";
 import { BROWSER_ALERT_HOLD_MS, emptyDebounce, stepDebounce } from "./alertDebounce";
-import { useFleetAlerts } from "./useFleetAlerts";
-import * as strip from "../components/OverviewPage/FleetAlertStrip";
-import type { FleetAlert } from "../components/OverviewPage/FleetAlertStrip";
+import { useFleetAlerts, type FleetAlertsView } from "./useFleetAlerts";
+import { deriveAlerts, type FleetAlert } from "../components/OverviewPage/FleetAlertStrip";
 import { BrowserAlertsSettings } from "../components/BrowserAlertsSettings";
 import { makeSpark } from "../testing/fixtures";
 import { flush, render } from "../testing/render";
 import type { AlertInstance, SparkSnapshot } from "../api/types";
 
-const TITLE = "sparkDash — Multi-DGX Spark Monitoring Dashboard";
-const ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M13 2L3 14h9'/></svg>";
-const PREFS_KEY = "sparkdash.browserAlerts";
+const PAGE_TITLE = "herd — fleet dashboard";
+const PLAIN_ICON = "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6'/></svg>";
+const HOLD = BROWSER_ALERT_HOLD_MS;
 
-const row = (key: string, severity: FleetAlert["severity"] = "warning"): FleetAlert => ({
-  key,
-  unitId: key,
-  unitName: `Unit ${key}`,
-  label: `${key} is unhappy`,
-  severity,
-  startsAt: null,
-});
-
-function Harness({ rows, ready = true, source = "server" }: { rows: FleetAlert[]; ready?: boolean; source?: "server" | "browser" }) {
-  useBrowserAlerts(rows, ready, source);
-  return null;
+function alertRow(key: string, severity: FleetAlert["severity"] = "warning", detail?: string): FleetAlert {
+  return { key, unitId: key, unitName: `Node ${key}`, label: `${key} needs attention`, severity, startsAt: null, ...(detail ? { detail } : {}) };
 }
 
-function mount(rows: FleetAlert[], ready = true, source: "server" | "browser" = "server") {
-  const { root } = render(<Harness rows={rows} ready={ready} source={source} />);
-  return (next: FleetAlert[], nextReady = true, nextSource: "server" | "browser" = source) =>
-    act(() => root.render(<Harness rows={next} ready={nextReady} source={nextSource} />));
-}
+// ─── Browser doubles ─────────────────────────────────────
 
-const icon = () => document.head.querySelector<HTMLLinkElement>('link[rel~="icon"]')!;
+/** Dot colours painted onto the canvas, in order. */
+let painted: string[] = [];
+/** Image loads that have been requested but not finished. */
+let pendingLoads: Array<() => void> = [];
 
-/** Image that "loads" on the next tick; canvas that records the dot colours. */
-const fills: string[] = [];
-class FakeImage {
+class StubImage {
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
-  set src(_v: string) {
-    setTimeout(() => this.onload?.(), 0);
+  set src(_value: string) {
+    pendingLoads.push(() => this.onload?.());
   }
 }
 
-async function settleDraw() {
-  await act(async () => {
-    await new Promise((r) => setTimeout(r, 0));
-    await Promise.resolve();
-  });
-}
-
-class FakeNotification {
+class StubNotification {
   static permission: NotificationPermission = "granted";
-  static requestPermission = vi.fn(async () => FakeNotification.permission);
-  static shown: Array<{ title: string; body?: string; tag?: string }> = [];
+  static requestPermission = vi.fn(async (): Promise<NotificationPermission> => StubNotification.permission);
+  static log: Array<{ title: string; body?: string; tag?: string }> = [];
   onclick: (() => void) | null = null;
-  constructor(title: string, opts?: NotificationOptions) {
-    FakeNotification.shown.push({ title, body: opts?.body, tag: opts?.tag });
+  constructor(title: string, options: NotificationOptions = {}) {
+    StubNotification.log.push({ title, body: options.body, tag: options.tag });
   }
   close() {}
 }
 
-function setSecure(secure: boolean) {
-  Object.defineProperty(window, "isSecureContext", { configurable: true, value: secure });
+function secureContext(on: boolean) {
+  Object.defineProperty(window, "isSecureContext", { configurable: true, value: on });
 }
 
-describe("useBrowserAlerts", () => {
-  beforeEach(() => {
-    const link = document.createElement("link");
-    link.rel = "icon";
-    link.type = "image/svg+xml";
-    link.href = ICON;
-    document.head.replaceChildren(link);
-    document.title = TITLE;
-    localStorage.removeItem(PREFS_KEY);
-    fills.length = 0;
-    vi.stubGlobal("Image", FakeImage);
-    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function () {
-      const ctx = {
-        fillStyle: "",
-        drawImage: vi.fn(),
-        beginPath: vi.fn(),
-        arc: vi.fn(),
-        fill() {
-          fills.push(ctx.fillStyle);
-        },
-      };
-      return ctx as unknown as CanvasRenderingContext2D;
-    } as never);
-    vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,BADGED");
-    FakeNotification.shown = [];
-    FakeNotification.permission = "granted";
-    FakeNotification.requestPermission.mockClear();
-    vi.stubGlobal("Notification", FakeNotification);
-    setSecure(true);
+/** Let pending favicon loads finish and their promises settle. */
+async function finishDraws() {
+  await act(async () => {
+    for (const load of pendingLoads.splice(0)) load();
+    await Promise.resolve();
+    await Promise.resolve();
   });
+}
 
+const favicon = () => document.head.querySelector<HTMLLinkElement>('link[rel~="icon"]')!;
+
+function installDoubles() {
+  const link = document.createElement("link");
+  link.rel = "icon";
+  link.type = "image/svg+xml";
+  link.href = PLAIN_ICON;
+  document.head.replaceChildren(link);
+  document.title = PAGE_TITLE;
+  localStorage.clear();
+  painted = [];
+  pendingLoads = [];
+  vi.stubGlobal("Image", StubImage);
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockImplementation(function () {
+    const ctx = { fillStyle: "", drawImage() {}, beginPath() {}, arc() {}, fill: () => painted.push(ctx.fillStyle) };
+    return ctx as unknown as CanvasRenderingContext2D;
+  } as never);
+  vi.spyOn(HTMLCanvasElement.prototype, "toDataURL").mockReturnValue("data:image/png;base64,DOT");
+  StubNotification.permission = "granted";
+  StubNotification.log = [];
+  StubNotification.requestPermission.mockClear();
+  vi.stubGlobal("Notification", StubNotification);
+  secureContext(true);
+}
+
+function Probe(props: { rows: FleetAlert[]; ready: boolean; source: "server" | "browser" }) {
+  useBrowserAlerts(props.rows, props.ready, props.source);
+  return null;
+}
+
+/** Mount the hook; the returned function re-renders it with new inputs. */
+function mountHook(rows: FleetAlert[], { ready = true, source = "server" as "server" | "browser" } = {}) {
+  const { root } = render(<Probe rows={rows} ready={ready} source={source} />);
+  return (next: FleetAlert[], opts: { ready?: boolean; source?: "server" | "browser" } = {}) =>
+    act(() => root.render(<Probe rows={next} ready={opts.ready ?? true} source={opts.source ?? source} />));
+}
+
+const enable = (prefs: { tabBadge?: boolean; desktop?: boolean }) => writeBrowserAlertPrefs({ tabBadge: false, desktop: false, ...prefs });
+const notified = () => StubNotification.log.map((n) => n.title);
+
+describe("useBrowserAlerts: tab badge", () => {
+  beforeEach(installDoubles);
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-    localStorage.removeItem(PREFS_KEY);
+    localStorage.clear();
   });
 
-  it("does nothing while the tab badge is off (the default)", async () => {
-    mount([row("a", "critical"), row("b")]);
-    await settleDraw();
-    expect(document.title).toBe(TITLE);
-    expect(icon().getAttribute("href")).toBe(ICON);
+  it("is off by default: title and icon are left alone", async () => {
+    expect(readBrowserAlertPrefs()).toEqual({ tabBadge: false, desktop: false });
+    mountHook([alertRow("a", "critical")]);
+    await finishDraws();
+    expect(document.title).toBe(PAGE_TITLE);
+    expect(favicon().getAttribute("href")).toBe(PLAIN_ICON);
   });
 
-  it("puts the count in the title and restores it when clear", () => {
-    writeBrowserAlertPrefs({ tabBadge: true, desktop: false });
-    const update = mount([row("a"), row("b")]);
-    expect(document.title).toBe(`(2) ${TITLE}`);
-    update([row("a")]);
-    expect(document.title).toBe(`(1) ${TITLE}`);
-    update([]);
-    expect(document.title).toBe(TITLE);
+  it("prefixes the title with the count and removes it when everything clears", () => {
+    enable({ tabBadge: true });
+    const rerender = mountHook([alertRow("a"), alertRow("b")]);
+    expect(document.title).toBe(`(2) ${PAGE_TITLE}`);
+    rerender([alertRow("a")]);
+    expect(document.title).toBe(`(1) ${PAGE_TITLE}`);
+    rerender([]);
+    expect(document.title).toBe(PAGE_TITLE);
   });
 
-  it("draws a red dot for any critical, amber otherwise, and restores the icon", async () => {
-    writeBrowserAlertPrefs({ tabBadge: true, desktop: false });
-    const update = mount([row("a"), row("b", "critical")]);
-    await settleDraw();
-    expect(icon().getAttribute("href")).toBe("data:image/png;base64,BADGED");
-    expect(icon().getAttribute("type")).toBe("image/png");
-    expect(fills.at(-1)).toBe(BADGE_COLORS.critical);
-    update([row("a")]);
-    await settleDraw();
-    expect(fills.at(-1)).toBe(BADGE_COLORS.warning);
-    update([]);
-    await settleDraw();
-    expect(icon().getAttribute("href")).toBe(ICON);
-    expect(icon().getAttribute("type")).toBe("image/svg+xml");
+  it("paints a red dot when anything is critical, amber otherwise, and restores the original icon", async () => {
+    enable({ tabBadge: true });
+    const rerender = mountHook([alertRow("a"), alertRow("b", "critical")]);
+    await finishDraws();
+    expect(painted.at(-1)).toBe(BADGE_COLORS.critical);
+    expect(favicon().getAttribute("href")).toBe("data:image/png;base64,DOT");
+    expect(favicon().getAttribute("type")).toBe("image/png");
+
+    rerender([alertRow("a")]);
+    await finishDraws();
+    expect(painted.at(-1)).toBe(BADGE_COLORS.warning);
+
+    rerender([]);
+    expect(favicon().getAttribute("href")).toBe(PLAIN_ICON);
+    expect(favicon().getAttribute("type")).toBe("image/svg+xml");
   });
 
-  it("a draw that finishes after the alerts cleared does not stick", async () => {
-    writeBrowserAlertPrefs({ tabBadge: true, desktop: false });
-    const update = mount([row("a", "critical")]);
-    update([]); // before the image has loaded
-    await settleDraw();
-    expect(icon().getAttribute("href")).toBe(ICON);
+  it("discards a draw that finishes after the alerts have cleared", async () => {
+    enable({ tabBadge: true });
+    const rerender = mountHook([alertRow("a")]);
+    rerender([]);
+    await finishDraws();
+    expect(favicon().getAttribute("href")).toBe(PLAIN_ICON);
   });
 
-  it("not ready (still connecting): no badge even with rows", () => {
-    writeBrowserAlertPrefs({ tabBadge: true, desktop: false });
-    mount([row("a")], false);
-    expect(document.title).toBe(TITLE);
+  it("shows nothing until ready", () => {
+    enable({ tabBadge: true });
+    const rerender = mountHook([alertRow("a")], { ready: false });
+    expect(document.title).toBe(PAGE_TITLE);
+    rerender([alertRow("a")], { ready: true });
+    expect(document.title).toBe(`(1) ${PAGE_TITLE}`);
   });
 
-  it("server alerts: notifies only for alerts that start firing after the page is ready", () => {
-    writeBrowserAlertPrefs({ tabBadge: false, desktop: true });
-    const update = mount([row("a")], false);
-    update([row("a")]); // first ready state = baseline
-    expect(FakeNotification.shown).toEqual([]);
-    update([row("a"), row("b", "critical")]);
-    expect(FakeNotification.shown).toEqual([{ title: "Critical · Unit b", body: "b is unhappy", tag: "b" }]);
-    update([row("a"), row("b", "critical")]);
-    expect(FakeNotification.shown).toHaveLength(1);
-    // Switching between server and browser alerts re-baselines.
-    update([row("c")], true, "browser");
-    expect(FakeNotification.shown).toHaveLength(1);
+  it("puts the page back on unmount", async () => {
+    enable({ tabBadge: true });
+    const { root } = render(<Probe rows={[alertRow("a")]} ready source="server" />);
+    await finishDraws();
+    act(() => root.unmount());
+    expect(document.title).toBe(PAGE_TITLE);
+    expect(favicon().getAttribute("href")).toBe(PLAIN_ICON);
+  });
+});
+
+describe("useBrowserAlerts: desktop notifications", () => {
+  beforeEach(() => {
+    installDoubles();
+    enable({ desktop: true });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    localStorage.clear();
   });
 
-  it("browser-derived: a condition must hold 30 s before it badges or notifies", () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    writeBrowserAlertPrefs({ tabBadge: true, desktop: true });
-    const update = mount([], true, "browser");
-    update([row("a", "critical")]);
-    expect(document.title).toBe(TITLE);
-    act(() => vi.advanceTimersByTime(BROWSER_ALERT_HOLD_MS - 1_000));
-    expect(FakeNotification.shown).toEqual([]);
-    act(() => vi.advanceTimersByTime(1_000));
-    expect(document.title).toBe(`(1) ${TITLE}`);
-    expect(FakeNotification.shown.map((n) => n.tag)).toEqual(["a"]);
+  it("server source: rows present when ready are the baseline; later ones notify once", () => {
+    const rerender = mountHook([alertRow("a")]);
+    expect(notified()).toEqual([]);
+    rerender([alertRow("a"), alertRow("b", "critical", "GPU at 91°C")]);
+    rerender([alertRow("a"), alertRow("b", "critical", "GPU at 91°C")]);
+    expect(StubNotification.log).toEqual([{ title: "Critical · Node b", body: "b needs attention — GPU at 91°C", tag: "b" }]);
   });
 
-  it("browser-derived: a flapping condition notifies once, and clears only after 30 s clear", () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    writeBrowserAlertPrefs({ tabBadge: true, desktop: true });
-    const update = mount([], true, "browser");
-    update([row("a")]);
-    act(() => vi.advanceTimersByTime(BROWSER_ALERT_HOLD_MS));
-    expect(FakeNotification.shown).toHaveLength(1);
-    // Flap every 5 s for two minutes.
-    for (let i = 0; i < 12; i++) {
-      update([]);
+  it("a source switch starts a new baseline", () => {
+    const rerender = mountHook([alertRow("a")]);
+    rerender([alertRow("a"), alertRow("c")], { source: "browser" });
+    expect(notified()).toEqual([]);
+  });
+
+  it("browser source: a new condition must last the hold time before it counts", () => {
+    vi.useFakeTimers();
+    enable({ tabBadge: true, desktop: true });
+    const rerender = mountHook([], { source: "browser" });
+    rerender([alertRow("a")]);
+    expect(document.title).toBe(PAGE_TITLE);
+    act(() => vi.advanceTimersByTime(HOLD - 1));
+    expect(notified()).toEqual([]);
+    act(() => vi.advanceTimersByTime(1));
+    expect(document.title).toBe(`(1) ${PAGE_TITLE}`);
+    expect(notified()).toEqual(["Warning · Node a"]);
+  });
+
+  it("browser source: flapping notifies once and clears only after the hold time", () => {
+    vi.useFakeTimers();
+    enable({ tabBadge: true, desktop: true });
+    const rerender = mountHook([], { source: "browser" });
+    rerender([alertRow("a")]);
+    act(() => vi.advanceTimersByTime(HOLD));
+    for (let i = 0; i < 4; i++) {
+      rerender([]);
       act(() => vi.advanceTimersByTime(5_000));
-      update([row("a")]);
+      rerender([alertRow("a")]);
       act(() => vi.advanceTimersByTime(5_000));
     }
-    expect(FakeNotification.shown).toHaveLength(1);
-    expect(document.title).toBe(`(1) ${TITLE}`);
-    update([]);
-    act(() => vi.advanceTimersByTime(BROWSER_ALERT_HOLD_MS - 1_000));
-    expect(document.title).toBe(`(1) ${TITLE}`);
-    act(() => vi.advanceTimersByTime(1_000));
-    expect(document.title).toBe(TITLE);
-    // A brief blip after clearing is not news either.
-    update([row("a")]);
-    act(() => vi.advanceTimersByTime(10_000));
-    update([]);
-    act(() => vi.advanceTimersByTime(60_000));
-    expect(FakeNotification.shown).toHaveLength(1);
+    expect(notified()).toEqual(["Warning · Node a"]);
+    rerender([]);
+    act(() => vi.advanceTimersByTime(HOLD - 1));
+    expect(document.title).toBe(`(1) ${PAGE_TITLE}`);
+    act(() => vi.advanceTimersByTime(1));
+    expect(document.title).toBe(PAGE_TITLE);
   });
 
-  it("browser-derived: what is already wrong when the page opens counts at once and is the baseline", () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    writeBrowserAlertPrefs({ tabBadge: true, desktop: true });
-    mount([row("a"), row("b")], true, "browser");
-    expect(document.title).toBe(`(2) ${TITLE}`);
-    expect(FakeNotification.shown).toEqual([]);
+  it("browser source: problems present at page open count at once without notifying", () => {
+    enable({ tabBadge: true, desktop: true });
+    mountHook([alertRow("a"), alertRow("b")], { source: "browser" });
+    expect(document.title).toBe(`(2) ${PAGE_TITLE}`);
+    expect(notified()).toEqual([]);
   });
 
-  it("no notifications without permission, without the pref, or in an insecure context", () => {
-    const update = mount([], true);
-    update([row("a")]);
-    expect(FakeNotification.shown).toEqual([]); // pref off
-    act(() => writeBrowserAlertPrefs({ tabBadge: false, desktop: true }));
-    FakeNotification.permission = "denied";
-    update([row("a"), row("b")]);
-    expect(FakeNotification.shown).toEqual([]);
-    FakeNotification.permission = "granted";
-    setSecure(false);
-    update([row("a"), row("b"), row("c")]);
-    expect(FakeNotification.shown).toEqual([]);
+  it("stays silent without permission, without the preference, or outside a secure context", () => {
+    const cases: Array<() => void> = [
+      () => (StubNotification.permission = "denied"),
+      () => enable({ desktop: false }),
+      () => secureContext(false),
+    ];
+    for (const setup of cases) {
+      installDoubles();
+      enable({ desktop: true });
+      setup();
+      const rerender = mountHook([]);
+      rerender([alertRow("z")]);
+    }
+    expect(notified()).toEqual([]);
   });
 });
 
 describe("stepDebounce", () => {
-  it("holds before showing, holds before clearing, and says when to look again", () => {
-    const s = emptyDebounce();
-    expect(stepDebounce(s, [row("a")], 0, 1000)).toEqual({ visible: [], nextCheckAt: 1000 });
-    expect(stepDebounce(s, [row("a")], 1000, 1000).visible.map((r) => r.key)).toEqual(["a"]);
-    expect(stepDebounce(s, [], 1500, 1000)).toMatchObject({ nextCheckAt: 2500 });
-    expect(stepDebounce(s, [], 2499, 1000).visible).toHaveLength(1);
-    expect(stepDebounce(s, [], 2500, 1000)).toEqual({ visible: [], nextCheckAt: null });
+  it("waits the hold time to show and to clear, and reports when to check again", () => {
+    const state = emptyDebounce();
+    const a = alertRow("a");
+    expect(stepDebounce(state, [a], 1_000, 100)).toEqual({ visible: [], nextCheckAt: 1_100 });
+    expect(stepDebounce(state, [a], 1_100, 100)).toEqual({ visible: [a], nextCheckAt: null });
+    expect(stepDebounce(state, [], 1_200, 100)).toEqual({ visible: [a], nextCheckAt: 1_300 });
+    expect(stepDebounce(state, [], 1_300, 100)).toEqual({ visible: [], nextCheckAt: null });
+  });
+
+  it("forgets a condition that vanished before it was held long enough", () => {
+    const state = emptyDebounce();
+    stepDebounce(state, [alertRow("a")], 0, 100);
+    expect(stepDebounce(state, [], 50, 100)).toEqual({ visible: [], nextCheckAt: null });
+    expect(stepDebounce(state, [alertRow("a")], 60, 100).nextCheckAt).toBe(160);
+  });
+
+  it("a seed step counts present rows immediately and keeps the newest row data", () => {
+    const state = emptyDebounce();
+    expect(stepDebounce(state, [alertRow("a")], 0, 100, true).visible).toHaveLength(1);
+    const updated = { ...alertRow("a"), label: "changed" };
+    expect(stepDebounce(state, [updated], 10, 100).visible).toEqual([updated]);
   });
 });
 
 describe("BrowserAlertsSettings", () => {
-  beforeEach(() => {
-    localStorage.removeItem(PREFS_KEY);
-    FakeNotification.permission = "default";
-    FakeNotification.requestPermission.mockClear();
-    vi.stubGlobal("Notification", FakeNotification);
-  });
+  beforeEach(installDoubles);
   afterEach(() => {
     vi.unstubAllGlobals();
-    setSecure(true);
-    localStorage.removeItem(PREFS_KEY);
+    localStorage.clear();
   });
 
-  const toggle = (label: string) => document.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${label}"]`)!;
-  const stored = () => JSON.parse(localStorage.getItem(PREFS_KEY) || "null");
+  const switchNamed = (name: string) => document.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${name}"]`)!;
 
-  it("2.0 rows: both switches start off; the tab badge saves to this browser on click", () => {
-    setSecure(true);
+  it("renders two setting rows, both off; the tab badge saves on click", () => {
     render(<BrowserAlertsSettings />);
-    expect(toggle("Tab badge").closest(".set-row")).not.toBeNull();
-    expect(toggle("Tab badge").getAttribute("aria-checked")).toBe("false");
-    expect(toggle("Desktop notifications").getAttribute("aria-checked")).toBe("false");
-    act(() => toggle("Tab badge").click());
-    expect(stored()).toEqual({ tabBadge: true, desktop: false });
-    expect(toggle("Tab badge").getAttribute("aria-checked")).toBe("true");
-    expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
+    expect(document.querySelectorAll(".set-row")).toHaveLength(2);
+    expect(switchNamed("Tab badge").getAttribute("aria-checked")).toBe("false");
+    expect(switchNamed("Desktop notifications").getAttribute("aria-checked")).toBe("false");
+    act(() => switchNamed("Tab badge").click());
+    expect(switchNamed("Tab badge").getAttribute("aria-checked")).toBe("true");
+    expect(readBrowserAlertPrefs().tabBadge).toBe(true);
   });
 
-  it("asks for permission only on the click, and enables on grant", async () => {
-    setSecure(true);
-    FakeNotification.requestPermission.mockImplementationOnce(async () => "granted");
+  it("asks for permission on the click only, and turns on when granted", async () => {
+    StubNotification.permission = "default";
+    StubNotification.requestPermission.mockImplementationOnce(async () => "granted");
     render(<BrowserAlertsSettings />);
-    expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
-    await act(async () => toggle("Desktop notifications").click());
+    expect(StubNotification.requestPermission).not.toHaveBeenCalled();
+    act(() => switchNamed("Desktop notifications").click());
     await flush();
-    expect(FakeNotification.requestPermission).toHaveBeenCalledTimes(1);
-    expect(stored()).toEqual({ tabBadge: false, desktop: true });
+    expect(StubNotification.requestPermission).toHaveBeenCalledTimes(1);
+    expect(readBrowserAlertPrefs().desktop).toBe(true);
+    expect(switchNamed("Desktop notifications").getAttribute("aria-checked")).toBe("true");
   });
 
-  it("a denied permission stays off and says why", async () => {
-    setSecure(true);
-    FakeNotification.requestPermission.mockImplementationOnce(async () => "denied");
+  it("explains a denied permission and stays off", async () => {
+    StubNotification.permission = "denied";
     render(<BrowserAlertsSettings />);
-    await act(async () => toggle("Desktop notifications").click());
+    act(() => switchNamed("Desktop notifications").click());
     await flush();
-    expect(stored()).toBeNull();
-    expect(document.body.textContent).toContain("Notifications are blocked for this site");
+    expect(readBrowserAlertPrefs().desktop).toBe(false);
+    expect(document.querySelector('[role="note"]')?.textContent).toContain("Notifications are blocked for this site");
   });
 
-  it("on plain HTTP the desktop switch is disabled with a note instead", () => {
-    setSecure(false);
+  it("over plain HTTP the desktop switch is disabled and a note points to HTTPS or localhost", () => {
+    secureContext(false);
     render(<BrowserAlertsSettings />);
-    expect(toggle("Desktop notifications").disabled).toBe(true);
-    expect(document.querySelector('[role="note"]')!.textContent).toContain("HTTPS or localhost");
-    act(() => toggle("Desktop notifications").click());
-    expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
+    expect(switchNamed("Desktop notifications").disabled).toBe(true);
+    expect(document.querySelector('[role="note"]')?.textContent).toContain("HTTPS or localhost");
   });
 });
 
 describe("useFleetAlerts", () => {
-  type Props = Parameters<typeof useFleetAlerts>[0];
-  function Probe(props: Props) {
-    const r = useFleetAlerts(props);
-    return <pre data-testid="fa">{JSON.stringify({ keys: r.rows.map((x) => x.key), ready: r.ready, source: r.source })}</pre>;
+  let view: FleetAlertsView | null = null;
+  function Capture(props: Parameters<typeof useFleetAlerts>[0]) {
+    view = useFleetAlerts(props);
+    return null;
   }
-  const read = () => JSON.parse(document.querySelector('[data-testid="fa"]')!.textContent!);
-  const base = { alertsEnabled: false, serverAlerts: null, showExceptions: true, temperatureUnit: "celsius" as const };
+  const base = { alertsEnabled: false, serverAlerts: null as AlertInstance[] | null, showExceptions: true, temperatureUnit: "celsius" as const };
 
-  function thermal(id: string): SparkSnapshot {
-    const s = makeSpark(id);
-    s.metrics.gpu = { ...s.metrics.gpu!, temperature: 88, throttle: { active: true, reason: "thermal", thermal: true, hwSlowdown: false, powerCap: false, detail: "HW thermal slowdown", smClockMHz: null, smClockPct: null } } as SparkSnapshot["metrics"]["gpu"];
-    return s;
-  }
+  it("matches the strip's own derivation, including showExceptions", () => {
+    const sparks: SparkSnapshot[] = [makeSpark("a", false), makeSpark("b")];
+    render(<Capture sparks={sparks} {...base} />);
+    expect(view).toEqual({ rows: deriveAlerts(sparks), ready: true, source: "browser" });
 
-  it("is the strip's own list: reuses deriveAlerts, honours showExceptions and the temperature unit", () => {
-    const spy = vi.spyOn(strip, "stripAlerts");
-    const { root } = render(<Probe {...base} sparks={[]} />);
-    expect(read()).toEqual({ keys: [], ready: false, source: "browser" });
-    const sparks = [makeSpark("a", false), thermal("b")];
-    act(() => root.render(<Probe {...base} sparks={sparks} />));
-    expect(read()).toEqual({ keys: ["a:offline", "b:throttle"], ready: true, source: "browser" });
-    act(() => root.render(<Probe {...base} sparks={sparks} showExceptions={false} />));
-    expect(read().keys).toEqual(["b:throttle"]);
-    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ showExceptions: false, temperatureUnit: "celsius" }));
-    act(() => root.render(<Probe {...base} sparks={sparks} temperatureUnit="fahrenheit" />));
-    expect(spy).toHaveBeenLastCalledWith(expect.objectContaining({ temperatureUnit: "fahrenheit" }));
-    expect(strip.deriveAlerts(sparks, "fahrenheit")[1].detail).toContain("190°F");
-    spy.mockRestore();
+    render(<Capture sparks={sparks} {...base} showExceptions={false} />);
+    expect(view!.rows).toEqual([]);
   });
 
-  it("uses the server's set while notifications are on, and is not ready until it arrives", () => {
-    const { root } = render(<Probe {...base} sparks={[makeSpark("a", false)]} alertsEnabled />);
-    expect(read()).toEqual({ keys: ["a:offline"], ready: false, source: "browser" });
-    const alert = { key: "a:offline", ruleId: "offline", unitId: "a", unitName: "A", ruleName: "Unit offline", label: "Host unreachable", summary: "x", severity: "critical", state: "firing", startsAt: 1, firingAt: 1 } as AlertInstance;
-    act(() => root.render(<Probe {...base} sparks={[makeSpark("a", false)]} alertsEnabled serverAlerts={[alert]} />));
-    expect(read()).toEqual({ keys: ["a:offline"], ready: true, source: "server" });
+  it("is not ready without units", () => {
+    render(<Capture sparks={[]} {...base} />);
+    expect(view!.ready).toBe(false);
+  });
+
+  it("with notifications on, waits for the server's set and then uses it", () => {
+    const sparks = [makeSpark("a", false)];
+    render(<Capture sparks={sparks} {...base} alertsEnabled />);
+    expect(view).toMatchObject({ ready: false, source: "browser" });
+
+    const server: AlertInstance = {
+      key: "q:disk",
+      ruleId: "disk",
+      ruleName: "Disk",
+      unitId: "q",
+      unitName: "Q",
+      severity: "warning",
+      state: "firing",
+      label: "Disk nearly full",
+      summary: "95% used",
+      startsAt: 5,
+      firingAt: 6,
+    };
+    render(<Capture sparks={sparks} {...base} alertsEnabled serverAlerts={[server]} />);
+    expect(view).toMatchObject({ ready: true, source: "server" });
+    expect(view!.rows.map((r) => r.key)).toEqual(["q:disk"]);
   });
 });

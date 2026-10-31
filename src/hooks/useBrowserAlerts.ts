@@ -1,261 +1,293 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { FleetAlert } from "../components/OverviewPage/FleetAlertStrip";
 import { BROWSER_ALERT_HOLD_MS, emptyDebounce, stepDebounce, type DebounceState } from "./alertDebounce";
 
-/**
- * Browser-side signals for active alerts: a count in the tab title, a dot on
- * the favicon, and desktop notifications for newly active alerts.
- *
- * Preferences are per browser (Notification permission is too), kept in
- * localStorage and both off by default. Every storage access is wrapped:
- * private windows and locked-down browsers throw on localStorage.
+/*
+ * Per-browser alert signals: "(N) title" on the tab, a coloured dot on the
+ * favicon and OS notifications for alerts that become active while the page
+ * is open. Both are opt-in and stored in localStorage (the notification
+ * permission is per browser anyway). localStorage can throw (private mode,
+ * strict policies), so every access is guarded.
  */
 
-const STORAGE_KEY = "sparkdash.browserAlerts";
-const CHANGE_EVENT = "sparkdash:browser-alerts";
+// ─── Preferences ─────────────────────────────────────────
+
+const PREFS_KEY = "sparkdash.browserAlerts";
+const PREFS_EVENT = "sparkdash:browser-alerts";
 
 export interface BrowserAlertPrefs {
-  /** "(2) sparkDash" in the tab title and a red / amber dot on the favicon. */
+  /** Count in the tab title plus a red/amber favicon dot. */
   tabBadge: boolean;
-  /** Desktop notification when an alert becomes active. */
+  /** OS notification when an alert starts. */
   desktop: boolean;
 }
 
 export const DEFAULT_BROWSER_ALERT_PREFS: BrowserAlertPrefs = Object.freeze({ tabBadge: false, desktop: false });
 
-export function readBrowserAlertPrefs(): BrowserAlertPrefs {
+function storedPrefsText(): string | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_BROWSER_ALERT_PREFS };
-    const parsed = JSON.parse(raw);
-    return { tabBadge: parsed?.tabBadge === true, desktop: parsed?.desktop === true };
+    return localStorage.getItem(PREFS_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function parsePrefs(text: string | null): BrowserAlertPrefs {
+  if (!text) return { ...DEFAULT_BROWSER_ALERT_PREFS };
+  try {
+    const value = JSON.parse(text) as Partial<BrowserAlertPrefs> | null;
+    return { tabBadge: value?.tabBadge === true, desktop: value?.desktop === true };
   } catch {
     return { ...DEFAULT_BROWSER_ALERT_PREFS };
   }
 }
 
-export function writeBrowserAlertPrefs(prefs: BrowserAlertPrefs): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
-  } catch {
-    /* not persisted; still applied for this page below */
-  }
-  window.dispatchEvent(new CustomEvent(CHANGE_EVENT, { detail: prefs }));
+export function readBrowserAlertPrefs(): BrowserAlertPrefs {
+  return parsePrefs(storedPrefsText());
 }
 
-/** Current prefs, live across components (and other tabs, via `storage`). */
-export function useBrowserAlertPrefs(): [BrowserAlertPrefs, (next: BrowserAlertPrefs) => void] {
-  const [prefs, setPrefs] = useState(readBrowserAlertPrefs);
-  useEffect(() => {
-    const onChange = (e: Event) => {
-      const detail = (e as CustomEvent<BrowserAlertPrefs>).detail;
-      setPrefs(detail ? { ...detail } : readBrowserAlertPrefs());
-    };
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEY) setPrefs(readBrowserAlertPrefs());
-    };
-    window.addEventListener(CHANGE_EVENT, onChange);
-    window.addEventListener("storage", onStorage);
-    return () => {
-      window.removeEventListener(CHANGE_EVENT, onChange);
-      window.removeEventListener("storage", onStorage);
-    };
-  }, []);
-  const update = useCallback((next: BrowserAlertPrefs) => writeBrowserAlertPrefs(next), []);
-  return [prefs, update];
+/** Prefs set on this page when storage refused the write; they still apply until reload. */
+let unsavedPrefs: BrowserAlertPrefs | null = null;
+
+export function writeBrowserAlertPrefs(prefs: BrowserAlertPrefs): void {
+  const next = { tabBadge: prefs.tabBadge === true, desktop: prefs.desktop === true };
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(next));
+    unsavedPrefs = null;
+  } catch {
+    unsavedPrefs = next;
+  }
+  window.dispatchEvent(new Event(PREFS_EVENT));
 }
+
+let cached: { text: string | null; unsaved: BrowserAlertPrefs | null; prefs: BrowserAlertPrefs } | null = null;
+
+function prefsSnapshot(): BrowserAlertPrefs {
+  const text = storedPrefsText();
+  if (!cached || cached.text !== text || cached.unsaved !== unsavedPrefs) {
+    cached = { text, unsaved: unsavedPrefs, prefs: unsavedPrefs ?? parsePrefs(text) };
+  }
+  return cached.prefs;
+}
+
+function subscribePrefs(onChange: () => void): () => void {
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === null || e.key === PREFS_KEY) onChange();
+  };
+  window.addEventListener(PREFS_EVENT, onChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(PREFS_EVENT, onChange);
+    window.removeEventListener("storage", onStorage);
+  };
+}
+
+/** The prefs, shared by every component on the page and kept in sync with other tabs. */
+export function useBrowserAlertPrefs(): [BrowserAlertPrefs, (next: BrowserAlertPrefs) => void] {
+  const prefs = useSyncExternalStore(subscribePrefs, prefsSnapshot, () => DEFAULT_BROWSER_ALERT_PREFS);
+  return [prefs, writeBrowserAlertPrefs];
+}
+
+// ─── Notification support ───────────────────────────────
 
 /**
- * Whether this page can show desktop notifications. The Notification API only
- * works in a secure context — HTTPS or localhost — so a plain-HTTP LAN install
- * gets "insecure" and a note instead of a switch that silently does nothing.
+ * "insecure": the page is not HTTPS/localhost, where browsers refuse the
+ * Notification API; the settings show an explanation instead of a dead switch.
  */
 export type NotificationSupport = "ok" | "insecure" | "unsupported";
 
 export function notificationSupport(): NotificationSupport {
   if (typeof window === "undefined") return "unsupported";
-  if (!window.isSecureContext) return "insecure";
-  if (!("Notification" in window)) return "unsupported";
-  return "ok";
+  if (window.isSecureContext !== true) return "insecure";
+  return typeof window.Notification === "function" ? "ok" : "unsupported";
 }
 
-// ─── Favicon ─────────────────────────────────────────────
+// ─── Favicon badge ──────────────────────────────────────
 
 export const BADGE_COLORS = Object.freeze({ critical: "#dc2626", warning: "#f59e0b" });
-const FAVICON_SIZE = 64;
 
-/** An SVG without width/height draws at 300×150 in some browsers: give it a size. */
-function sizedSvgHref(href: string, size: number): string {
-  const m = /^data:image\/svg\+xml(;base64)?,(.*)$/s.exec(href);
-  if (!m) return href;
+/** Some browsers rasterise a dimensionless SVG at 300×150; add explicit dimensions. */
+function withSvgSize(href: string, px: number): string {
+  const prefix = "data:image/svg+xml";
+  if (!href.startsWith(prefix)) return href;
+  const comma = href.indexOf(",");
+  if (comma < 0) return href;
   try {
-    const svg = m[1] ? atob(m[2]) : decodeURIComponent(m[2]);
-    if (/<svg[^>]*\swidth=/.test(svg)) return href;
-    const sized = svg.replace(/<svg\b/, `<svg width='${size}' height='${size}'`);
-    return `data:image/svg+xml,${encodeURIComponent(sized)}`;
+    const head = href.slice(0, comma);
+    const payload = href.slice(comma + 1);
+    const svg = head.endsWith(";base64") ? atob(payload) : decodeURIComponent(payload);
+    const open = /<svg\b[^>]*>/.exec(svg);
+    if (!open || /\swidth\s*=/.test(open[0])) return href;
+    return `${prefix},${encodeURIComponent(svg.replace("<svg", `<svg width="${px}" height="${px}"`))}`;
   } catch {
     return href;
   }
 }
 
-/** The favicon at `href` with a coloured dot in its top-right corner, as a PNG data URL. */
-export async function drawBadgedFavicon(href: string, color: string, size = FAVICON_SIZE): Promise<string | null> {
-  const img = new Image();
-  await new Promise<void>((resolve, reject) => {
-    img.onload = () => resolve();
-    img.onerror = () => reject(new Error("favicon did not load"));
-    img.src = sizedSvgHref(href, size);
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("could not load the favicon"));
+    img.src = src;
   });
+}
+
+/** Render `href` with a dot of `color` at the top right; returns a PNG data URL (null without a 2D context). */
+export async function drawBadgedFavicon(href: string, color: string, size = 64): Promise<string | null> {
+  const img = await loadImage(withSvgSize(href, size));
   const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
+  canvas.width = canvas.height = size;
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
   ctx.drawImage(img, 0, 0, size, size);
-  const r = size * 0.22;
-  const cx = size - r - size * 0.04;
-  const cy = r + size * 0.04;
-  // Dark ring first, so the dot reads on light and dark tab strips alike.
-  ctx.beginPath();
-  ctx.arc(cx, cy, r + size * 0.05, 0, Math.PI * 2);
-  ctx.fillStyle = "#111111";
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fillStyle = color;
-  ctx.fill();
+  const radius = Math.round(size * 0.2);
+  const centre = { x: size - radius - 3, y: radius + 3 };
+  // An outline keeps the dot visible on both light and dark tab bars.
+  for (const [fill, r] of [["#0b0b0b", radius + 3], [color, radius]] as const) {
+    ctx.beginPath();
+    ctx.arc(centre.x, centre.y, r, 0, 2 * Math.PI);
+    ctx.fillStyle = fill;
+    ctx.fill();
+  }
   return canvas.toDataURL("image/png");
 }
 
-/** Strip a count we (or an earlier page state) put in front of the title. */
-function baseTitleOf(title: string): string {
-  return title.replace(/^\(\d+\)\s+/, "");
+function iconLink(): HTMLLinkElement | null {
+  return document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
 }
 
+type IconAttrs = { href: string | null; type: string | null };
+
+function setIcon(link: HTMLLinkElement, attrs: IconAttrs) {
+  for (const name of ["href", "type"] as const) {
+    const value = attrs[name];
+    if (value == null) link.removeAttribute(name);
+    else link.setAttribute(name, value);
+  }
+}
+
+// ─── Counting ───────────────────────────────────────────
+
 /**
- * The alerts that count for the badge and notifications, or null until the
- * first count for this source is in. The server's set is used as it is (it has
- * its own hysteresis); a browser-derived set goes through `stepDebounce`, so a
- * flapping condition is not news every few seconds.
+ * The rows that count for badge and notifications, or null before the first
+ * ready step for the current source. Server rows pass straight through (the
+ * server has its own hold times); browser rows are debounced.
  */
 export function useCountedAlerts(rows: FleetAlert[], ready: boolean, source: string, holdMs = BROWSER_ALERT_HOLD_MS): FleetAlert[] | null {
-  const [counted, setCounted] = useState<{ source: string; rows: FleetAlert[] } | null>(null);
-  const debounce = useRef<{ source: string; state: DebounceState; seeded: boolean } | null>(null);
+  const [result, setResult] = useState<{ source: string; rows: FleetAlert[] } | null>(null);
+  const debounce = useRef<{ source: string; state: DebounceState; first: boolean }>({ source: "", state: emptyDebounce(), first: true });
+
   useEffect(() => {
     if (!ready) return;
     if (source === "server") {
-      debounce.current = null;
-      setCounted({ source, rows });
+      setResult({ source, rows });
       return;
     }
-    if (debounce.current?.source !== source) debounce.current = { source, state: emptyDebounce(), seeded: false };
+    if (debounce.current.source !== source) debounce.current = { source, state: emptyDebounce(), first: true };
     const d = debounce.current;
-    let timer: number | undefined;
-    const step = () => {
-      const seed = !d.seeded;
-      d.seeded = true;
-      const { visible, nextCheckAt } = stepDebounce(d.state, rows, Date.now(), holdMs, seed);
-      setCounted({ source, rows: visible });
-      if (nextCheckAt !== null) timer = window.setTimeout(step, Math.max(0, nextCheckAt - Date.now()));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const run = () => {
+      const { visible, nextCheckAt } = stepDebounce(d.state, rows, Date.now(), holdMs, d.first);
+      d.first = false;
+      setResult({ source, rows: visible });
+      if (nextCheckAt !== null) timer = setTimeout(run, Math.max(0, nextCheckAt - Date.now()));
     };
-    step();
-    return () => window.clearTimeout(timer);
+    run();
+    return () => clearTimeout(timer);
   }, [rows, ready, source, holdMs]);
-  return ready && counted?.source === source ? counted.rows : null;
+
+  // Leaving the browser source discards its debounce history.
+  useEffect(() => {
+    if (source === "server") debounce.current = { source: "", state: emptyDebounce(), first: true };
+  }, [source]);
+
+  if (!ready || result === null || result.source !== source) return null;
+  return result.rows;
+}
+
+// ─── The hook ───────────────────────────────────────────
+
+const COUNT_PREFIX = /^\(\d+\)\s+/;
+
+function notificationTitle(row: FleetAlert): string {
+  return `${row.severity === "critical" ? "Critical" : "Warning"} · ${row.unitName}`;
 }
 
 /**
- * Apply the tab badge and desktop notifications for `rows`. `ready` is false
- * until there is real data, so a page still connecting neither badges nor
- * notifies — and alerts already active when it becomes ready are not "new".
- * `source` changing (alert notifications switched on or off) starts a new
- * baseline: the same problems under the other side's keys are not news either.
+ * Drives the tab badge and desktop notifications from `rows`. Nothing happens
+ * until `ready`; the rows present at the first counted state (and again after
+ * `source` switches between server and browser) are the baseline and do not
+ * notify, since the same problems would otherwise be announced twice.
  */
 export function useBrowserAlerts(rows: FleetAlert[], ready: boolean, source: "server" | "browser" = "browser"): void {
   const [prefs] = useBrowserAlertPrefs();
   const counted = useCountedAlerts(rows, ready, source);
-  const count = counted?.length ?? 0;
-  const tone: keyof typeof BADGE_COLORS | null =
-    count === 0 ? null : counted!.some((r) => r.severity === "critical") ? "critical" : "warning";
-  const badge = prefs.tabBadge && tone !== null;
+  const count = counted ? counted.length : 0;
+  const worst: keyof typeof BADGE_COLORS | null = !counted || count === 0 ? null : counted.some((r) => r.severity === "critical") ? "critical" : "warning";
+  const showBadge = prefs.tabBadge && worst !== null;
 
-  // ─── Title ────────────────────────────────────────────
-  const baseTitle = useRef<string | null>(null);
-  useEffect(() => {
-    if (baseTitle.current == null) baseTitle.current = baseTitleOf(document.title);
-    document.title = badge ? `(${count}) ${baseTitle.current}` : baseTitle.current;
-  }, [badge, count]);
+  // What the page looked like before we touched it, captured once.
+  const pageTitle = useRef<string | null>(null);
+  const pageIcon = useRef<IconAttrs | null>(null);
+  const drawSeq = useRef(0);
 
-  // ─── Favicon ──────────────────────────────────────────
-  const originalIcon = useRef<{ href: string | null; type: string | null } | null>(null);
-  const drawGeneration = useRef(0);
   useEffect(() => {
-    const link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
+    pageTitle.current ??= document.title.replace(COUNT_PREFIX, "");
+    document.title = showBadge ? `(${count}) ${pageTitle.current}` : pageTitle.current;
+  }, [showBadge, count]);
+
+  useEffect(() => {
+    const link = iconLink();
     if (!link) return;
-    if (originalIcon.current == null) {
-      originalIcon.current = { href: link.getAttribute("href"), type: link.getAttribute("type") };
-    }
-    const original = originalIcon.current;
-    const generation = ++drawGeneration.current;
-    const restore = () => {
-      if (original.href != null) link.setAttribute("href", original.href);
-      if (original.type != null) link.setAttribute("type", original.type);
-      else link.removeAttribute("type");
-    };
-    if (!badge || !tone || !original.href) {
-      restore();
+    pageIcon.current ??= { href: link.getAttribute("href"), type: link.getAttribute("type") };
+    const original = pageIcon.current;
+    const seq = ++drawSeq.current;
+    if (!showBadge || worst === null || original.href == null) {
+      setIcon(link, original);
       return;
     }
-    drawBadgedFavicon(original.href, BADGE_COLORS[tone])
-      .then((url) => {
-        // A newer state (or a cleared one) won while this was drawing.
-        if (!url || generation !== drawGeneration.current) return;
-        link.setAttribute("type", "image/png");
-        link.setAttribute("href", url);
-      })
-      .catch(() => {
-        /* keep the plain icon; the title still carries the count */
-      });
-  }, [badge, tone]);
+    drawBadgedFavicon(original.href, BADGE_COLORS[worst]).then(
+      (png) => {
+        // Ignore a draw that a newer state (or clearing) has overtaken.
+        if (png && seq === drawSeq.current) setIcon(link, { href: png, type: "image/png" });
+      },
+      () => {
+        /* plain icon stays; the title still shows the count */
+      }
+    );
+  }, [showBadge, worst]);
 
-  // Put the page back as it was when the app unmounts.
   useEffect(
     () => () => {
-      drawGeneration.current += 1;
-      if (baseTitle.current != null) document.title = baseTitle.current;
-      const link = document.querySelector<HTMLLinkElement>('link[rel~="icon"]');
-      const original = originalIcon.current;
-      if (link && original?.href != null) {
-        link.setAttribute("href", original.href);
-        if (original.type != null) link.setAttribute("type", original.type);
-      }
+      drawSeq.current++;
+      if (pageTitle.current !== null) document.title = pageTitle.current;
+      const link = iconLink();
+      if (link && pageIcon.current?.href != null) setIcon(link, pageIcon.current);
     },
     []
   );
 
-  // ─── Desktop notifications ───────────────────────────
-  const known = useRef<{ source: string; keys: Set<string> } | null>(null);
+  const baseline = useRef<{ source: string; keys: Set<string> } | null>(null);
   useEffect(() => {
     if (counted === null) return;
-    const previous = known.current?.source === source ? known.current.keys : null;
-    known.current = { source, keys: new Set(counted.map((r) => r.key)) };
-    // The first ready state is the baseline: what is already wrong is not news.
-    if (previous === null || !prefs.desktop) return;
+    const before = baseline.current?.source === source ? baseline.current.keys : null;
+    baseline.current = { source, keys: new Set(counted.map((r) => r.key)) };
+    if (!before || !prefs.desktop) return;
     if (notificationSupport() !== "ok" || Notification.permission !== "granted") return;
-    for (const row of counted) {
-      if (previous.has(row.key)) continue;
+    for (const row of counted.filter((r) => !before.has(r.key))) {
       try {
-        const n = new Notification(`${row.severity === "critical" ? "Critical" : "Warning"} · ${row.unitName}`, {
-          body: [row.label, row.detail].filter(Boolean).join(" — "),
-          // Same key, same notification: the OS replaces it instead of stacking.
+        const note = new Notification(notificationTitle(row), {
+          body: row.detail ? `${row.label} — ${row.detail}` : row.label,
+          // Reusing the alert key lets the OS replace rather than stack.
           tag: row.key,
         });
-        n.onclick = () => {
+        note.onclick = () => {
           window.focus();
-          n.close();
+          note.close();
         };
       } catch {
-        /* e.g. Android Chrome requires a service worker for notifications */
+        /* some platforms (Android Chrome) only allow notifications from a service worker */
       }
     }
   }, [counted, source, prefs.desktop]);

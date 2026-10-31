@@ -370,6 +370,12 @@ export interface GpuMetrics {
   gpuAllocMB?: number;
   /** true when the GPU draws from the OS memory pool (GB10: nvidia-smi memory.total is N/A). */
   unifiedMemory?: boolean;
+  /** Summed draw (W) of every GPU on the host (#33). Optional: older agents omit it. */
+  powerDrawTotal?: number;
+  /** Number of GPUs seen (#33). */
+  gpuCount?: number;
+  /** Where the GPU power figure came from (#33); absent when nothing measured it. */
+  powerSource?: "nvidia-smi" | "amd-hwmon";
 }
 
 export interface CpuMetrics {
@@ -381,6 +387,8 @@ export interface CpuMetrics {
   draw: number;
   /** CPU TDP (W). */
   tdp: number;
+  /** Where `draw` came from (#33): a RAPL / thermal / hwmon sensor, or the TDP x usage model. */
+  drawSource?: "rapl" | "thermal" | "hwmon" | "estimated";
 }
 
 export interface MemMetrics {
@@ -684,6 +692,85 @@ export interface StacksFile {
   stacks: Stack[];
 }
 
+// ─── Library (SC6, on-disk state per node) ─────────────────────────────────
+//
+// Producer: agent/collectors/library.js (runs on the node that owns the
+// disk). Seam: NodeAgentSnapshot.library, additive like lanes/stackHistory.
+// Vocabulary (one method, pin claims from the node's validated recipe
+// store — imageDigest / modelRevision):
+//   "pinned"   artifact matches a pin claim;
+//   "unpinned" on disk, no claim governs it (ungoverned cache, not drift);
+//   "stray"    on disk inside something a claim governs, but matches none
+//              (drift next to the pin);
+//   "missing"  a claim whose artifact is NOT on disk (pull finding — only
+//              ever emitted for models that DO have pins).
+
+/** One local docker image as reported by the library collector. */
+export interface LibraryEngineImage {
+  /** Docker Repository, e.g. "lmsysorg/sglang". */
+  reference: string;
+  /** Tag; "<none>" when dangling. */
+  tag: string;
+  /** Normalized repo digest (sha256:...). null when docker reported none. */
+  repoDigest: string | null;
+  /** Image size in bytes. null when docker could not answer (unknown). */
+  sizeBytes: number | null;
+  /** Docker image id, sha256: stripped, 19 chars. */
+  imageId: string;
+  /** Engine-relevant by reference match (inference images the Library lists). */
+  inferenceEngine: boolean;
+  /** Some recipe pin's digest matches this image (a moved tag stays pinned). */
+  pinned: boolean;
+  /** Recipes claiming that pin. */
+  pinnedBy: string[];
+}
+
+/** One checkpoint (model revision) found on disk, or a missing-pin finding. */
+export interface LibraryCheckpoint {
+  /** Model id (org/name from the HF cache dir, or the plain dir name). */
+  model: string;
+  /** Snapshot hash / commit, or "<dir>" for a plain model directory. */
+  revision: string;
+  /** Default-ref name ("main") when surfaced through refs, else null. */
+  refName: string | null;
+  /** Size in bytes. null when du could not answer or nothing is materialized. */
+  sizeBytes: number | null;
+  /** Pin verdict. "missing" is a pin claim with no artifact on disk. */
+  status: "pinned" | "unpinned" | "stray" | "missing";
+  /** Recipes pinning this exact revision. */
+  pinnedBy: string[];
+}
+
+/** One resolved pin claim (what the recipe store says vs what disk has). */
+export interface LibraryPinClaim {
+  kind: "image" | "model";
+  /** Recipe (Component instance) making the claim. */
+  recipe: string;
+  /** Digest (image) or `model@revision` (model). */
+  ref: string;
+  /** Artifact present locally. */
+  present: boolean;
+  /** "pinned" when present, "missing" when the claim is unmet. */
+  status: "pinned" | "missing";
+}
+
+/**
+ * SC6 library report — NodeAgentSnapshot.library. Errors are the raw
+ * docker/du/readdir failures behind null fields; they are never swallowed.
+ */
+export interface LibraryReport {
+  /** Report-format version. Currently 1. */
+  version: 1;
+  /** All local images (inferenceEngine flags the relevant ones). */
+  engineImages: LibraryEngineImage[];
+  /** Checkpoints on disk + missing-pin findings. */
+  checkpoints: LibraryCheckpoint[];
+  /** Recipe pin claims, resolved against disk. */
+  pins: LibraryPinClaim[];
+  /** Raw-source failures; empty when every source answered. */
+  errors: string[];
+}
+
 // ─── Node agent snapshot (full telemetry) ──────────────────────────────────────────────────────────
 
 /**
@@ -691,6 +778,165 @@ export interface StacksFile {
  * /telemetry endpoint. This is the primary data structure the dashboard
  * server polls and the frontend renders.
  */
+// ─── Normalized engine metrics (STAT2, #35) ────────────────────────────────
+// server/metrics/EngineWindow.js turns each engine's counters into one record
+// per rolling window that reads the same for every engine.
+
+/** Where a value came from (Page §3): counter < native < proxy < client. */
+export type EngineSourceTier = "counter" | "native" | "proxy" | "client";
+
+export type NormalizedEngineField =
+  | "decode_tps"
+  | "prefill_tps"
+  | "ttft_s"
+  | "queue_s"
+  | "running"
+  | "waiting"
+  | "kv_pct"
+  | "cache_reuse"
+  | "acc_len"
+  | "idle_share"
+  | "throughput_tps";
+
+export interface NormalizedEngineValue {
+  /** null when unmeasured: never 0 for "unknown". */
+  value: number | null;
+  /** false exactly when value is null. */
+  valid: boolean;
+  /** Tier of the input; may be set on a null value whose source had nothing to measure. */
+  source: EngineSourceTier | null;
+  /** Seconds the value spans; 0 for an instantaneous level, null when unmeasured. */
+  windowS: number | null;
+  /** True when the value only approximates the engine's own measure. */
+  approximate: boolean;
+  /** Reads behind the value (counter differences: reads in the window; rate means: busy reads). */
+  samples: number;
+  /** Levels only: the window's peak. */
+  peak?: number | null;
+}
+
+export interface NormalizedEngineRecord {
+  /** Window span in seconds (60 or 300). */
+  spanS: number;
+  /** Seconds between the window's oldest and newest read. */
+  coveredS: number;
+  /** Reads in the window. */
+  reads: number;
+  /** When the window (re)started: first read after an engine change or counter reset (ms epoch). */
+  startedAt: number | null;
+  /** Times the window started again after an engine change or counter reset. */
+  resets: number;
+  values: Record<NormalizedEngineField, NormalizedEngineValue>;
+}
+
+/** Normalized records keyed by window span in seconds ("60", "300"). */
+export type NormalizedEngineWindows = Record<string, NormalizedEngineRecord>;
+
+/** Raw counter names a node agent exports (agent/collectors/llmCounters.js). */
+export type AgentEngineCounterKey =
+  | "generated"
+  | "prompt"
+  | "cached"
+  | "decoded"
+  | "first"
+  | "itlSum"
+  | "prefillComputed"
+  | "prefillSeconds"
+  | "queueSum"
+  | "queueCount"
+  | "ttftSum"
+  | "ttftCount"
+  | "e2eSum"
+  | "e2eCount"
+  | "requestsFinished"
+  | "preemptions"
+  | "specAccepted"
+  | "specDrafts"
+  | "specDraftTokens"
+  | "specVerify"
+  | "idleSeconds";
+
+/** STAT3: read time of an engineCounters payload (schema 2). */
+export interface AgentEngineCountersMeta {
+  /** Payload schema: 2 = STAT3 (schema 1, STAT2, sent no meta). */
+  schema: number;
+  /** Page the counters came from; "proxy" = metered by the agent's usage relay (STAT4). */
+  source: "prometheus" | "json" | "proxy";
+  /** Agent monotonic clock (performance.now() ms); only comparable within one bootId. */
+  monoMs: number;
+  /** Agent wall clock at the read (ms epoch). */
+  wallMs: number;
+  /** Changes when the agent process restarts. */
+  bootId: string;
+}
+
+/**
+ * One node-agent LLM port probe (agent/collectors/llm.js), attached to the
+ * snapshot as `llm`. Only the fields the dashboard reads are typed here.
+ */
+export interface AgentLlmEntry {
+  port: number;
+  backend: string | null;
+  modelId: string | null;
+  kvCacheUsage?: number | null;
+  requestsRunning?: number | null;
+  requestsWaiting?: number | null;
+  /**
+   * STAT2 / STAT3: raw cumulative engine counters. Agent 0.3 sends vLLM /
+   * SGLang only; agent 0.4+ sends every engine with counters and every key of
+   * AgentEngineCounterKey (null when the engine does not publish it).
+   */
+  engineCounters?: Partial<Record<AgentEngineCounterKey, number | null>> | null;
+  /** STAT3 (agent 0.4+): when and how engineCounters were read. */
+  engineCountersMeta?: AgentEngineCountersMeta | null;
+  /**
+   * STAT4 (agent 0.5+): per-request usage the agent's opt-in relay metered
+   * for this port, as cumulative counters (same keys). Windowed as the
+   * "proxy" source tier; engine counters win per field.
+   */
+  proxyCounters?: Partial<Record<AgentEngineCounterKey, number | null>> | null;
+  proxyCountersMeta?: AgentEngineCountersMeta | null;
+  /** STAT4: metered requests in flight through the relay. */
+  proxyInFlight?: number | null;
+  /** STAT2: added by the dashboard server's fleet poller. */
+  normalized?: NormalizedEngineWindows | null;
+}
+
+/** STAT4: one metered request through the agent's usage relay. */
+export interface AgentRelayRequest {
+  wallMs: number;
+  client: string;
+  path: string | null;
+  model: string | null;
+  status: number;
+  aborted: boolean;
+  stream: boolean;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  cachedTokens: number | null;
+  /** No usage in the stream: completion counted from content events. */
+  completionEstimated: boolean;
+  ttftS: number | null;
+  decodeS: number | null;
+  /** "engine" (Ollama eval_duration, llama.cpp timings) or "stream" (first → last content event). */
+  decodeFrom: "engine" | "stream" | null;
+  e2eS: number;
+}
+
+/** STAT4: one opt-in usage relay of the node agent (LLM_PROXY). */
+export interface AgentUsageRelay {
+  listenPort: number | null;
+  upstreamPort: number | null;
+  counters: Partial<Record<AgentEngineCounterKey, number | null>> | null;
+  meta: AgentEngineCountersMeta | null;
+  inFlight: number;
+  requests: number;
+  errors: number;
+  estimatedRequests: number;
+  clients: { client: string; requests: number; errors: number; prompt: number; generated: number; lastSeenMs: number }[];
+  recent: AgentRelayRequest[];
+}
+
 export interface NodeAgentSnapshot {
   /** Node id (matches registry id). */
   nodeId: string;
@@ -748,6 +994,21 @@ export interface NodeAgentSnapshot {
    * (SC5+ ETA calc / UI) treat both as "no history".
    */
   stackHistory?: Record<string, CategoryHistory> | null;
+  /**
+   * SC6: on-disk library state (agent/collectors/library.js — engine images,
+   * checkpoints with pinned/stray/missing verdicts, recipe pins resolved
+   * against disk). Optional: agents older than SC6 omit the key; a raw
+   * docker/disk failure surfaces inside the report's `errors`, never as a
+   * fabricated value. Collectors attach it even when partial (null fields).
+   */
+  library?: LibraryReport | null;
+  /**
+   * Raw LLM port probes. Optional: an agent with no LLM ports omits it.
+   * STAT2: the dashboard server adds `normalized` to each entry.
+   */
+  llm?: AgentLlmEntry[];
+  /** STAT4: the agent's opt-in usage relays; null / absent when none run. */
+  llmProxy?: AgentUsageRelay[] | null;
   /** Last time this snapshot was polled (ms epoch). */
   polledAt: number;
 }
@@ -1156,6 +1417,65 @@ export interface FleetUpdatePlan {
   /** null = planned, not started */
   startedAt: number | null;
   waveStates: Array<"pending" | "running" | "rebooting" | "slow" | "healthy">;
+}
+
+// ─── LLM token ledger (FLEET3, issue #38) ────────────────
+// GET /api/llm-token-totals?range=… and /history (server/llmtokens/*).
+
+export type LlmTokenRange = "24h" | "7d" | "30d" | "all";
+
+/** generated = output tokens; cached = prompt tokens from the prefix cache; prefill = prompt − cached. */
+export interface LlmTokenSplit {
+  generated: number;
+  cached: number;
+  prefill: number;
+  /** generated + cached + prefill */
+  total: number;
+}
+
+export interface LlmTokenModelRow extends LlmTokenSplit {
+  model: string;
+  /** `nodeId:port` series that served the model in the range. */
+  endpoints: string[];
+  /** Ledger source tiers that credited tokens: "counter", "native", "proxy"… */
+  sources: string[];
+}
+
+export interface LlmTokenEndpointRow extends LlmTokenSplit {
+  seriesId: string;
+  nodeId: string;
+  nodeName: string | null;
+  port: number;
+  backend: string | null;
+  models: string[];
+  sources: string[];
+  lastSeenMs: number | null;
+}
+
+export interface LlmTokenTotals extends LlmTokenSplit {
+  range: LlmTokenRange;
+  resolution: "hour" | "day" | "all";
+  fromMs: number;
+  toMs: number;
+  trackedSinceMs: number;
+  endpointCount: number;
+  models: LlmTokenModelRow[];
+  endpoints: LlmTokenEndpointRow[];
+}
+
+export interface LlmTokenHistoryPoint {
+  startMs: number;
+  generated: number;
+  cached: number;
+  prefill: number;
+}
+
+export interface LlmTokenHistory {
+  range: LlmTokenRange;
+  resolution: "hour" | "day";
+  stepMs: number;
+  trackedSinceMs: number;
+  points: LlmTokenHistoryPoint[];
 }
 
 // ─── Bench results store (BENCH1, server/bench/results) ──────────────────

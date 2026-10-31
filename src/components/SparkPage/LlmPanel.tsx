@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { NormalizedEngineGrid } from "../ui/NormalizedEngineMetrics";
 import type { LlmMetrics, LlmBenchTarget } from "../../api/types";
 import { setLlmApiKey, updateLlmPort, updateLlmPorts } from "../../api/client";
 import { Sparkline } from "../ui/Sparkline";
@@ -18,6 +19,7 @@ import { UpgradeCompareDialog } from "../UpgradeCompare/UpgradeCompareDialog";
 import { LlmDailyChart } from "./LlmDailyChart";
 import { parseLlmTargetInput } from "../../shared/llmTarget.js";
 import { LlmTrendChart } from "./LlmTrendChart";
+import { formatTps, llmBackendLabel } from "../../lib/llmBackend";
 
 interface LlmPanelProps {
   llm: LlmMetrics | null;
@@ -347,19 +349,10 @@ function LlmLaunchers({
 function BackendBadge({ backend }: { backend: string | null }) {
   if (!backend) return <span className="text-xs text-muted">No backend</span>;
 
-  const labels: Record<string, string> = {
-    vllm: "vLLM",
-    "llama.cpp": "llama.cpp",
-    sglang: "sgLang",
-    ds4: "ds4",
-    exl3: "EXL3",
-    q27: "q27",
-  };
-
   return (
     <span className="llm-badge">
       <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-      {labels[backend] || backend}
+      {llmBackendLabel(backend)}
     </span>
   );
 }
@@ -550,8 +543,9 @@ export function LlmPanel({
     engineInfoTimer.current = setTimeout(() => setEngineInfoOpen(false), 2000);
   }, [clearEngineInfoTimer]);
 
-  const generationTps = llm?.generationTps ?? 0;
-  const prefillTps = llm?.prefillTps ?? 0;
+  // null = this engine does not measure the rate (LM Studio, Ollama): show "—".
+  const generationTps = llm ? llm.generationTps : 0;
+  const prefillTps = llm ? llm.prefillTps : 0;
   const showPrefillSplit = llm?.cachedPrefillTps != null || llm?.uncachedPrefillTps != null;
   const cachedPrefillTps = llm?.cachedPrefillTps ?? 0;
   const uncachedPrefillTps = llm?.uncachedPrefillTps ?? 0;
@@ -820,7 +814,7 @@ export function LlmPanel({
               <Sparkline data={genHistory} color="var(--color-accent)" height={24} />
               <div className="text-right">
                 <div className="font-tabular text-sm font-semibold text-accent">
-                  {generationTps.toFixed(1)}
+                  {formatTps(generationTps, 1)}
                 </div>
                 {genAvg != null && (
                   <div className="font-tabular text-[9px] text-muted">
@@ -839,7 +833,7 @@ export function LlmPanel({
               <Sparkline data={prefillHistory} color="var(--color-text)" height={24} />
               <div className="text-right">
                 <div className="font-tabular text-sm font-semibold text-text">
-                  {prefillTps.toFixed(1)}
+                  {formatTps(prefillTps, 1)}
                 </div>
                 {prefillAvg != null && (
                   <div className="font-tabular text-[9px] text-muted">
@@ -891,6 +885,8 @@ export function LlmPanel({
               </div>
             </>
           )}
+
+          <NormalizedEngineGrid windows={llm?.normalized} />
 
           <LlmTrendChart sparkId={sparkId} llmPort={llmPort} />
           <LlmDailyChart sparkId={sparkId} llmPort={llmPort} />
@@ -964,7 +960,7 @@ export function LlmPanel({
             <div className="space-y-0.5">
               <div className="text-[10px] uppercase tracking-wide text-muted">Total Generated</div>
               <div className="font-tabular text-sm text-text">
-                {llm && llm.totalOutputTokens > 0
+                {llm && llm.totalOutputTokens != null && llm.totalOutputTokens > 0
                   ? llm.totalOutputTokens.toLocaleString()
                   : "—"}
               </div>

@@ -238,35 +238,36 @@ test("a storage refresh from an earlier run cannot commit or clear a restarted r
   monitor.stop();
 });
 
-// Fork-adapted from upstream 04c7560: this fork schedules on the fixed
-// POLL_INTERVAL_* constants (no pollIntervalMs option / setPollInterval), so the
-// cadence assertions read the constants.
-test("public freshness accessors: last real collection, latest poll ok, current cadence", async () => {
+// Freshness accessors used by the unit history (docs/specs/unit-history.md §6).
+test("freshness accessors track real readings, the latest poll's outcome and the cadence", async () => {
   const monitor = new SparkMonitor(spark());
-  assert.equal(monitor.lastCollectedAt("gpu"), null);
-  assert.equal(monitor.collectionOk("gpu"), false);
-  assert.equal(monitor.collectionOk("ram"), false);
-  assert.equal(monitor.pollIntervalMs("gpu"), 2000);
-  assert.equal(monitor.pollIntervalMs("bogus-domain"), null, "not a scheduled domain");
+  for (const d of ["gpu", "ram", "network"]) {
+    assert.equal(monitor.lastCollectedAt(d), null, d);
+    assert.equal(monitor.collectionOk(d), false, d);
+  }
+  assert.equal(monitor.pollIntervalMs("cpu"), 2000);
+  assert.equal(monitor.pollIntervalMs("roce"), null);
+  assert.equal(monitor.pollIntervalMs("toString"), null);
   monitor._running = true;
 
-  monitor.collector.collectGpu = async () => tagged(validGpu());
-  monitor.collector.collectRam = async () => ({ used: 10, total: 100, percentage: 10 });
-  await monitor._pollDomain("gpu");
+  monitor.collector.collectCpu = async () => tagged({ usage: 3, temperature: 40, draw: 5, tdp: 65 });
+  monitor.collector.collectRam = async () => ({ used: 1, total: 8, percentage: 12 });
+  await monitor._pollDomain("cpu");
   await monitor._pollDomain("ram");
-  const at = monitor.lastCollectedAt("ram");
-  assert.ok(at > 0 && monitor.lastCollectedAt("gpu") > 0);
-  assert.equal(monitor.collectionOk("gpu"), true);
+  const ramAt = monitor.lastCollectedAt("ram");
+  assert.ok(Number.isFinite(ramAt));
+  assert.ok(Number.isFinite(monitor.lastCollectedAt("cpu")));
+  assert.equal(monitor.collectionOk("cpu"), true);
   assert.equal(monitor.collectionOk("ram"), true);
 
-  // A failed poll: the previous value stays in the snapshot, but it is no longer "ok".
+  // Placeholder results: the readings stay put, the poll no longer counts as ok.
   await new Promise((r) => setTimeout(r, 5));
-  monitor.collector.collectGpu = async () => validGpu();
+  monitor.collector.collectCpu = async () => ({ usage: 0, temperature: 0, draw: 0, tdp: 0 });
   monitor.collector.collectRam = async () => ({ used: 0, total: 0, percentage: 0 });
-  await monitor._pollDomain("gpu");
+  await monitor._pollDomain("cpu");
   await monitor._pollDomain("ram");
-  assert.equal(monitor.collectionOk("gpu"), false);
+  assert.equal(monitor.collectionOk("cpu"), false);
   assert.equal(monitor.collectionOk("ram"), false);
-  assert.equal(monitor.lastCollectedAt("ram"), at, "only real data moves it");
+  assert.equal(monitor.lastCollectedAt("ram"), ramAt);
   monitor._running = false;
 });

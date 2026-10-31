@@ -4,7 +4,7 @@
  * records when the manager reports it.
  */
 
-import { fromDecodeJob, fromPrefillJob, fromQualityJob, fromShowcaseSession } from "./adapters.js";
+import { fromDecodeJob, fromFleetShowcaseSession, fromPrefillJob, fromQualityJob, fromShowcaseSession } from "./adapters.js";
 import { makeMetricRow } from "./schema.js";
 import { energyMetricRow, memoryHeadroom, runEnergy } from "../upgrade/runCost.js";
 
@@ -12,6 +12,8 @@ const ADAPTERS = {
   DecodeBench: { convert: fromDecodeJob, idOf: (o) => o?.benchId },
   PrefillBench: { convert: fromPrefillJob, idOf: (o) => o?.benchId },
   Showcase: { convert: fromShowcaseSession, idOf: (o) => o?.sessionId },
+  // SHOW1: one record per lane; provenance is { lanes: { [laneId]: Provenance } }.
+  FleetShowcase: { convert: fromFleetShowcaseSession, idOf: (o) => o?.sessionId },
   QualityBench: { convert: fromQualityJob, idOf: (o) => o?.benchId },
 };
 
@@ -46,7 +48,7 @@ export function createResultsRecorder({ store, log = (m) => console.warn(m), ene
 
   return {
     /**
-     * @param {"DecodeBench"|"PrefillBench"|"Showcase"|"QualityBench"} bench
+     * @param {"DecodeBench"|"PrefillBench"|"Showcase"|"FleetShowcase"|"QualityBench"} bench
      * @param {string} id  benchId / sessionId
      * @param {any} provenance  describeProvenance(...) result
      */
@@ -57,7 +59,7 @@ export function createResultsRecorder({ store, log = (m) => console.warn(m), ene
     },
 
     /**
-     * @param {"DecodeBench"|"PrefillBench"|"Showcase"|"QualityBench"} bench
+     * @param {"DecodeBench"|"PrefillBench"|"Showcase"|"FleetShowcase"|"QualityBench"} bench
      * @param {any} finished  public job / session record
      * @returns {{ added: number, updated: number, rejected: any[] } | null}
      */
@@ -78,7 +80,7 @@ export function createResultsRecorder({ store, log = (m) => console.warn(m), ene
       return res;
     },
 
-    /** @param {"DecodeBench"|"PrefillBench"|"Showcase"|"QualityBench"} bench */
+    /** @param {"DecodeBench"|"PrefillBench"|"Showcase"|"FleetShowcase"|"QualityBench"} bench */
     sinkFor(bench) {
       return (finished) => this.record(bench, finished);
     },
