@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   fetchComponents,
   fetchFleetNodes,
+  fetchStacks,
   sendComponentAction,
   type CatalogComponent,
   type ComponentActionSendRequest,
+  type FleetStack,
 } from "../../api/client";
 import type { ComponentActionResult } from "../../api/types";
 
@@ -93,6 +95,8 @@ function FilterSelect({
  */
 export function ComponentsPage() {
   const [components, setComponents] = useState<CatalogComponent[] | null>(null);
+  const [stacks, setStacks] = useState<FleetStack[]>([]);
+  const [stackFilter, setStackFilter] = useState<string>("all");
   const [nodeNames, setNodeNames] = useState<NamesById>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [kindFilter, setKindFilter] = useState<string>("all");
@@ -101,8 +105,15 @@ export function ComponentsPage() {
 
   const reload = useCallback(async () => {
     try {
-      const [comps, nodes] = await Promise.all([fetchComponents(), fetchFleetNodes()]);
+      const [comps, nodes, stks] = await Promise.all([
+        fetchComponents(),
+        fetchFleetNodes(),
+        // SC10 stacks fail-soft: an older server without /api/stacks must
+        // never take the Components tab down with it.
+        fetchStacks().then((r) => r.stacks).catch(() => []),
+      ]);
       setComponents(comps.components);
+      setStacks(stks);
       const names: NamesById = {};
       for (const n of nodes.nodes) names[n.id] = n.name;
       setNodeNames(names);
@@ -124,15 +135,17 @@ export function ComponentsPage() {
     () => Array.from(new Set((components ?? []).map((c) => String(c.tp)))).sort(),
     [components]
   );
-  const visible = useMemo(
-    () =>
-      (components ?? []).filter(
-        (c) =>
-          (kindFilter === "all" || c.kind === kindFilter) &&
-          (tpFilter === "all" || String(c.tp) === tpFilter)
-      ),
-    [components, kindFilter, tpFilter]
-  );
+  const visible = useMemo(() => {
+    // SC10: stacks act as a filter on the component list (plan decision #6);
+    // a stack with no catalog members yet filters to nothing — still shown.
+    const stack = stackFilter === "all" ? null : stacks.find((s) => s.id === stackFilter) ?? null;
+    return (components ?? []).filter(
+      (c) =>
+        (!stack || stack.componentNames.includes(c.id)) &&
+        (kindFilter === "all" || c.kind === kindFilter) &&
+        (tpFilter === "all" || String(c.tp) === tpFilter)
+    );
+  }, [components, stacks, stackFilter, kindFilter, tpFilter]);
 
   /** One action against one node: preview (dryRun) or the confirmed real run. */
   const runAction = useCallback(
@@ -180,6 +193,7 @@ export function ComponentsPage() {
         </div>
       ) : (
         <div className="panel" style={{ padding: "var(--density-panel-pad)" }}>
+          <StacksPanel stacks={stacks} nodeNames={nodeNames} selected={stackFilter} onSelect={setStackFilter} />
           <div
             className="flex flex-wrap items-center gap-3"
             style={{ marginBottom: "var(--density-panel-title-mb)" }}
@@ -215,6 +229,58 @@ export function ComponentsPage() {
           {action.error && <div className="mt-2 text-xs text-danger">{action.error}</div>}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * SC10 stacks panel — the stacks UI, unlocked: lists the bootstrap
+ * pre-defined stacks available to this fleet, each with its defaulted tp
+ * (tp=1 single machine, tp=x for an x-machine group) and landing target.
+ * Selecting a stack filters the component list below (stacks-as-filter).
+ */
+function StacksPanel({
+  stacks,
+  nodeNames,
+  selected,
+  onSelect,
+}: {
+  stacks: FleetStack[];
+  nodeNames: NamesById;
+  selected: string;
+  onSelect: (id: string) => void;
+}) {
+  if (stacks.length === 0) return null;
+  // Dedupe by id for selection (a stack is offered once per fleet scope).
+  const ids = Array.from(new Set(stacks.map((s) => s.id)));
+  return (
+    <div className="mb-3 rounded-lg border border-border bg-surface-elevated p-3">
+      <h3 className="panel-title mb-2">Stacks ({ids.length})</h3>
+      <div className="flex flex-col gap-1.5">
+        {stacks.map((s) => {
+          const key = `${s.id}|${s.target.groupId ?? ""}|${s.target.nodeIds.join(",")}`;
+          const active = selected === s.id;
+          const where = s.target.nodeIds.length
+            ? s.target.nodeIds.map((n) => nodeNames[n] ?? n).join(" + ")
+            : "no fleet nodes yet";
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => onSelect(active ? "all" : s.id)}
+              className={`flex flex-wrap items-baseline gap-2 rounded border px-2 py-1 text-left text-xs transition-colors ${
+                active ? "border-accent/60 bg-accent-soft" : "border-border hover:border-accent/40"
+              }`}
+            >
+              <span className="font-semibold text-text-strong">{s.name}</span>
+              <span className="font-mono text-[10px] text-muted">{s.id}</span>
+              <span className="ml-auto text-[10px] uppercase tracking-wide text-muted">
+                tp{s.tp} · {s.category} · {where}
+              </span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -729,6 +729,30 @@ export function fetchComponents(): Promise<{ components: CatalogComponent[]; war
   return apiFetch("/api/components");
 }
 
+// ─── Stacks (SC10, issue #19) ──────────────────────────────────────────
+// GET /api/stacks serves the hardcoded pre-defined bootstrap stacks (the
+// POC-step-1 Hasso recipes) scoped over the fleet registry, tp defaulted
+// (tp=1 single machine, tp=x for an x-machine group). Read-only listing —
+// actions still ride the per-node component-actions seam above.
+
+/** One bootstrap stack landing scope (Stack + server/fleet/stacksBootstrap.js extras). */
+export interface FleetStack {
+  id: string;
+  name: string;
+  componentNames: string[];
+  category: string;
+  notes?: string;
+  /** Defaulted tensor-parallel size: 1 single machine, x = group size. */
+  tp: number;
+  /** Machines the stack lands on for this tp default. */
+  target: { groupId: string | null; nodeIds: string[] };
+}
+
+/** Stacks available to the stacks UI, tp defaulted per fleet scope. */
+export function fetchStacks(): Promise<{ stacks: FleetStack[] }> {
+  return apiFetch("/api/stacks");
+}
+
 /** Fields the browser owns on a v2 ComponentActionRequest; the server mints
  *  actionId, pins nodeId from the route and stamps actor (server/fleet/
  *  componentActions.js). Response is a ComponentActionResult. */
