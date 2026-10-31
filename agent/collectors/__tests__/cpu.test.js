@@ -63,3 +63,60 @@ test("cpu: null on all-zero counters", async () => {
   statRaw = "cpu 0 0 0 0 0 0 0 0\n";
   assert.equal(await collectCpu({ readFile }), null);
 });
+
+// ─── Issue #33: measured CPU package power ──────────────────────────────────
+
+function raplFs(packages) {
+  return {
+    readDir: (dir) => {
+      if (dir === "/sys/class/powercap") return [...Object.keys(packages), "intel-rapl:0:0"];
+      throw new Error(`ENOENT: ${dir}`);
+    },
+    readFile: async (p) => {
+      const m = p.match(/^\/sys\/class\/powercap\/(intel-rapl:\d+)\/energy_uj$/);
+      if (m && m[1] in packages) return `${packages[m[1]]}\n`;
+      return readFile(p);
+    },
+  };
+}
+
+test("cpu: RAPL energy delta over time is measured package power", async () => {
+  resetCpuBaseline();
+  statRaw = STAT_A;
+  let t = 1_000_000;
+  const packages = { "intel-rapl:0": 1_000_000, "intel-rapl:1": 5_000_000 };
+  const first = await collectCpu({ ...raplFs(packages), now: () => t });
+  assert.notEqual(first.drawSource, "rapl", "one reading is not a rate");
+
+  t += 2_000;
+  packages["intel-rapl:0"] += 60_000_000; // 60 J
+  packages["intel-rapl:1"] += 40_000_000; // 40 J → 100 J / 2 s = 50 W
+  statRaw = STAT_B;
+  const second = await collectCpu({ ...raplFs(packages), now: () => t });
+  assert.equal(second.drawSource, "rapl");
+  assert.equal(second.draw, 50);
+});
+
+test("cpu: a RAPL wrap or package change is skipped, not reported as power", async () => {
+  resetCpuBaseline();
+  statRaw = STAT_A;
+  let t = 0;
+  const packages = { "intel-rapl:0": 9_000_000 };
+  await collectCpu({ ...raplFs(packages), now: () => t });
+  t += 1_000;
+  packages["intel-rapl:0"] = 1_000; // wrapped
+  const wrapped = await collectCpu({ ...raplFs(packages), now: () => t });
+  assert.notEqual(wrapped.drawSource, "rapl");
+
+  t += 1_000;
+  const changed = await collectCpu({ ...raplFs({ ...packages, "intel-rapl:1": 1 }), now: () => t });
+  assert.notEqual(changed.drawSource, "rapl");
+});
+
+test("cpu: without RAPL or sensors the draw is labelled estimated", async () => {
+  resetCpuBaseline();
+  statRaw = STAT_A;
+  const c = await collectCpu({ readFile, readDir: () => [] });
+  assert.equal(c.drawSource, "estimated");
+  assert.equal(c.draw, 5.2);
+});

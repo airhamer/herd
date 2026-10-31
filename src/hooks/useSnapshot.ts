@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { AlertInstance, SparkSnapshot, WsSnapshot } from "../api/types";
+import type { AlertInstance, SparkSnapshot, WsActivityEvent, WsSnapshot } from "../api/types";
+import { isActivityEvent, publishActivity } from "./activityBus";
 import { ingestSnapshots } from "./metricsStore";
 import { OVERVIEW_ID } from "../constants";
 
@@ -68,6 +69,11 @@ export function useSnapshot() {
             if (prev && msg.sparks.some((s) => s.id === prev)) return prev;
             return OVERVIEW_ID;
           });
+        } else if ((msg as unknown as { type?: string }).type === "event") {
+          // Live activity push (issue #32): hand it to the feeds; it says
+          // nothing about telemetry health.
+          const event = (msg as unknown as WsActivityEvent).event;
+          if (isActivityEvent(event)) publishActivity(event);
         } else {
           setSnapshotError("The server sent an invalid telemetry payload.");
         }

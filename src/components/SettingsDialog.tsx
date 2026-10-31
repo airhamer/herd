@@ -35,17 +35,18 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
-  const [showAlerts, setShowAlerts] = useState(false);
+  const [alertsOpen, setAlertsOpen] = useState(false);
 
-  // While the Alerts dialog is open on top, Escape belongs to it alone.
-  const closeOnEscape = useCallback(() => {
-    if (!showAlerts) onClose();
-  }, [showAlerts, onClose]);
-  useEscape(closeOnEscape);
+  // Escape must not close Settings while the Alerts dialog is stacked on it.
+  const escapeHandler = useCallback(() => {
+    if (alertsOpen) return;
+    onClose();
+  }, [alertsOpen, onClose]);
+  useEscape(escapeHandler);
 
   useEffect(() => {
     if (!open) {
-      setShowAlerts(false);
+      setAlertsOpen(false);
       setSettings(null);
       setError(null);
       setDirty(false);
@@ -75,10 +76,10 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
     setDirty(true);
   };
 
-  // The Alerts dialog saves its switch itself; mirror it here without marking
-  // Settings dirty, so a later Save does not undo it.
-  const handleAlertsSettings = (saved: Settings) => {
-    setSettings((prev) => (prev ? { ...prev, alertsEnabled: saved.alertsEnabled } : prev));
+  // The Alerts dialog persists alertsEnabled on its own. Copy the value into
+  // our form state without setting `dirty`, so Save here cannot revert it.
+  const onAlertsSwitchSaved = (saved: Settings) => {
+    setSettings((current) => current && { ...current, alertsEnabled: saved.alertsEnabled });
     onSaved(saved);
   };
 
@@ -286,12 +287,64 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
                   />
                 </button>
                 <span>
-                  <span className="block text-text">Show Fleet Energy</span>
+                  <span className="block text-text">Show Fleet energy</span>
                   <span className="mt-0.5 block text-[10px] leading-snug text-muted">
-                    Overview card with rolling fleet power estimates. Off by default.
+                    Fleet tab card with per-host power estimates for Sparks and agent nodes
+                    (estimated, not wall-metered). On by default.
                   </span>
                 </span>
               </label>
+              {settings.showFleetEnergy ? (
+                <div className="mt-2 grid grid-cols-3 gap-2 pl-12">
+                  <label className="text-[10px] text-muted">
+                    Price / kWh
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={0.01}
+                      aria-label="Electricity price per kWh"
+                      value={settings.electricityPricePerKwh ?? 0.17}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (Number.isFinite(val) && val >= 0) update({ electricityPricePerKwh: val });
+                      }}
+                      className="mt-0.5 w-full rounded border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-accent"
+                    />
+                  </label>
+                  <label className="text-[10px] text-muted">
+                    Currency
+                    <input
+                      type="text"
+                      maxLength={3}
+                      aria-label="Electricity currency"
+                      value={settings.electricityCurrency ?? "USD"}
+                      onChange={(e) => update({ electricityCurrency: e.target.value.toUpperCase() })}
+                      className="mt-0.5 w-full rounded border border-border bg-surface-elevated px-2 py-1 text-xs uppercase text-text outline-none focus:border-accent"
+                    />
+                  </label>
+                  <label className="text-[10px] text-muted">
+                    Idle W
+                    <input
+                      type="number"
+                      min={0}
+                      max={2000}
+                      step={1}
+                      aria-label="Idle baseline watts per host"
+                      value={settings.energyIdleBaselineW ?? 40}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (Number.isFinite(val) && val >= 0) update({ energyIdleBaselineW: val });
+                      }}
+                      className="mt-0.5 w-full rounded border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-accent"
+                    />
+                  </label>
+                  <p className="col-span-3 text-[10px] leading-snug text-muted">
+                    Price 0 hides cost. Idle W is added to non-GB10 hosts for board, fans and disks
+                    the sensors miss; per-host values go in <code>energyHostBaselines</code>.
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             {/* Metrics history */}
@@ -357,17 +410,17 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
                 <span>
                   <span className="block text-text">Alert notifications</span>
                   <span className="mt-0.5 block text-[10px] leading-sn text-muted">
-                    Send Health findings and Overview exceptions to ntfy, Discord, Slack or a
-                    webhook once they hold for a while, and when they clear. Off by default.
+                    Push Health findings and Overview exceptions that persist to ntfy, Discord,
+                    Slack or a JSON webhook, plus a message when they clear. Off by default.
                   </span>
                 </span>
                 <span className="flex shrink-0 items-center gap-2">
-                  <span className={`text-[10px] ${settings.alertsEnabled ? "text-accent" : "text-muted"}`} data-testid="alerts-state">
-                    {settings.alertsEnabled ? "On" : "Off"}
+                  <span data-testid="alerts-state" className={settings.alertsEnabled ? "text-[10px] text-accent" : "text-[10px] text-muted"}>
+                    {settings.alertsEnabled === true ? "On" : "Off"}
                   </span>
                   <button
                     type="button"
-                    onClick={() => setShowAlerts(true)}
+                    onClick={() => setAlertsOpen(true)}
                     className="min-h-8 rounded border border-border bg-surface-elevated px-2 py-1 text-[10px] text-muted hover:bg-surface-hover"
                   >
                     Configure…
@@ -519,7 +572,7 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
         </div>
       </div>
 
-      <AlertsDialog open={showAlerts} onClose={() => setShowAlerts(false)} onSettingsSaved={handleAlertsSettings} />
+      <AlertsDialog open={alertsOpen} onSettingsSaved={onAlertsSwitchSaved} onClose={() => setAlertsOpen(false)} />
     </div>
   );
 }

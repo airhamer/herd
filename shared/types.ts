@@ -370,6 +370,12 @@ export interface GpuMetrics {
   gpuAllocMB?: number;
   /** true when the GPU draws from the OS memory pool (GB10: nvidia-smi memory.total is N/A). */
   unifiedMemory?: boolean;
+  /** Summed draw (W) of every GPU on the host (#33). Optional: older agents omit it. */
+  powerDrawTotal?: number;
+  /** Number of GPUs seen (#33). */
+  gpuCount?: number;
+  /** Where the GPU power figure came from (#33); absent when nothing measured it. */
+  powerSource?: "nvidia-smi" | "amd-hwmon";
 }
 
 export interface CpuMetrics {
@@ -381,6 +387,8 @@ export interface CpuMetrics {
   draw: number;
   /** CPU TDP (W). */
   tdp: number;
+  /** Where `draw` came from (#33): a RAPL / thermal / hwmon sensor, or the TDP x usage model. */
+  drawSource?: "rapl" | "thermal" | "hwmon" | "estimated";
 }
 
 export interface MemMetrics {
@@ -1322,4 +1330,63 @@ export interface FleetUpdatePlan {
   /** null = planned, not started */
   startedAt: number | null;
   waveStates: Array<"pending" | "running" | "rebooting" | "slow" | "healthy">;
+}
+
+// ─── LLM token ledger (FLEET3, issue #38) ────────────────
+// GET /api/llm-token-totals?range=… and /history (server/llmtokens/*).
+
+export type LlmTokenRange = "24h" | "7d" | "30d" | "all";
+
+/** generated = output tokens; cached = prompt tokens from the prefix cache; prefill = prompt − cached. */
+export interface LlmTokenSplit {
+  generated: number;
+  cached: number;
+  prefill: number;
+  /** generated + cached + prefill */
+  total: number;
+}
+
+export interface LlmTokenModelRow extends LlmTokenSplit {
+  model: string;
+  /** `nodeId:port` series that served the model in the range. */
+  endpoints: string[];
+  /** Ledger source tiers that credited tokens: "counter", "native", "proxy"… */
+  sources: string[];
+}
+
+export interface LlmTokenEndpointRow extends LlmTokenSplit {
+  seriesId: string;
+  nodeId: string;
+  nodeName: string | null;
+  port: number;
+  backend: string | null;
+  models: string[];
+  sources: string[];
+  lastSeenMs: number | null;
+}
+
+export interface LlmTokenTotals extends LlmTokenSplit {
+  range: LlmTokenRange;
+  resolution: "hour" | "day" | "all";
+  fromMs: number;
+  toMs: number;
+  trackedSinceMs: number;
+  endpointCount: number;
+  models: LlmTokenModelRow[];
+  endpoints: LlmTokenEndpointRow[];
+}
+
+export interface LlmTokenHistoryPoint {
+  startMs: number;
+  generated: number;
+  cached: number;
+  prefill: number;
+}
+
+export interface LlmTokenHistory {
+  range: LlmTokenRange;
+  resolution: "hour" | "day";
+  stepMs: number;
+  trackedSinceMs: number;
+  points: LlmTokenHistoryPoint[];
 }

@@ -1,105 +1,98 @@
 import { useEffect, useState } from "react";
 import { fetchMonthlyEnergy } from "../../api/client";
-import type { MonthlyEnergy as MonthlyEnergyData } from "../../api/types";
+import type { MonthlyEnergy as MonthlyEnergyResponse, MonthlyEnergyMonth } from "../../api/types";
 
-/** kWh, 1 decimal (source values are watt-hours). */
-function fmtKwh(wh: number): string {
-  return (wh / 1000).toFixed(1);
+// Long-run monthly energy table under the fleet energy card.
+// Behaviour: docs/specs/monthly-energy.md (herd LIC1 clean-room rewrite).
+
+type LoadState =
+  | { phase: "loading" }
+  | { phase: "failed"; message: string }
+  | { phase: "ready"; history: MonthlyEnergyResponse };
+
+const kwh = (wh: number) => (wh / 1000).toFixed(1);
+
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/** "2026-08" → "Aug 2026"; anything unexpected is shown as-is. */
+function labelFor(key: string): string {
+  const match = /^(\d{4})-(\d{2})$/.exec(key);
+  const name = match ? MONTH_NAMES[Number(match[2]) - 1] : undefined;
+  return match && name ? `${name} ${match[1]}` : key;
 }
 
-const MONTH_DATE = new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
-
-/** "2026-10" → "Oct 2026" (UTC). */
-function monthLabel(month: string): string {
-  const [year, mo] = month.split("-").map(Number);
-  return MONTH_DATE.format(new Date(Date.UTC(year, mo - 1, 1)));
+function MonthRow({ month }: { month: MonthlyEnergyMonth }) {
+  const running = !month.closed;
+  const hint = running
+    ? "This month is still being recorded"
+    : `${month.nodeIds.length} node(s) · ${kwh(month.totalWh)} kWh summed per node`;
+  return (
+    <tr className={running ? "text-accent" : "text-text"} title={hint}>
+      <th scope="row" className="py-0.5 pr-2 text-left font-normal">
+        {labelFor(month.month)}
+        {running ? <em className="ml-1.5 text-[10px] not-italic uppercase tracking-wide">current</em> : null}
+      </th>
+      <td className="py-0.5 pr-2 text-right font-tabular">{kwh(month.fleetWh)}</td>
+      <td className="py-0.5 text-right font-tabular">{month.nodeIds.length}</td>
+    </tr>
+  );
 }
 
-/**
- * Permanent monthly energy roll-up (estimated, not wall-metered).
- * Mounted under FleetEnergyCard under the same settings toggle; monthly folds
- * hourly on the server, so this fetches once on mount — no polling.
- */
+/** Fetched once on mount; months only change slowly, so there is no polling. */
 export function MonthlyEnergy() {
-  const [data, setData] = useState<MonthlyEnergyData | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [state, setState] = useState<LoadState>({ phase: "loading" });
 
   useEffect(() => {
-    let cancelled = false;
-    fetchMonthlyEnergy()
-      .then((next) => {
-        if (!cancelled) {
-          setData(next);
-          setError(null);
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      });
+    let live = true;
+    (async () => {
+      let next: LoadState;
+      try {
+        next = { phase: "ready", history: await fetchMonthlyEnergy() };
+      } catch (err) {
+        next = { phase: "failed", message: err instanceof Error ? err.message : String(err) };
+      }
+      if (live) setState(next);
+    })();
     return () => {
-      cancelled = true;
+      live = false;
     };
   }, []);
 
-  if (error) {
+  if (state.phase === "failed") {
     return (
-      <p className="rounded bg-warning/10 px-3 py-2 text-xs text-warning" role="status">
-        Energy history unavailable: {error}
+      <p role="status" className="rounded bg-warning/10 px-3 py-2 text-xs text-warning">
+        {`Energy history unavailable: ${state.message}`}
       </p>
     );
   }
-  if (!data) {
-    return <p className="text-xs text-muted">Loading monthly energy…</p>;
-  }
+  if (state.phase === "loading") return <p className="text-xs text-muted">Loading monthly energy…</p>;
 
-  const months = data.months;
-  if (months.length === 0) {
-    return <p className="text-xs text-muted">No closed months yet</p>;
-  }
+  const { months } = state.history;
+  if (months.length === 0) return <p className="text-xs text-muted">No closed months yet</p>;
 
-  const totalWh = months.reduce((sum, m) => sum + m.fleetWh, 0);
+  let sumWh = 0;
+  for (const month of months) sumWh += month.fleetWh;
 
   return (
-    <div className="mt-3 border-t border-border pt-3" aria-label="Monthly fleet energy">
-      <div className="mb-1.5 flex items-baseline justify-between gap-2">
-        <span className="text-[10px] uppercase tracking-wide text-muted">Monthly</span>
-        <span className="text-[10px] text-muted">
-          total {fmtKwh(totalWh)} kWh · estimated, not wall-metered
-        </span>
-      </div>
+    <section aria-label="Monthly fleet energy" className="mt-3 border-t border-border pt-3">
       <table className="w-full border-collapse text-xs">
+        <caption className="mb-1.5 text-left text-[10px] text-muted">
+          <span className="uppercase tracking-wide">Monthly</span>
+          {` · total ${kwh(sumWh)} kWh · estimated, not wall-metered`}
+        </caption>
         <thead>
-          <tr className="text-left text-[10px] uppercase tracking-wide text-muted">
-            <th className="py-0.5 pr-2 font-medium">Month</th>
-            <th className="py-0.5 pr-2 text-right font-normal" style={{ textAlign: "right" }}>kWh</th>
-            <th className="py-0.5 font-normal" style={{ textAlign: "right" }}>Nodes</th>
+          <tr className="text-[10px] uppercase tracking-wide text-muted">
+            <th scope="col" className="py-0.5 pr-2 text-left font-medium">Month</th>
+            <th scope="col" className="py-0.5 pr-2 text-right font-normal">kWh</th>
+            <th scope="col" className="py-0.5 text-right font-normal">Nodes</th>
           </tr>
         </thead>
         <tbody>
-          {months.map((m) => (
-            <tr
-              key={m.month}
-              className={m.closed ? "text-text" : "text-accent"}
-              title={
-                m.closed
-                  ? `${m.nodeIds.length} node(s) reported · lifetime ${fmtKwh(m.totalWh)} kWh recorded`
-                  : "Current month — still collecting"
-              }
-            >
-              <td className="py-0.5 pr-2">
-                {monthLabel(m.month)}
-                {!m.closed && <span className="ml-1.5 text-[10px] uppercase tracking-wide">current</span>}
-              </td>
-              <td className="py-0.5 pr-2 font-tabular" style={{ textAlign: "right" }}>
-                {fmtKwh(m.fleetWh)}
-              </td>
-              <td className="py-0.5 font-tabular" style={{ textAlign: "right" }}>
-                {m.nodeIds.length}
-              </td>
-            </tr>
+          {months.map((month) => (
+            <MonthRow key={month.month} month={month} />
           ))}
         </tbody>
       </table>
-    </div>
+    </section>
   );
 }

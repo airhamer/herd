@@ -1,17 +1,23 @@
+// RoCE / RDMA panel on the unit page (docs/specs/roce.md §5).
+// LIC2 clean-room rewrite: written from the spec, not from upstream code.
 import type { RoceDevice, RoceMetrics } from "../../api/types";
 import { Panel } from "../ui/Panel";
 import { NetworkIcon } from "../ui/icons";
-import { Tag } from "../ui/Tag";
+import { Tag, type TagTone } from "../ui/Tag";
 
-/** Counters worth showing, in this order; the rest stay in the API. */
-export const ROCE_COUNTER_ROWS: { key: string; label: string; loss?: boolean }[] = [
-  { key: "out_of_buffer", label: "Out of buffer", loss: true },
-  { key: "packet_seq_err", label: "Packet sequence errors", loss: true },
-  { key: "local_ack_timeout_err", label: "Local ACK timeouts", loss: true },
-  { key: "rnr_nak_retry_err", label: "RNR NAK retries", loss: true },
-  { key: "implied_nak_seq_err", label: "Implied NAK errors", loss: true },
-  { key: "req_transport_retries_exceeded", label: "Transport retries exceeded", loss: true },
-  { key: "rx_icrc_encapsulated", label: "ICRC errors", loss: true },
+type CounterRow = { key: string; label: string; loss?: boolean };
+
+const lossRow = (key: string, label: string): CounterRow => ({ key, label, loss: true });
+
+/** hw_counters listed in the panel, in display order. Loss rows turn amber when they grow. */
+export const ROCE_COUNTER_ROWS: CounterRow[] = [
+  lossRow("out_of_buffer", "Out of buffer"),
+  lossRow("packet_seq_err", "Packet sequence errors"),
+  lossRow("local_ack_timeout_err", "Local ACK timeouts"),
+  lossRow("rnr_nak_retry_err", "RNR NAK retries"),
+  lossRow("implied_nak_seq_err", "Implied NAK errors"),
+  lossRow("req_transport_retries_exceeded", "Transport retries exceeded"),
+  lossRow("rx_icrc_encapsulated", "ICRC errors"),
   { key: "np_ecn_marked_roce_packets", label: "ECN-marked packets" },
   { key: "np_cnp_sent", label: "CNPs sent" },
   { key: "rp_cnp_handled", label: "CNPs handled" },
@@ -19,7 +25,8 @@ export const ROCE_COUNTER_ROWS: { key: string; label: string; loss?: boolean }[]
   { key: "duplicate_request", label: "Duplicate requests" },
 ];
 
-const ETH_ROWS: { key: string; label: string }[] = [
+/** ethtool -S counters shown after the RDMA ones. */
+const PORT_COUNTER_ROWS: CounterRow[] = [
   { key: "rx_discards_phy", label: "RX discards" },
   { key: "tx_discards_phy", label: "TX discards" },
   { key: "rx_crc_errors_phy", label: "CRC errors" },
@@ -27,150 +34,164 @@ const ETH_ROWS: { key: string; label: string }[] = [
   { key: "tx_pause_ctrl_phy", label: "Pause frames sent" },
 ];
 
-const n = (v: number | null | undefined) => (v == null ? "—" : v.toLocaleString());
+const UNITS = ["B/s", "KB/s", "MB/s", "GB/s"];
 
-function formatBytesPerSec(bps: number): string {
-  if (bps >= 1024 * 1024 * 1024) return `${(bps / 1024 / 1024 / 1024).toFixed(1)} GB/s`;
-  if (bps >= 1024 * 1024) return `${(bps / 1024 / 1024).toFixed(1)} MB/s`;
-  if (bps >= 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
-  return `${bps} B/s`;
+/** Bytes per second, 1024-based, one decimal above bytes; "—" when unknown. */
+function rateText(bytesPerSec: number | null): string {
+  if (bytesPerSec == null) return "—";
+  let value = Math.round(bytesPerSec);
+  let unit = 0;
+  while (value >= 1024 && unit < UNITS.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return unit === 0 ? `${value} B/s` : `${value.toFixed(1)} ${UNITS[unit]}`;
 }
 
-/** "PFC on: 3" / "PFC off" / null when unknown. */
+const count = (v: number | null | undefined) => (typeof v === "number" ? v.toLocaleString() : "—");
+
+/** PFC summary from mlnx_qos, or null when it could not be read. */
 export function pfcLabel(d: RoceDevice): { text: string; tone: "good" | "neutral" | "warn" } | null {
-  const p = d.qos?.pfcPriorities;
-  if (p == null) return null;
-  return p.length > 0 ? { text: `PFC on: ${p.join(", ")}`, tone: "good" } : { text: "PFC off", tone: "neutral" };
+  const enabled = d.qos?.pfcPriorities;
+  if (!Array.isArray(enabled)) return null;
+  if (enabled.length === 0) return { text: "PFC off", tone: "neutral" };
+  return { text: `PFC on: ${enabled.join(", ")}`, tone: "good" };
 }
 
-function linkTone(d: RoceDevice): "good" | "warn" | "bad" | "neutral" {
+function stateTone(d: RoceDevice): TagTone {
   if (d.active) return "good";
-  return d.everActive ? "bad" : "neutral";
+  if (d.everActive) return "bad";
+  return "neutral";
 }
 
-function PortRow({ d }: { d: RoceDevice }) {
-  const pfc = pfcLabel(d);
-  const lossRising = d.loss.rising.length > 0;
-  const speed =
-    d.speedMbps != null ? `${d.speedMbps / 1000} Gb/s` : d.rateGbps != null ? `${d.rateGbps} Gb/s` : null;
-  const dscp = d.qos?.dscpMap
-    ? Object.entries(d.qos.dscpMap)
-        .map(([prio, list]) => `prio ${prio}: DSCP ${list.join(",")}`)
-        .join(" · ")
-    : null;
+function speedText(d: RoceDevice): string | null {
+  if (d.speedMbps != null) return `${d.speedMbps / 1000} Gb/s`;
+  if (d.rateGbps != null) return `${d.rateGbps} Gb/s`;
+  return null;
+}
+
+function pauseText(fc: RoceDevice["flowControl"]): string | null {
+  if (!fc) return null;
+  const dirs = [fc.rx ? "rx" : null, fc.tx ? "tx" : null].filter(Boolean);
+  return dirs.length ? `pause ${dirs.join("/")}` : null;
+}
+
+function dscpText(d: RoceDevice): string | null {
+  const map = d.qos?.dscpMap;
+  if (!map) return null;
+  const parts = Object.keys(map).map((prio) => `prio ${prio}: DSCP ${map[prio].join(",")}`);
+  return parts.length ? parts.join(" · ") : null;
+}
+
+function CounterTable({ d }: { d: RoceDevice }) {
+  const rdma = ROCE_COUNTER_ROWS.filter((row) => d.counters[row.key] != null);
+  const port = d.eth ? PORT_COUNTER_ROWS.filter((row) => d.eth?.[row.key] != null) : [];
   return (
-    <div
-      className={`space-y-1.5 border-t border-border pt-3 first:border-t-0 first:pt-0 ${
-        d.active ? "" : "opacity-70"
-      }`}
-      data-testid={`roce-${d.name}`}
-    >
+    <table className="mt-1.5 w-full border-collapse">
+      <tbody>
+        {rdma.map((row) => {
+          const grew = d.deltas[row.key] ?? 0;
+          return (
+            <tr key={row.key} className={row.loss && grew > 0 ? "text-warning" : undefined}>
+              <td className="py-0.5 pr-2 text-muted">{row.label}</td>
+              <td className="py-0.5 pr-2 text-right font-tabular text-text">{count(d.counters[row.key])}</td>
+              <td className="py-0.5 text-right font-tabular text-muted">{grew > 0 ? `+${grew.toLocaleString()}` : null}</td>
+            </tr>
+          );
+        })}
+        {port.map((row) => (
+          <tr key={row.key}>
+            <td className="py-0.5 pr-2 text-muted">{row.label}</td>
+            <td className="py-0.5 pr-2 text-right font-tabular text-text">{count(d.eth?.[row.key])}</td>
+            <td />
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function PortCard({ d }: { d: RoceDevice }) {
+  const speed = speedText(d);
+  const pfc = pfcLabel(d);
+  const pause = pauseText(d.flowControl);
+  const dscp = dscpText(d);
+  const rising = d.loss.rising;
+  const frame = "space-y-1.5 border-t border-border pt-3 first:border-t-0 first:pt-0";
+  return (
+    <div data-testid={`roce-${d.name}`} className={d.active ? frame : `${frame} opacity-70`}>
       <div className="flex flex-wrap items-center justify-between gap-1.5">
-        <span className="min-w-0 truncate font-tabular text-sm text-text-strong" title={d.name}>
+        <span title={d.name} className="min-w-0 truncate font-tabular text-sm text-text-strong">
           {d.netdev ?? d.name}
         </span>
         <span className="flex flex-wrap items-center gap-1.5">
-          <Tag tone={linkTone(d)} title={d.physState ?? undefined}>
+          <Tag tone={stateTone(d)} title={d.physState ?? undefined}>
             {d.state ?? "unknown"}
           </Tag>
-          {speed && <Tag>{speed}</Tag>}
-          {d.mtu != null && <Tag title="MTU">MTU {d.mtu}</Tag>}
+          {speed ? <Tag>{speed}</Tag> : null}
+          {d.mtu != null ? <Tag title="MTU">{`MTU ${d.mtu}`}</Tag> : null}
         </span>
       </div>
       <div className="flex flex-wrap items-center gap-3 font-tabular text-xs text-muted">
         <span>
-          <span className="text-accent">↓</span>{" "}
-          {d.rxBps == null ? "—" : formatBytesPerSec(Math.round(d.rxBps))}
+          <span className="text-accent">↓</span> {rateText(d.rxBps)}
         </span>
         <span>
-          <span className="text-accent">↑</span>{" "}
-          {d.txBps == null ? "—" : formatBytesPerSec(Math.round(d.txBps))}
+          <span className="text-accent">↑</span> {rateText(d.txBps)}
         </span>
         <span title="Frames dropped or in error on this interface">
-          {n(d.rxErrors)} err · {n(d.rxDropped)} drop
+          {`${count(d.rxErrors)} err · ${count(d.rxDropped)} drop`}
         </span>
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
-        {pfc && (
+        {pfc ? (
           <Tag tone={pfc.tone} title="Priority flow control (mlnx_qos)">
             {pfc.text}
           </Tag>
-        )}
-        {d.qos?.trust && <Tag title="QoS trust mode">trust {d.qos.trust}</Tag>}
-        {d.flowControl && (d.flowControl.rx || d.flowControl.tx) && (
-          <Tag title="Global pause (ethtool -a)">
-            pause {d.flowControl.rx ? "rx" : ""}
-            {d.flowControl.rx && d.flowControl.tx ? "/" : ""}
-            {d.flowControl.tx ? "tx" : ""}
-          </Tag>
-        )}
-        {lossRising && (
-          <Tag tone="warn" title={d.loss.rising.join(", ")}>
+        ) : null}
+        {d.qos?.trust ? <Tag title="QoS trust mode">{`trust ${d.qos.trust}`}</Tag> : null}
+        {pause ? <Tag title="Global pause (ethtool -a)">{pause}</Tag> : null}
+        {rising.length ? (
+          <Tag tone="warn" title={rising.join(", ")}>
             loss rising
           </Tag>
-        )}
+        ) : null}
       </div>
-      {dscp && <div className="font-tabular text-[10px] text-muted">{dscp}</div>}
+      {dscp ? <div className="font-tabular text-[10px] text-muted">{dscp}</div> : null}
       <details className="text-xs">
         <summary className="cursor-pointer text-muted">RDMA counters</summary>
-        <table className="mt-1.5 w-full border-collapse">
-          <tbody>
-            {ROCE_COUNTER_ROWS.filter((r) => d.counters[r.key] != null).map((r) => {
-              const delta = d.deltas[r.key] ?? 0;
-              return (
-                <tr key={r.key} className={r.loss && delta > 0 ? "text-warning" : ""}>
-                  <td className="py-0.5 pr-2 text-muted">{r.label}</td>
-                  <td className="py-0.5 pr-2 text-right font-tabular text-text">{n(d.counters[r.key])}</td>
-                  <td className="py-0.5 text-right font-tabular text-muted">
-                    {delta > 0 ? `+${delta.toLocaleString()}` : ""}
-                  </td>
-                </tr>
-              );
-            })}
-            {d.eth &&
-              ETH_ROWS.filter((r) => d.eth![r.key] != null).map((r) => (
-                <tr key={r.key}>
-                  <td className="py-0.5 pr-2 text-muted">{r.label}</td>
-                  <td className="py-0.5 pr-2 text-right font-tabular text-text">{n(d.eth![r.key])}</td>
-                  <td />
-                </tr>
-              ))}
-          </tbody>
-        </table>
+        <CounterTable d={d} />
       </details>
     </div>
   );
 }
 
-/** RoCE / RDMA ports of a unit (shown only when it has RDMA devices). */
+/** Renders nothing for units without RDMA devices. */
 export function RocePanel({ roce, className }: { roce: RoceMetrics | null | undefined; className?: string }) {
-  if (!roce || roce.devices.length === 0) return null;
-  // Ports that never came up are not noise worth a row, but keep them reachable.
-  const live = roce.devices.filter((d) => d.active || d.everActive);
-  const idle = roce.devices.filter((d) => !d.active && !d.everActive);
-  const upCount = roce.devices.filter((d) => d.active).length;
+  const devices = roce?.devices ?? [];
+  if (devices.length === 0) return null;
+  const shown: RoceDevice[] = [];
+  const neverUp: RoceDevice[] = [];
+  for (const d of devices) (d.active || d.everActive ? shown : neverUp).push(d);
+  const up = devices.reduce((n, d) => n + (d.active ? 1 : 0), 0);
   return (
     <Panel
       title="RoCE / RDMA"
-      accent
       icon={<NetworkIcon />}
-      className={`panel-roce ${className ?? ""}`}
+      accent
+      className={["panel-roce", className].filter(Boolean).join(" ")}
       bodyClassName="space-y-3"
-      actions={
-        <Tag tone={upCount === roce.devices.length ? "good" : "neutral"}>
-          {upCount}/{roce.devices.length} up
-        </Tag>
-      }
+      actions={<Tag tone={up === devices.length ? "good" : "neutral"}>{`${up}/${devices.length} up`}</Tag>}
     >
-      {live.map((d) => (
-        <PortRow key={d.name} d={d} />
+      {shown.map((d) => (
+        <PortCard key={d.name} d={d} />
       ))}
-      {idle.length > 0 && (
+      {neverUp.length ? (
         <p className="text-xs text-muted">
-          {idle.length} port{idle.length === 1 ? "" : "s"} not connected:{" "}
-          {idle.map((d) => d.netdev ?? d.name).join(", ")}
+          {`${neverUp.length} ${neverUp.length === 1 ? "port" : "ports"} not connected: `}
+          {neverUp.map((d) => d.netdev ?? d.name).join(", ")}
         </p>
-      )}
+      ) : null}
     </Panel>
   );
 }

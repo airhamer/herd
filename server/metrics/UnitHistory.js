@@ -1,734 +1,581 @@
+// Per-unit history store: the always-on GPU raw series (dense 8 h + optional
+// 7-day minute series) and the opt-in 48 h / 30 d bucketed tiers.
+// LIC2 clean-room rewrite from docs/specs/unit-history.md §4.
 import fs from "fs";
 import { atomicWrite, atomicWriteAsync, quarantineCorrupt } from "../util/atomicWrite.js";
 import {
   BUCKET_TIERS,
   HISTORY_RANGES,
-  addToStats,
-  coarsen,
-  finite,
+  TierColumns,
+  accOf,
+  accOut,
   isKnownKey,
+  isNum,
+  isRange,
   parseLlmKey,
-  statOf,
-  statOut,
-  BucketRing,
+  regrid,
 } from "./historyTiers.js";
 
-const DEFAULT_MAX_AGE_MS = 8 * 60 * 60 * 1000;
-const DEFAULT_MIN_GAP_MS = 1500;
-// The long GPU series (Temps page): one reading a minute for a week.
-const LONG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
-const LONG_MIN_GAP_MS = 60_000;
-// Rewriting the whole file is the cost, so save every few minutes (and on shutdown), not every minute.
-const SAVE_INTERVAL_MS = 5 * 60_000;
-const DEVICE_KEYS = ["u", "c", "p"];
-// A host never has more cards than this; it also bounds the memory a bad payload could use.
-const MAX_DEVICES = 16;
-const TIERS_FILE_VERSION = 1;
+const MIN = 60_000;
+const HR = 60 * MIN;
+const DAY = 24 * HR;
+const FILE_VERSION = 1;
+const MAX_CARDS = 16;
+/** Trim a raw series only once it is longer than this and a minute past due. */
+const TRIM_MIN_LENGTH = 64;
+const TRIM_SLACK_MS = MIN;
+const SAVE_EVERY_MS = 5 * MIN;
+
+const tenth = (v) => (isNum(v) ? Math.round(v * 10) / 10 : null);
+const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+
+/** Object text with arbitrary (even "__proto__") keys, from [key, jsonText] pairs. */
+function objectText(pairs) {
+  return `{${pairs.map(([k, json]) => `${JSON.stringify(k)}:${json}`).join(",")}}`;
+}
 
 /**
- * Per-card readings from a snapshot's `gpu.gpus[]` (vendor-neutral: index, name, usage,
- * temperature, power {draw, limit}). Only hosts with more than one card yield readings;
- * a single card is already the aggregate.
+ * Per-card readings for a multi-GPU host (≥ 2 cards, at most 16), honouring
+ * each card's metricAvailability. Single-GPU units return [] — their
+ * aggregate is the card.
  */
 export function deviceReadings(gpus) {
   if (!Array.isArray(gpus) || gpus.length < 2) return [];
   const out = [];
-  for (const d of gpus.slice(0, MAX_DEVICES)) {
-    if (!d || !Number.isInteger(d.index) || d.index < 0) continue;
-    const { draw, limit } = d.power ?? {};
+  for (const card of gpus) {
+    if (out.length >= MAX_CARDS) break;
+    if (!card || !Number.isInteger(card.index) || card.index < 0) continue;
+    const off = card.metricAvailability ?? {};
+    const draw = card.power?.draw;
+    const limit = card.power?.limit;
+    const powerKnown = off.powerDraw !== false && off.powerLimit !== false && isNum(draw) && isNum(limit) && limit > 0;
     out.push({
-      index: d.index,
-      name: typeof d.name === "string" ? d.name : null,
-      usage: d.metricAvailability?.usage === false ? null : d.usage,
-      temperature: d.metricAvailability?.temperature === false ? null : d.temperature,
-      powerPct: d.metricAvailability?.powerDraw === false || d.metricAvailability?.powerLimit === false ||
-        !Number.isFinite(draw) || !Number.isFinite(limit) || limit <= 0
-        ? null : Math.min(100, (draw / limit) * 100),
+      index: card.index,
+      name: typeof card.name === "string" ? card.name : null,
+      usage: off.usage === false || !isNum(card.usage) ? null : card.usage,
+      temperature: off.temperature === false || !isNum(card.temperature) ? null : card.temperature,
+      powerPct: powerKnown ? Math.min(100, (draw / limit) * 100) : null,
     });
   }
   return out;
 }
 
-const round1 = (v) => Math.round(v * 10) / 10;
-const nextTick = () => new Promise((resolve) => setImmediate(resolve));
+// ─── GPU raw series ───────────────────────────────────────
 
-/** `{"k":v,...}` from [key, json] parts — keys are written, never assigned, so `__proto__` is just a key. */
-function objectText(parts) {
-  return `{${parts.map(([k, json]) => `${JSON.stringify(k)}:${json}`).join(",")}}`;
+function emptyRaw() {
+  return { t: [], u: [], c: [], p: [], cards: new Map() };
 }
 
-function newUnit() {
-  return {
-    tiers: BUCKET_TIERS.map((tier) => ({
-      ring: new BucketRing(tier.stepMs, tier.retentionMs),
-      /** The bucket still filling: { t, stats: Map } or null. */
-      open: null,
-    })),
-    /** LLM ports the unit has configured; series for other ports are dropped on save. */
-    ports: null,
-  };
+function cardSeries(name, padTo) {
+  const pad = () => new Array(padTo).fill(null);
+  return { name, u: pad(), c: pad(), p: pad() };
 }
 
-/**
- * One GPU raw series: utilization %, temperature and power % of the board limit as parallel
- * arrays per unit, one reading per `minGapMs`, kept for `maxAgeMs` and persisted to `file`
- * (`{"version":1,"sparks":{...}}`, the format GpuHistory always wrote). UnitHistory keeps two:
- * the dense one for the GPU chart and the minute-resolution week for the Temps page.
- */
-class GpuSeries {
-  constructor({ file, maxAgeMs, minGapMs, now, readFileSync }) {
-    this.file = file;
+/** Remove the first `k` readings of a unit, dropping cards left without usage. */
+function shiftRaw(raw, k) {
+  if (k <= 0) return false;
+  raw.t.splice(0, k);
+  raw.u.splice(0, k);
+  raw.c.splice(0, k);
+  raw.p.splice(0, k);
+  for (const [idx, card] of raw.cards) {
+    card.u.splice(0, k);
+    card.c.splice(0, k);
+    card.p.splice(0, k);
+    if (card.u.every((v) => v === null)) raw.cards.delete(idx);
+  }
+  return true;
+}
+
+function countBefore(times, cutoff) {
+  let k = 0;
+  while (k < times.length && times[k] < cutoff) k++;
+  return k;
+}
+
+/** One retention depth of the GPU raw series (dense or long). */
+class RawSeries {
+  constructor({ maxAgeMs, minGapMs }) {
     this.maxAgeMs = maxAgeMs;
     this.minGapMs = minGapMs;
-    this._now = now;
-    this._readFileSync = readFileSync;
-    /** @type {Map<string, { t: number[], u: number[], c: number[], p: Array<number|null>, g: Record<string, { n: string|null, u: Array<number|null>, c: Array<number|null>, p: Array<number|null> }> }>} */
-    this._map = new Map();
-    // A file is dirty while `rev` is ahead of the last revision written.
-    this.rev = 0;
-    this.savedRev = 0;
-    this.load();
+    /** id → { t, u, c, p, cards: Map(index → { name, u, c, p }) } */
+    this.units = new Map();
+    this.revision = 0;
   }
 
-  load() {
-    if (!this.file) return;
-    try {
-      const raw = JSON.parse(this._readFileSync(this.file, "utf8"));
-      const cutoff = this._now() - this.maxAgeMs;
-      for (const [id, s] of Object.entries(raw?.sparks ?? {})) {
-        if (!s || !Array.isArray(s.t) || !Array.isArray(s.u) || !Array.isArray(s.c) || !Array.isArray(s.p)) continue;
-        const n = Math.min(s.t.length, s.u.length, s.c.length, s.p.length);
-        const out = { t: [], u: [], c: [], p: [], g: {} };
-        const devs = Object.entries(s.g && typeof s.g === "object" ? s.g : {})
-          .filter(([k, d]) => /^\d+$/.test(k) && d && DEVICE_KEYS.every((key) => Array.isArray(d[key])))
-          .slice(0, MAX_DEVICES);
-        for (const [k, d] of devs) out.g[k] = { n: typeof d.n === "string" ? d.n : null, u: [], c: [], p: [] };
-        const num = (v) => (Number.isFinite(v) ? v : null);
-        for (let i = 0; i < n; i++) {
-          if (!Number.isFinite(s.t[i]) || s.t[i] < cutoff) continue;
-          if (out.t.length && s.t[i] <= out.t[out.t.length - 1]) continue;
-          out.t.push(s.t[i]);
-          out.u.push(s.u[i]);
-          out.c.push(s.c[i]);
-          out.p.push(num(s.p[i]));
-          for (const [k, d] of devs) for (const key of DEVICE_KEYS) out.g[k][key].push(num(d[key][i]));
-        }
-        if (out.t.length) this._map.set(id, out);
+  push(id, at, usage, temp, powerPct, devices) {
+    let raw = this.units.get(id);
+    const lastT = raw && raw.t.length > 0 ? raw.t[raw.t.length - 1] : null;
+    if (lastT !== null && at < lastT + this.minGapMs) return false;
+    if (!raw) {
+      raw = emptyRaw();
+      this.units.set(id, raw);
+    }
+    const before = raw.t.length;
+    raw.t.push(at);
+    raw.u.push(tenth(usage));
+    raw.c.push(tenth(temp));
+    raw.p.push(tenth(powerPct));
+    const seen = new Set();
+    for (const d of devices) {
+      let card = raw.cards.get(d.index);
+      if (!card) {
+        if (raw.cards.size >= MAX_CARDS) continue;
+        card = cardSeries(d.name ?? null, before);
+        raw.cards.set(d.index, card);
       }
-    } catch (err) {
-      if (err instanceof SyntaxError) quarantineCorrupt(this.file, "UnitHistory", err);
+      if (d.name != null) card.name = d.name;
+      card.u.push(tenth(d.usage));
+      card.c.push(tenth(d.temperature));
+      card.p.push(tenth(d.powerPct));
+      seen.add(d.index);
     }
-  }
-
-
-  /**
-   * Append one reading; ignored when it is too close to the previous one or goes back in time.
-   * `devices` (see deviceReadings) adds the per-card readings of a multi-GPU host.
-   */
-  record(sparkId, at, usage, temperature, powerPct, devices = []) {
-    if (!Number.isFinite(at)) return false;
-    if (![usage, temperature, powerPct].some(Number.isFinite) && (!Array.isArray(devices) || !devices.some((d) =>
-      [d?.usage, d?.temperature, d?.powerPct].some(Number.isFinite)))) return false;
-    let s = this._map.get(sparkId);
-    if (!s) {
-      s = { t: [], u: [], c: [], p: [], g: {} };
-      this._map.set(sparkId, s);
+    for (const [idx, card] of raw.cards) {
+      if (seen.has(idx)) continue;
+      card.u.push(null);
+      card.c.push(null);
+      card.p.push(null);
     }
-    const last = s.t.length ? s.t[s.t.length - 1] : -Infinity;
-    if (at - last < this.minGapMs) return false;
-    s.t.push(Math.round(at));
-    s.u.push(Number.isFinite(usage) ? Math.round(usage * 10) / 10 : null);
-    s.c.push(Number.isFinite(temperature) ? Math.round(temperature * 10) / 10 : null);
-    s.p.push(Number.isFinite(powerPct) ? round1(powerPct) : null);
-    this._recordDevices(s, devices);
-    this._trim(s, at);
-    this.rev++;
+    const cutoff = at - this.maxAgeMs;
+    if (raw.t.length > TRIM_MIN_LENGTH && raw.t[0] < cutoff - TRIM_SLACK_MS) {
+      shiftRaw(raw, countBefore(raw.t, cutoff));
+    }
+    this.revision++;
     return true;
   }
 
-  /** Push one value per known card (null when it is missing now); a new card is padded with nulls first. */
-  _recordDevices(s, devices) {
-    const seen = new Map();
-    for (const d of Array.isArray(devices) ? devices : []) {
-      if (Number.isInteger(d?.index) && d.index >= 0) seen.set(String(d.index), d);
-    }
-    const len = s.t.length - 1; // samples before this one
-    for (const k of seen.keys()) {
-      if (s.g[k] || Object.keys(s.g).length >= MAX_DEVICES) continue;
-      s.g[k] = { n: null, u: Array(len).fill(null), c: Array(len).fill(null), p: Array(len).fill(null) };
-    }
-    for (const [k, g] of Object.entries(s.g)) {
-      const d = seen.get(k);
-      if (d && typeof d.name === "string") g.n = d.name;
-      g.u.push(d && Number.isFinite(d.usage) ? round1(d.usage) : null);
-      g.c.push(d && Number.isFinite(d.temperature) ? round1(d.temperature) : null);
-      g.p.push(d && Number.isFinite(d.powerPct) ? round1(d.powerPct) : null);
-    }
-  }
-
-  /** Drop the first `k` samples of every parallel array, and cards left with no readings. */
-  _cut(s, k) {
-    for (const key of ["t", "u", "c", "p"]) s[key].splice(0, k);
-    for (const [idx, g] of Object.entries(s.g)) {
-      for (const key of DEVICE_KEYS) g[key].splice(0, k);
-      if (g.u.every((v) => v == null)) delete s.g[idx];
-    }
-  }
-
-  _trim(s, now) {
-    const cutoff = now - this.maxAgeMs;
-    // Trim in chunks so a long-lived series does not shift on every sample.
-    if (s.t.length > 64 && s.t[0] < cutoff - 60_000) {
-      let k = 0;
-      while (k < s.t.length && s.t[k] < cutoff) k++;
-      if (k > 0) this._cut(s, k);
-    }
-  }
-
-  /** Trim every series to the retention window and drop series left without samples. */
-  prune(now) {
-    const cutoff = now - this.maxAgeMs;
-    for (const [id, s] of this._map) {
-      let k = 0;
-      while (k < s.t.length && s.t[k] < cutoff) k++;
-      if (k > 0) this._cut(s, k);
-      if (!s.t.length) {
-        this._map.delete(id);
-        this.rev++;
+  /** Exact trim at `atMs`; units left empty are forgotten. */
+  prune(atMs) {
+    const cutoff = atMs - this.maxAgeMs;
+    for (const [id, raw] of this.units) {
+      if (shiftRaw(raw, countBefore(raw.t, cutoff))) this.revision++;
+      if (raw.t.length === 0) {
+        this.units.delete(id);
+        this.revision++;
       }
     }
   }
 
-  /**
-   * Readings newer than `sinceMs` (ms epoch). Arrays are parallel; `p` may hold nulls.
-   * `gpus` lists the cards of a multi-GPU host (by index), each with arrays parallel to `t`
-   * (null where the card had no reading); it is empty for a single-GPU host.
-   */
-  get(sparkId, sinceMs = 0) {
-    const s = this._map.get(sparkId);
-    if (!s) return { t: [], u: [], c: [], p: [], gpus: [] };
-    let i = 0;
-    while (i < s.t.length && s.t[i] < sinceMs) i++;
-    const gpus = Object.entries(s.g)
-      .map(([k, g]) => ({ index: Number(k), name: g.n, u: g.u.slice(i), c: g.c.slice(i), p: g.p.slice(i) }))
-      .filter((g) => g.u.some((v) => v != null))
-      .sort((a, b) => a.index - b.index);
-    return { t: s.t.slice(i), u: s.u.slice(i), c: s.c.slice(i), p: s.p.slice(i), gpus };
+  forget(id) {
+    if (this.units.delete(id)) this.revision++;
   }
 
-
-  remove(sparkId) {
-    if (this._map.delete(sparkId)) this.rev++;
-  }
-
-  *parts() {
-    for (const id of [...this._map.keys()]) {
-      const s = this._map.get(id);
-      if (s) yield [id, JSON.stringify(s)];
+  /** Readings with t ≥ sinceMs in the API shape. */
+  since(id, sinceMs) {
+    const raw = this.units.get(id);
+    if (!raw) return { t: [], u: [], c: [], p: [], gpus: [] };
+    const k = countBefore(raw.t, sinceMs);
+    const gpus = [];
+    for (const index of [...raw.cards.keys()].sort((a, b) => a - b)) {
+      const card = raw.cards.get(index);
+      const u = card.u.slice(k);
+      if (u.every((v) => v === null)) continue;
+      gpus.push({ index, name: card.name, u, c: card.c.slice(k), p: card.p.slice(k) });
     }
+    return { t: raw.t.slice(k), u: raw.u.slice(k), c: raw.c.slice(k), p: raw.p.slice(k), gpus };
   }
 
-  text(parts) {
-    return `{"version":1,"sparks":${objectText(parts)}}`;
+  toText() {
+    const pairs = [];
+    for (const [id, raw] of this.units) {
+      const g = {};
+      for (const [index, card] of raw.cards) g[index] = { n: card.name, u: card.u, c: card.c, p: card.p };
+      pairs.push([id, JSON.stringify({ t: raw.t, u: raw.u, c: raw.c, p: raw.p, g })]);
+    }
+    return `{"version":${FILE_VERSION},"sparks":${objectText(pairs)}}`;
+  }
+
+  /** Load from parsed file data; readings past the max age at `atMs` are dropped. */
+  loadFrom(data, atMs) {
+    const sparks = data?.sparks;
+    if (!sparks || typeof sparks !== "object") return;
+    const cutoff = atMs - this.maxAgeMs;
+    const valueAt = (arr, i) => (Array.isArray(arr) && isNum(arr[i]) ? arr[i] : null);
+    for (const id of Object.keys(sparks)) {
+      const src = sparks[id];
+      if (!src || !Array.isArray(src.t)) continue;
+      const cards = src.g && typeof src.g === "object" ? src.g : {};
+      const raw = emptyRaw();
+      const cardIdx = Object.keys(cards)
+        .map(Number)
+        .filter((n) => Number.isInteger(n) && n >= 0)
+        .slice(0, MAX_CARDS);
+      for (const index of cardIdx) raw.cards.set(index, cardSeries(typeof cards[index]?.n === "string" ? cards[index].n : null, 0));
+      let prev = -Infinity;
+      src.t.forEach((t, i) => {
+        if (!isNum(t) || t < cutoff || t <= prev) return;
+        prev = t;
+        raw.t.push(t);
+        raw.u.push(valueAt(src.u, i));
+        raw.c.push(valueAt(src.c, i));
+        raw.p.push(valueAt(src.p, i));
+        for (const [index, card] of raw.cards) {
+          const from = cards[index];
+          card.u.push(valueAt(from?.u, i));
+          card.c.push(valueAt(from?.c, i));
+          card.p.push(valueAt(from?.p, i));
+        }
+      });
+      for (const [index, card] of raw.cards) if (card.u.every((v) => v === null)) raw.cards.delete(index);
+      if (raw.t.length > 0) this.units.set(id, raw);
+    }
   }
 }
 
-/**
- * Per-unit history kept on the server, so a freshly opened page can draw the last hours at
- * once instead of starting empty. One store, one sampler (UnitHistoryRuntime), three depths:
- *
- * GPU raw series (always on — what GpuHistory was): utilization %, temperature, power as % of
- * the board limit, as parallel arrays. On a multi-GPU host each card also gets its own series
- * (`g`, by device index) aligned with the aggregate timestamps, null where the card was absent,
- * so a card that appears or disappears never disturbs the aggregate. Two of them, fed by the
- * same reading:
- *   - dense: one reading per ~2 s for 8 h, persisted to `file` (gpu-history.json, format
- *     unchanged) — the GPU chart. ~0.5–1 MB of heap per unit, ~300 KB on disk.
- *   - long (when `longFile` is given): one reading per minute for 7 days, persisted to
- *     `longFile` (gpu-history-long.json, the format of 2.40.1) — the Temps page's day and week.
- *     ~10k readings per unit, a few hundred KB of heap and ~400 KB on disk; more per card on
- *     a multi-GPU host.
- * window() picks the dense series for windows up to 8 h and the long one beyond.
- *
- * Bucketed tiers (opt-in, Settings → `metricsHistory`; see historyTiers.js): 1-minute buckets
- * for 48 h and 15-minute buckets for 30 days of GPU util/temp/power (W), memory used and
- * headroom, CPU util/temp, host RAM, network rx/tx, and per LLM endpoint decode/prefill tok/s
- * and KV fill. Persisted to `tiersFile` (metrics-history.json), which is only read once the
- * setting has been on and only written while it holds data and the setting is on, so an
- * install that never enables it never gets the file, and turning it off stops the writes. There is deliberately no raw tier for these series: 8 h of 2 s
- * samples for ~13 series would add ~2–3 MB of heap and a multi-MB file per unit for detail the
- * 1-minute avg/max already summarises; the GPU chart keeps its 8 h of raw readings.
- * Worst case with every bucket full: ~0.65 MB of heap and ~1 MB on disk per unit, plus ~0.17 MB
- * of heap and ~0.3 MB on disk per LLM endpoint.
- *
- * Persistence is asynchronous (fs.promises, temp + rename, one unit serialized per event-loop
- * turn) every few minutes, coalesced (one save in flight at a time; a revision counter decides
- * whether anything changed), and synchronous only on shutdown (stop()). A sync flush
- * supersedes an in-flight async save, which then discards its temp file instead of renaming
- * older data over the newer file. Unit ids are only ever Map keys, and files are written as
- * text, so an id like `__proto__` keeps its history.
- */
+// ─── The store ────────────────────────────────────────────
+
 export class UnitHistory {
   /**
-   * @param {{
-   *   file?: string|null, tiersFile?: string|null, maxAgeMs?: number, minGapMs?: number,
-   *   longFile?: string|null, longMaxAgeMs?: number, longMinGapMs?: number, tiersEnabled?: () => boolean,
-   *   now?: () => number, writeSync?: typeof atomicWrite, writeAsync?: typeof atomicWriteAsync,
-   *   readFileSync?: typeof fs.readFileSync, yieldFn?: () => Promise<void>, logError?: (...args: any[]) => void,
-   * }} [opts]
+   * @param {object} [o]
+   * @param {string|null} [o.file] dense GPU file (null: memory only)
+   * @param {string|null} [o.tiersFile] bucketed tiers file (null: memory only)
+   * @param {string|null} [o.longFile] long GPU file; omit for no long series, null for memory only
    */
-  constructor({
-    file = null,
-    tiersFile = null,
-    maxAgeMs = DEFAULT_MAX_AGE_MS,
-    minGapMs = DEFAULT_MIN_GAP_MS,
-    longFile = undefined,
-    longMaxAgeMs = LONG_MAX_AGE_MS,
-    longMinGapMs = LONG_MIN_GAP_MS,
-    tiersEnabled = () => true,
-    now = Date.now,
-    writeSync = atomicWrite,
-    writeAsync = atomicWriteAsync,
-    readFileSync = fs.readFileSync,
-    yieldFn = nextTick,
-    logError = console.error,
-  } = {}) {
-    this.file = file;
-    this.tiersFile = tiersFile;
-    this._tiersEnabled = tiersEnabled;
-    this._now = now;
-    this._writeSync = writeSync;
-    this._writeAsync = writeAsync;
-    this._readFileSync = readFileSync;
-    this._yield = yieldFn;
-    this._logError = logError;
-    this._gpu = new GpuSeries({ file, maxAgeMs, minGapMs, now, readFileSync });
-    // `longFile: null` keeps the long series in memory only (tests); left out, there is none.
-    this._gpuLong = longFile === undefined
-      ? null
-      : new GpuSeries({ file: longFile, maxAgeMs: longMaxAgeMs, minGapMs: longMinGapMs, now, readFileSync });
-    /** unit id → bucketed tiers (see newUnit) */
-    this._units = new Map();
-    /** Unit ids seen on the last recordSample() — the live fleet. */
-    this._live = null;
-    this._tiersLoaded = false;
-    // Change counters: a file is dirty while its revision is ahead of the last one written.
-    this._tiersRev = 0;
-    this._tiersSavedRev = 0;
-    /** Bumped by every sync flush: an async save started under an older value must not commit. */
-    this._writeGen = 0;
-    /** @type {Promise<void> | null} */
-    this._saving = null;
-    this._timer = null;
+  constructor(o = {}) {
+    this.file = o.file ?? null;
+    this.tiersFile = o.tiersFile ?? null;
+    this.longFile = o.longFile ?? null;
+    this.now = o.now ?? Date.now;
+    this.tiersEnabled = o.tiersEnabled ?? (() => true);
+    this.writeSync = o.writeSync ?? atomicWrite;
+    this.writeAsync = o.writeAsync ?? atomicWriteAsync;
+    this.readFileSync = o.readFileSync ?? ((f) => fs.readFileSync(f, "utf8"));
+    this.yieldFn = o.yieldFn ?? nextTurn;
+    this.logError = o.logError ?? ((msg, err) => console.error(`[UnitHistory] ${msg}:`, err?.message ?? err));
+
+    this.dense = new RawSeries({ maxAgeMs: o.maxAgeMs ?? 8 * HR, minGapMs: o.minGapMs ?? 1500 });
+    this.long =
+      o.longFile === undefined
+        ? null
+        : new RawSeries({ maxAgeMs: o.longMaxAgeMs ?? 7 * DAY, minGapMs: o.longMinGapMs ?? MIN });
+
+    /** id → { tiers: TierColumns[], llmPorts: number[] | null } */
+    this.units = new Map();
+    this.present = null;
+    this.tiersRevision = 0;
+    this.tiersLoaded = false;
+
+    /** file → revision last written successfully */
+    this.written = new Map();
+    this.generation = 0;
+    this.pendingSave = null;
+    this.timer = null;
+
+    const at = this.now();
+    this._loadRaw(this.dense, this.file, at);
+    if (this.long) this._loadRaw(this.long, this.longFile, at);
+    this._markWritten();
   }
 
-  /** The GPU raw series that exist (dense first). */
-  _gpuSeries() {
-    return this._gpuLong ? [this._gpu, this._gpuLong] : [this._gpu];
+  _markWritten() {
+    for (const t of this._targets()) this.written.set(t.file, t.revision());
   }
 
-  // ─── GPU raw series ─────────────────────────────────────
-
-  /**
-   * Append one reading to the dense series and, when configured, the long one; each ignores a
-   * reading too close to its previous one or going back in time. `devices` (see deviceReadings)
-   * adds the per-card readings of a multi-GPU host. True when either series took it.
-   */
-  record(sparkId, at, usage, temperature, powerPct, devices = []) {
-    const dense = this._gpu.record(sparkId, at, usage, temperature, powerPct, devices);
-    const long = this._gpuLong ? this._gpuLong.record(sparkId, at, usage, temperature, powerPct, devices) : false;
-    return dense || long;
+  _readJson(file, label) {
+    let text;
+    try {
+      text = this.readFileSync(file);
+    } catch (err) {
+      if (err?.code !== "ENOENT") this.logError(`cannot read ${file}`, err);
+      return null;
+    }
+    try {
+      return JSON.parse(text);
+    } catch (err) {
+      quarantineCorrupt(file, label, err);
+      return null;
+    }
   }
 
-  /**
-   * Dense readings newer than `sinceMs` (ms epoch). Arrays are parallel; `p` may hold nulls.
-   * `gpus` lists the cards of a multi-GPU host (by index), each with arrays parallel to `t`
-   * (null where the card had no reading); it is empty for a single-GPU host.
-   */
-  get(sparkId, sinceMs = 0) {
-    return this._gpu.get(sparkId, sinceMs);
+  _loadRaw(series, file, atMs) {
+    if (!file) return;
+    const data = this._readJson(file, "UnitHistory");
+    if (data) series.loadFrom(data, atMs);
   }
 
-  /** The longest GPU window this store can answer: the long series' reach, else the dense one's. */
+  // ── GPU raw series ──
+
   get maxWindowMs() {
-    return this._gpuLong ? this._gpuLong.maxAgeMs : this._gpu.maxAgeMs;
+    return this.long ? this.long.maxAgeMs : this.dense.maxAgeMs;
+  }
+
+  /** Add one GPU reading; true when the dense or the long series kept it. */
+  record(id, at, usage, temperature, powerPct, devices = []) {
+    if (!isNum(at)) return false;
+    const cards = Array.isArray(devices) ? devices.filter((d) => d && Number.isInteger(d.index) && d.index >= 0) : [];
+    const anyValue =
+      [usage, temperature, powerPct].some(isNum) ||
+      cards.some((d) => isNum(d.usage) || isNum(d.temperature) || isNum(d.powerPct));
+    if (!anyValue) return false;
+    const inDense = this.dense.push(id, at, usage, temperature, powerPct, cards);
+    const inLong = this.long ? this.long.push(id, at, usage, temperature, powerPct, cards) : false;
+    return inDense || inLong;
+  }
+
+  get(id, sinceMs = 0) {
+    return this.dense.since(id, sinceMs);
+  }
+
+  window(id, windowMs, atMs = this.now()) {
+    const series = this.long && windowMs > this.dense.maxAgeMs ? this.long : this.dense;
+    return series.since(id, atMs - windowMs);
+  }
+
+  _prune(atMs = this.now()) {
+    this.dense.prune(atMs);
+    this.long?.prune(atMs);
+  }
+
+  remove(id) {
+    this.dense.forget(id);
+    this.long?.forget(id);
+    if (this.units.delete(id)) this.tiersRevision++;
+  }
+
+  // ── Bucketed tiers ──
+
+  _ensureTiers() {
+    if (this.tiersLoaded) return;
+    this.tiersLoaded = true;
+    if (!this.tiersFile) return;
+    const data = this._readJson(this.tiersFile, "UnitHistory");
+    if (data === null) return;
+    const units = data?.units;
+    if (data?.version !== FILE_VERSION || !units || typeof units !== "object" || Array.isArray(units)) {
+      quarantineCorrupt(this.tiersFile, "UnitHistory", new Error("unsupported metrics history file"));
+      return;
+    }
+    const at = this.now();
+    for (const id of Object.keys(units)) {
+      const tiers = BUCKET_TIERS.map((tier) => TierColumns.fromFileForm(tier, units[id]?.[tier.name], at));
+      if (tiers.some((t) => t.size > 0)) this.units.set(id, { tiers, llmPorts: null });
+    }
+  }
+
+  _unit(id) {
+    let unit = this.units.get(id);
+    if (!unit) {
+      unit = { tiers: BUCKET_TIERS.map((tier) => new TierColumns(tier)), llmPorts: null };
+      this.units.set(id, unit);
+    }
+    return unit;
   }
 
   /**
-   * The last `windowMs` of GPU readings, same shape as get(): from the dense series when it
-   * reaches that far, else from the long one (Temps day/week).
+   * One fleet-wide sample: `units` is every unit, `{ id, llmPorts?, values }`.
+   * Units missing from the list (and LLM ports a unit stopped listing) are
+   * dropped at the next save.
    */
-  window(sparkId, windowMs, atMs = this._now()) {
-    const series = this._gpuLong && windowMs > this._gpu.maxAgeMs ? this._gpuLong : this._gpu;
-    return series.get(sparkId, atMs - windowMs);
-  }
-
-  /** Trim every GPU series to its retention window (saves do this too). */
-  _prune(now) {
-    for (const series of this._gpuSeries()) series.prune(now);
-  }
-
-  /** Forget a removed unit everywhere. */
-  remove(sparkId) {
-    for (const series of this._gpuSeries()) series.remove(sparkId);
-    if (this._units.delete(sparkId)) this._tiersRev++;
-  }
-
-  // ─── Bucketed tiers (opt-in) ────────────────────────────
-
-  _ensureTiersLoaded() {
-    if (this._tiersLoaded) return;
-    this._tiersLoaded = true;
-    if (this.tiersFile) this._loadTiers();
-  }
-
-  _loadTiers() {
-    let raw;
-    try {
-      raw = this._readFileSync(this.tiersFile, "utf8");
-    } catch (err) {
-      if (err?.code !== "ENOENT") this._logError(`[UnitHistory] unable to read ${this.tiersFile}: ${err.message}`);
-      return;
-    }
-    let state;
-    try {
-      state = JSON.parse(raw);
-      if (state?.version !== TIERS_FILE_VERSION || typeof state.units !== "object" || state.units === null) {
-        throw new SyntaxError(`unsupported format (version ${state?.version})`);
-      }
-    } catch (err) {
-      // Keep the unreadable file beside the live one instead of overwriting it.
-      quarantineCorrupt(this.tiersFile, "UnitHistory", err);
-      return;
-    }
-    const atMs = this._now();
-    for (const [id, tiers] of Object.entries(state.units)) {
-      if (!tiers || typeof tiers !== "object") continue;
-      const unit = newUnit();
-      let any = false;
-      BUCKET_TIERS.forEach((spec, idx) => {
-        const tier = tiers[spec.name];
-        if (!tier || !Array.isArray(tier.t) || !tier.series || typeof tier.series !== "object") return;
-        const cutoff = atMs - spec.retentionMs;
-        const cols = Object.entries(tier.series).filter(([key, col]) => isKnownKey(key) && col);
-        tier.t.forEach((t, i) => {
-          if (!finite(t) || t < cutoff || t % spec.stepMs !== 0) return;
-          const stats = new Map();
-          for (const [key, col] of cols) {
-            const n = col.n?.[i];
-            const avg = col.avg?.[i];
-            const max = col.max?.[i];
-            if (!(Number.isInteger(n) && n > 0) || !finite(avg) || !finite(max)) continue;
-            const min = finite(col.min?.[i]) ? col.min[i] : avg;
-            stats.set(key, { sum: avg * n, max, min, n });
-          }
-          if (stats.size > 0) {
-            unit.tiers[idx].ring.put(t, stats);
-            any = true;
-          }
-        });
-      });
-      if (any) this._units.set(id, unit);
-    }
-  }
-
-  /** Close open buckets whose period has ended by `atMs`. */
-  _closeEnded(unit, atMs) {
-    unit.tiers.forEach((tier, idx) => {
-      if (tier.open && tier.open.t + BUCKET_TIERS[idx].stepMs <= atMs) {
-        tier.ring.put(tier.open.t, tier.open.stats);
-        tier.open = null;
-      }
-    });
-  }
-
-  /**
-   * Record one sampler tick into the bucketed tiers. `units` is the whole fleet in order:
-   * [{ id, llmPorts?, values: { key: number } | null }] — null or empty values is a gap for
-   * that unit. Units missing from the list are dropped on the next save.
-   */
-  recordSample(units, atMs = this._now()) {
-    if (!Array.isArray(units) || !finite(atMs)) return;
-    this._ensureTiersLoaded();
-    const live = new Set();
-    for (const input of units) {
-      const id = input?.id;
-      if (typeof id !== "string" || id === "") continue;
-      live.add(id);
-      const values = input.values && typeof input.values === "object" ? input.values : null;
-      const keys = values ? Object.keys(values).filter((k) => isKnownKey(k) && finite(values[k])) : [];
-      let unit = this._units.get(id);
-      if (!unit && keys.length > 0) {
-        unit = newUnit();
-        this._units.set(id, unit);
-      }
-      if (!unit) continue;
-      if (Array.isArray(input.llmPorts)) unit.ports = new Set(input.llmPorts.filter(Number.isInteger));
-      this._closeEnded(unit, atMs);
-      if (keys.length === 0) continue;
-      unit.tiers.forEach((tier, idx) => {
-        const { stepMs } = BUCKET_TIERS[idx];
-        const bucketT = Math.floor(atMs / stepMs) * stepMs;
-        if (tier.open && tier.open.t !== bucketT) {
-          // Clock stepped backwards into an older bucket: store what we have.
-          tier.ring.put(tier.open.t, tier.open.stats);
-          tier.open = null;
+  recordSample(units, atMs = this.now()) {
+    this._ensureTiers();
+    const ids = new Set();
+    for (const entry of Array.isArray(units) ? units : []) {
+      if (!entry || entry.id == null) continue;
+      const id = String(entry.id);
+      ids.add(id);
+      const unit = this._unit(id);
+      if (Array.isArray(entry.llmPorts)) {
+        const ports = entry.llmPorts.filter(Number.isInteger);
+        if (unit.llmPorts === null || ports.join() !== unit.llmPorts.join()) {
+          unit.llmPorts = ports;
+          this.tiersRevision++;
         }
-        if (!tier.open) tier.open = { t: bucketT, stats: new Map() };
-        for (const k of keys) addToStats(tier.open.stats, k, statOf(values[k]));
-      });
-      this._tiersRev++;
-    }
-    this._live = live;
-    for (const id of this._units.keys()) {
-      if (!live.has(id)) {
-        this._tiersRev++;
-        break;
       }
+      let added = false;
+      for (const [key, v] of Object.entries(entry.values ?? {})) {
+        if (!isNum(v) || !isKnownKey(key)) continue;
+        for (const tier of unit.tiers) tier.add(atMs, key, accOf(v));
+        added = true;
+      }
+      for (const tier of unit.tiers) tier.cut(atMs - tier.tier.retentionMs);
+      if (added) this.tiersRevision++;
+    }
+    const same = this.present && this.present.size === ids.size && [...ids].every((id) => this.present.has(id));
+    if (!same) {
+      this.present = ids;
+      this.tiersRevision++;
     }
   }
 
-  /** A tier's buckets with t ≥ fromMs, the open one merged in. */
-  _tierEntries(unit, idx, fromMs) {
-    const tier = unit.tiers[idx];
-    const entries = tier.ring.entries(fromMs);
-    const open = tier.open;
-    if (open && open.t >= fromMs && open.stats.size > 0) {
-      const last = entries[entries.length - 1];
-      if (last && last.t === open.t) {
-        for (const [key, s] of open.stats) addToStats(last.stats, key, { ...s });
-      } else {
-        const stats = new Map();
-        for (const [key, s] of open.stats) stats.set(key, { ...s });
-        entries.push({ t: open.t, stats });
-        entries.sort((a, b) => a.t - b.t);
-      }
-    }
-    return entries;
+  _portListed(unit, key) {
+    const llm = parseLlmKey(key);
+    return !llm || unit.llmPorts === null || unit.llmPorts.includes(llm.port);
   }
 
-  /**
-   * Bucketed history for one unit:
-   * { range, stepMs, from, to, points: [{ t, <series>: { avg, max, min? } }],
-   *   llm: [{ port, points: [{ t, genTps?, prefillTps?, kvUsage? }] }] }.
-   * Throws on an unknown range (the route validates first).
-   */
-  query(unitId, range, atMs = this._now()) {
-    const spec = Object.hasOwn(HISTORY_RANGES, range) ? HISTORY_RANGES[range] : null;
-    if (!spec) throw new Error(`unknown range: ${range}`);
-    this._ensureTiersLoaded();
-    const to = atMs;
+  /** Bucketed history of one unit for a named range (open bucket included). */
+  query(id, range, atMs = this.now()) {
+    if (!isRange(range)) throw new Error(`unknown range: ${range}`);
+    this._ensureTiers();
+    const spec = HISTORY_RANGES[range];
     const from = atMs - spec.spanMs;
-    const gridFrom = Math.floor(from / spec.stepMs) * spec.stepMs;
-    const unit = this._units.get(unitId) ?? null;
-    const merged = unit ? coarsen(this._tierEntries(unit, spec.tier, gridFrom), spec.stepMs) : [];
-
-    const points = [];
-    const llm = new Map();
-    for (const { t, stats } of merged) {
-      let point = null;
-      for (const [key, s] of stats) {
-        const parsed = parseLlmKey(key);
-        if (parsed) {
-          if (unit?.ports && !unit.ports.has(parsed.port)) continue;
-          let byT = llm.get(parsed.port);
-          if (!byT) {
-            byT = new Map();
-            llm.set(parsed.port, byT);
-          }
-          let lp = byT.get(t);
-          if (!lp) {
-            lp = { t };
-            byT.set(t, lp);
-          }
-          lp[parsed.name] = statOut(key, s);
-        } else {
-          if (!point) point = { t };
-          point[key] = statOut(key, s);
+    const result = { range, stepMs: spec.stepMs, from, to: atMs, points: [], llm: [] };
+    const unit = this.units.get(id);
+    if (!unit) return result;
+    const perPort = new Map();
+    for (const { t, accs } of regrid(unit.tiers[spec.tier].rowsSince(from), spec.stepMs)) {
+      const point = { t };
+      let unitValues = 0;
+      for (const [key, acc] of accs) {
+        const llm = parseLlmKey(key);
+        if (!llm) {
+          point[key] = accOut(key, acc);
+          unitValues++;
+          continue;
         }
+        if (!this._portListed(unit, key)) continue;
+        let byT = perPort.get(llm.port);
+        if (!byT) perPort.set(llm.port, (byT = new Map()));
+        let lp = byT.get(t);
+        if (!lp) byT.set(t, (lp = { t }));
+        lp[llm.name] = accOut(key, acc);
       }
-      if (point) points.push(point);
+      if (unitValues > 0) result.points.push(point);
     }
-    return {
-      range,
-      stepMs: spec.stepMs,
-      from,
-      to,
-      points,
-      llm: [...llm.entries()]
-        .sort((a, b) => a[0] - b[0])
-        .map(([port, byT]) => ({ port, points: [...byT.values()] })),
-    };
+    result.llm = [...perPort.keys()]
+      .sort((a, b) => a - b)
+      .map((port) => ({ port, points: [...perPort.get(port).values()] }));
+    return result;
   }
 
-  /** Forget removed units and LLM ports a unit no longer has. */
-  _dropStale() {
-    if (this._live) {
-      for (const id of [...this._units.keys()]) {
-        if (!this._live.has(id)) this._units.delete(id);
+  /** Drop units no longer in the fleet and series of ports no longer listed. */
+  _dropDeparted() {
+    for (const [id, unit] of this.units) {
+      if (this.present && !this.present.has(id)) {
+        this.units.delete(id);
+        continue;
       }
-    }
-    for (const unit of this._units.values()) {
-      if (!unit.ports) continue;
-      const stale = (key) => {
-        const parsed = parseLlmKey(key);
-        return parsed !== null && !unit.ports.has(parsed.port);
-      };
-      for (const tier of unit.tiers) {
-        tier.ring.dropKeys(stale);
-        if (tier.open) for (const key of [...tier.open.stats.keys()]) if (stale(key)) tier.open.stats.delete(key);
-      }
+      for (const tier of unit.tiers) tier.dropSeries((key) => !this._portListed(unit, key));
     }
   }
 
-  /** One unit's persisted tiers (open buckets included, retention applied), or null when empty. */
-  _unitTiers(unit, atMs) {
-    const tiers = {};
-    let any = false;
-    BUCKET_TIERS.forEach((spec, idx) => {
-      const tier = unit.tiers[idx];
-      const cols = tier.ring.columns(atMs - spec.retentionMs, tier.open);
-      if (Object.keys(cols.series).length > 0) {
-        tiers[spec.name] = cols;
-        any = true;
+  _unitFileText(unit, atMs) {
+    const body = {};
+    for (const tier of unit.tiers) {
+      const form = tier.toFileForm(atMs - tier.tier.retentionMs);
+      if (form) body[tier.tier.name] = form;
+    }
+    return Object.keys(body).length > 0 ? JSON.stringify(body) : null;
+  }
+
+  _tiersText(atMs, unitTexts) {
+    return `{"version":${FILE_VERSION},"savedAt":${atMs},"units":${objectText(unitTexts)}}`;
+  }
+
+  _tiersTextSync(atMs) {
+    this._dropDeparted();
+    const pairs = [];
+    for (const [id, unit] of this.units) {
+      const text = this._unitFileText(unit, atMs);
+      if (text) pairs.push([id, text]);
+    }
+    return this._tiersText(atMs, pairs);
+  }
+
+  async _tiersTextAsync(atMs) {
+    this._dropDeparted();
+    const pairs = [];
+    for (const [id, unit] of [...this.units]) {
+      await this.yieldFn();
+      const text = this._unitFileText(unit, atMs);
+      if (text) pairs.push([id, text]);
+    }
+    return this._tiersText(atMs, pairs);
+  }
+
+  /** The tiers file content as an object (tests and diagnostics). */
+  serializeTiers(atMs = this.now()) {
+    this._ensureTiers();
+    return JSON.parse(this._tiersTextSync(atMs));
+  }
+
+  // ── Persistence ──
+
+  /** Files this store writes, each with its revision and how to render it. */
+  _targets() {
+    const out = [];
+    if (this.file) {
+      out.push({ file: this.file, revision: () => this.dense.revision, text: () => this.dense.toText() });
+    }
+    if (this.long && this.longFile) {
+      out.push({ file: this.longFile, revision: () => this.long.revision, text: () => this.long.toText() });
+    }
+    if (this.tiersFile) {
+      out.push({
+        file: this.tiersFile,
+        tiers: true,
+        revision: () => this.tiersRevision,
+        text: () => this._tiersTextSync(this.now()),
+        textAsync: () => this._tiersTextAsync(this.now()),
+      });
+    }
+    return out;
+  }
+
+  _dirty(target) {
+    if (target.tiers && (!this.tiersLoaded || !this.tiersEnabled())) return false;
+    return this.written.get(target.file) !== target.revision();
+  }
+
+  /** Write every changed file without blocking; concurrent callers share one save. */
+  save() {
+    if (!this.pendingSave) {
+      this.pendingSave = this._saveAll().finally(() => {
+        this.pendingSave = null;
+      });
+    }
+    return this.pendingSave;
+  }
+
+  async _saveAll() {
+    const generation = this.generation;
+    const shouldCommit = () => this.generation === generation;
+    this._prune();
+    for (const target of this._targets()) {
+      if (!this._dirty(target)) continue;
+      const revision = target.revision();
+      try {
+        const text = target.textAsync ? await target.textAsync() : target.text();
+        if (!shouldCommit()) return;
+        if (await this.writeAsync(target.file, text, 0o600, { shouldCommit })) {
+          this.written.set(target.file, revision);
+        }
+      } catch (err) {
+        this.logError(`failed to save ${target.file}`, err);
       }
-    });
-    return any ? tiers : null;
-  }
-
-  /** The persisted shape of the tiers file (tests and diagnostics; saves stream it per unit). */
-  serializeTiers(atMs = this._now()) {
-    return JSON.parse(this._tiersText([...this._tiersParts(atMs)], atMs));
-  }
-
-  *_tiersParts(atMs) {
-    for (const id of [...this._units.keys()]) {
-      const unit = this._units.get(id);
-      const tiers = unit ? this._unitTiers(unit, atMs) : null;
-      if (tiers) yield [id, JSON.stringify(tiers)];
     }
   }
 
-  _tiersText(parts, atMs) {
-    return `{"version":${TIERS_FILE_VERSION},"savedAt":${atMs},"units":${objectText(parts)}}`;
-  }
-
-  // ─── Persistence ────────────────────────────────────────
-
-  /** Start the periodic (async) save; no-op without a file. */
-  start() {
-    if ((!this._gpuSeries().some((series) => series.file) && !this.tiersFile) || this._timer) return;
-    this._timer = setInterval(() => void this.save(), SAVE_INTERVAL_MS);
-    this._timer.unref?.();
-  }
-
-  /**
-   * Write whatever changed, synchronously (shutdown, tests). Supersedes an async save in
-   * flight. Returns true when a file was written.
-   */
+  /** Synchronous write of every changed file; true when something was written. */
   flush() {
-    this._writeGen++;
+    this.generation++;
+    this._prune();
     let wrote = false;
-    for (const series of this._gpuSeries()) {
-      if (!series.file) continue;
-      series.prune(this._now());
-      if (series.rev === series.savedRev) continue;
-      const rev = series.rev;
+    for (const target of this._targets()) {
+      if (!this._dirty(target)) continue;
+      const revision = target.revision();
       try {
-        this._writeSync(series.file, series.text([...series.parts()]));
-        series.savedRev = rev;
-        wrote = true;
-      } catch {
-        /* best effort: history is a convenience */
-      }
-    }
-    if (this._tiersDirty()) {
-      const rev = this._tiersRev;
-      const atMs = this._now();
-      this._dropStale();
-      try {
-        this._writeSync(this.tiersFile, this._tiersText([...this._tiersParts(atMs)], atMs), 0o600);
-        this._tiersSavedRev = rev;
+        this.writeSync(target.file, target.text(), 0o600);
+        this.written.set(target.file, revision);
         wrote = true;
       } catch (err) {
-        this._logError(`[UnitHistory] failed to write ${this.tiersFile}: ${err.message}`);
+        this.logError(`failed to write ${target.file}`, err);
       }
     }
     return wrote;
   }
 
-  /**
-   * Write whatever changed without blocking the event loop: one unit is serialized per turn and
-   * the file goes through fs.promises. Coalesced — while a save is in flight, callers share it.
-   */
-  save() {
-    if (this._saving) return this._saving;
-    const gen = this._writeGen;
-    this._saving = (async () => {
-      for (const series of this._gpuSeries()) {
-        try {
-          await this._saveGpu(series, gen);
-        } catch (err) {
-          this._logError(`[UnitHistory] failed to save ${series.file}: ${err.message}`);
-        }
-      }
-      try {
-        await this._saveTiers(gen);
-      } catch (err) {
-        this._logError(`[UnitHistory] failed to save ${this.tiersFile}: ${err.message}`);
-      }
-    })().finally(() => {
-      this._saving = null;
-    });
-    return this._saving;
-  }
-
-  async _saveGpu(series, gen) {
-    if (!series.file) return;
-    series.prune(this._now());
-    if (series.rev === series.savedRev) return;
-    const rev = series.rev;
-    const parts = [];
-    for (const part of series.parts()) {
-      parts.push(part);
-      await this._yield();
-    }
-    const committed = await this._writeAsync(series.file, series.text(parts), 0o600, {
-      shouldCommit: () => gen === this._writeGen,
-    });
-    if (committed !== false && gen === this._writeGen) series.savedRev = Math.max(series.savedRev, rev);
-  }
-
-  /**
-   * The tiers file has unsaved changes and may be written: never while the setting is off, so
-   * buckets still pending when it is turned off are not written after it (they are written if
-   * it is turned on again before a restart).
-   */
-  _tiersDirty() {
-    return Boolean(this.tiersFile) && this._tiersLoaded && this._tiersRev !== this._tiersSavedRev && this._tiersEnabled();
-  }
-
-  async _saveTiers(gen) {
-    if (!this._tiersDirty()) return;
-    const rev = this._tiersRev;
-    const atMs = this._now();
-    this._dropStale();
-    const parts = [];
-    // Each unit is one slice: its rings are read in a single turn, so its columns stay consistent.
-    for (const part of this._tiersParts(atMs)) {
-      parts.push(part);
-      await this._yield();
-    }
-    const committed = await this._writeAsync(this.tiersFile, this._tiersText(parts, atMs), 0o600, {
-      shouldCommit: () => gen === this._writeGen,
-    });
-    if (committed !== false && gen === this._writeGen) this._tiersSavedRev = Math.max(this._tiersSavedRev, rev);
+  start() {
+    if (this.timer || this._targets().length === 0) return;
+    this.timer = setInterval(() => {
+      this.save().catch((err) => this.logError("periodic save failed", err));
+    }, SAVE_EVERY_MS);
+    this.timer.unref?.();
   }
 
   stop() {
-    if (this._timer) clearInterval(this._timer);
-    this._timer = null;
-    this.flush();
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    return this.flush();
   }
 }
 

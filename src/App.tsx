@@ -14,6 +14,11 @@ import { NodeDetail } from "./components/SparkPage/NodeDetail";
 import { HermesUpdateDialog } from "./components/SparkPage/HermesUpdateDialog";
 import { OverviewPage } from "./components/OverviewPage/OverviewPage";
 import { FleetPage } from "./components/OverviewPage/FleetPage";
+import { RecentActivityCard } from "./components/Activity/RecentActivityCard";
+import { FleetEnergyCard } from "./components/OverviewPage/FleetEnergyCard";
+import { FleetTokenTotals } from "./components/OverviewPage/FleetTokenTotals";
+import { MonthlyEnergy } from "./components/OverviewPage/MonthlyEnergy";
+import { ActivityPage, type ActivityUnit } from "./components/Activity/ActivityPage";
 import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { TopologyPage } from "./components/Topology/TopologyPage";
 import { UpdatesPage } from "./components/Updates/UpdatesPage";
@@ -164,6 +169,14 @@ function DashboardApp() {
     },
     [fleetView, fleetNavigate, navigate]
   );
+  /** Activity feed unit link: a fleet node opens its detail, a Spark its page. */
+  const selectUnit = useCallback(
+    (unitId: string) => {
+      if (fleet?.nodes.some((n) => n.nodeId === unitId)) fleetNavigate({ page: "node", nodeId: unitId });
+      else if (sparks.some((s) => s.id === unitId)) goSpark(unitId);
+    },
+    [fleet, sparks, fleetNavigate, goSpark]
+  );
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
@@ -248,8 +261,8 @@ function DashboardApp() {
     setSettings(s);
   }, []);
 
-  // Tab badge + desktop notifications (both opt-in, per browser): the strip's own
-  // list. Live snapshots only — placeholders from the REST fallback are all "offline".
+  // Per-browser tab badge and desktop notifications, fed by the same rows as the
+  // Overview strip. Only live snapshots count (REST placeholders look offline).
   const fleetAlerts = useFleetAlerts({
     sparks,
     alertsEnabled: settings?.alertsEnabled ?? false,
@@ -428,6 +441,9 @@ function DashboardApp() {
               view={fleetView}
               fleet={fleet}
               fleetError={fleetError}
+              sparks={sparks}
+              showFleetEnergy={settings?.showFleetEnergy ?? true}
+              onSelectUnit={selectUnit}
               onNavigate={fleetNavigate}
               onActionError={(msg) => setActionError(msg)}
             />
@@ -436,7 +452,6 @@ function DashboardApp() {
               sparks={displaySparks}
               hideOffline={settings?.autoHideOffline ?? false}
               hideWorkers={hideWorkers}
-              showFleetEnergy={settings?.showFleetEnergy ?? false}
               showFleetExceptions={settings?.showFleetExceptions ?? false}
               alertsEnabled={settings?.alertsEnabled ?? false}
               serverAlerts={serverAlerts}
@@ -579,15 +594,33 @@ function FleetViewPane({
   view,
   fleet,
   fleetError,
+  sparks,
+  showFleetEnergy = true,
+  onSelectUnit,
   onNavigate,
   onActionError,
 }: {
   view: FleetView;
   fleet: FleetSnapshot | null;
   fleetError: string | null;
+  sparks: SparkSnapshot[];
+  /** Fleet energy card on the Fleet tab (issue #33); on by default. */
+  showFleetEnergy?: boolean;
+  onSelectUnit: (unitId: string) => void;
   onNavigate: (v: FleetView | null) => void;
   onActionError: (msg: string) => void;
 }) {
+  if (view.page === "activity") {
+    // Self-contained: reads /api/events itself; the unit filter offers every
+    // Spark and fleet node known right now.
+    const units: ActivityUnit[] = [];
+    const seen = new Set<string>();
+    for (const s of sparks) if (!seen.has(s.id) && seen.add(s.id)) units.push({ id: s.id, name: s.name || s.id });
+    for (const n of fleet?.nodes ?? [])
+      if (!seen.has(n.nodeId) && seen.add(n.nodeId)) units.push({ id: n.nodeId, name: n.nodeName || n.nodeId });
+    return <ActivityPage units={units} onSelectUnit={onSelectUnit} />;
+  }
+
   if (view.page === "updates") {
     // Self-contained page: it fetches the fleet-updates + registry reads itself,
     // so it does not depend on the fleet snapshot poll.
@@ -619,6 +652,17 @@ function FleetViewPane({
         requests={fleet.requests}
         memory={fleet.memory}
         onSelectNode={(nodeId) => onNavigate({ page: "node", nodeId })}
+        tokens={<FleetTokenTotals />}
+        energy={
+          showFleetEnergy ? (
+            <FleetEnergyCard>
+              <MonthlyEnergy />
+            </FleetEnergyCard>
+          ) : null
+        }
+        activity={
+          <RecentActivityCard onViewAll={() => onNavigate({ page: "activity" })} onSelectUnit={onSelectUnit} />
+        }
       />
     );
   }
