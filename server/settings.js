@@ -28,9 +28,8 @@ const DEFAULTS = Object.freeze({
   /** Overview search + status filter row. Off by default. */
   showOverviewSearch: false,
   /**
-   * Alert notifications (Settings → Alerts). Off by default: while off nothing
-   * is evaluated or sent, and the alert config / test routes refuse (409).
-   * (Upstream default block placement adapted — this fork has no metricsHistory.)
+   * Master switch for alert notifications. Default off; when off no rule runs,
+   * nothing is delivered, and the alert write/test endpoints return 409.
    */
   alertsEnabled: false,
   /**
@@ -40,9 +39,9 @@ const DEFAULTS = Object.freeze({
    */
   benchShareImage: true,
   /**
-   * Keep 48 h of 1-minute and 30 days of 15-minute history per unit (GPU, memory
-   * headroom, CPU, RAM, network, LLM tok/s and KV) for the unit page. Off by
-   * default: nothing is recorded and config/metrics-history.json is never written.
+   * Record the bucketed per-unit history the unit page charts (1-minute
+   * buckets for two days, quarter-hour buckets for a month). Default off;
+   * while off no buckets are kept and the history file is left alone.
    */
   metricsHistory: false,
 });

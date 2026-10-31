@@ -221,11 +221,9 @@ function SparkCard({
                   : "Comfy · idle"}
           </span>
         ) : null}
-        {online && gpu?.throttle?.clockCapMHz != null ? (
-          <Tag title="GPU clock locked with nvidia-smi -lgc">
-            Cap {(gpu.throttle.clockCapMHz / 1000).toFixed(1)} GHz
-          </Tag>
-        ) : null}
+        {online && typeof gpu?.throttle?.clockCapMHz === "number" && (
+          <Tag title="GPU clock locked with nvidia-smi -lgc">{`Cap ${(gpu.throttle.clockCapMHz / 1000).toFixed(1)} GHz`}</Tag>
+        )}
         <span className="text-[10px] uppercase tracking-wide text-muted">
           {online ? "online" : "offline"}
         </span>

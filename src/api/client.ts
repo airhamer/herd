@@ -718,18 +718,19 @@ export function abandonUpdatePlan(): Promise<AbandonPlanResponse> {
   return apiFetch("/api/fleet/updates/plan", { method: "DELETE" });
 }
 
-// ─── Unit history (S2.3a routes; names mirrored exactly) ──
+// ─── Unit history (docs/specs/unit-history.md §9) ─────────
 
-/** The 48 h / 30 d bucketed unit history (`{ enabled: false }` while the server setting is off). */
+const sparkPath = (sparkId: string) => `/api/sparks/${encodeURIComponent(sparkId)}`;
+
+/** Bucketed unit history for one range; `{ enabled: false }` when the server setting is off. */
 export function getUnitHistory(sparkId: string, range: MetricsHistoryRange): Promise<MetricsHistoryResponse> {
-  return apiFetch<MetricsHistoryResponse>(`/api/sparks/${encodeURIComponent(sparkId)}/history?range=${range}`);
+  return apiFetch<MetricsHistoryResponse>(`${sparkPath(sparkId)}/history?range=${range}`);
 }
 
-/** The dense GPU raw series (parallel arrays, newest last); default window server-side. */
+/** Recent raw GPU samples as parallel arrays (oldest first); the server picks the window unless one is given. */
 export function getGpuHistory(sparkId: string, windowMs?: number): Promise<GpuHistoryResponse> {
-  return apiFetch<GpuHistoryResponse>(
-    `/api/sparks/${encodeURIComponent(sparkId)}/gpu-history${windowMs != null ? `?windowMs=${windowMs}` : ""}`,
-  );
+  const query = windowMs === undefined || windowMs === null ? "" : `?windowMs=${windowMs}`;
+  return apiFetch<GpuHistoryResponse>(`${sparkPath(sparkId)}/gpu-history${query}`);
 }
 
 // ─── Guard proxy (S4.1b) ──────────────────────────────────
