@@ -330,3 +330,166 @@ test("SC3 bootstrap hardcodes are present and well-formed", () => {
     assert.ok(Number.isInteger(c.tp) && c.tp >= 1);
   }
 });
+
+// ─── SC7: single-spark addon placement on top of a TP group ────────────────
+
+import { computeGroupAddonPlan } from "../memory.js";
+
+test("SC7 addons: all fit → fits=true, same-spark stacking decrements running free", () => {
+  // tp2 group, perSpark 10000. a: free 102880 → projected 92880.
+  // b: free 82880 → projected 72880. Both addons fit on a (FDD order:
+  // tts 6000 first → 86880, embedder 4000 → 82880).
+  const r = computeGroupAddonPlan(
+    { groupId: "g", tp: 2, perSparkMB: 10000 },
+    [
+      { nodeId: "a", totalMB: 122880, usedMB: 20000 },
+      { nodeId: "b", totalMB: 122880, usedMB: 40000 },
+    ],
+    [
+      { name: "embedder", footprintMB: 4000, tp: 1 },
+      { name: "tts", footprintMB: 6000, tp: 1 },
+    ]
+  );
+  assert.equal(r.fits, true);
+  assert.equal(r.group.fits, true);
+  assert.equal(r.group.groupId, "g"); // group layer passes through untouched
+  assert.equal(r.addons.length, 2);
+  assert.equal(r.addons[0].name, "embedder");
+  assert.equal(r.addons[0].placement.nodeId, "a");
+  assert.equal(r.addons[0].placement.feasible, true);
+  assert.equal(r.addons[0].projectedFreeAfterMB, 92880 - 6000 - 4000); // 82880
+  assert.equal(r.addons[1].name, "tts");
+  assert.equal(r.addons[1].placement.nodeId, "a");
+  assert.equal(r.addons[1].projectedFreeAfterMB, 92880 - 6000); // 86880
+});
+
+test("SC7 addons: fits nowhere → placement null, feasible false, never evicts", () => {
+  // solo spark: free 112880, shard 100000 → projected 12880.
+  const r = computeGroupAddonPlan(
+    { tp: 1, perSparkMB: 100000 },
+    [{ nodeId: "solo", totalMB: 122880, usedMB: 10000 }],
+    [
+      { name: "fits", footprintMB: 10000, tp: 1 },
+      { name: "huge", footprintMB: 50000, tp: 1 },
+    ]
+  );
+  assert.equal(r.fits, false);
+  assert.equal(r.group.fits, true); // the group itself is fine
+  assert.equal(r.addons[0].placement.nodeId, "solo");
+  assert.equal(r.addons[0].projectedFreeAfterMB, 2880);
+  assert.equal(r.addons[1].placement.nodeId, null);
+  assert.equal(r.addons[1].placement.feasible, false);
+  assert.equal(r.addons[1].projectedFreeAfterMB, null);
+  // The skipped addon disturbed nothing: the group plan made no room, and
+  // the placed addon's projection is as if "huge" were never offered.
+  assert.deepEqual(r.group.sparks[0].makeRoom, []);
+  assert.equal(r.group.sparks[0].projectedFreeMB, 12880);
+});
+
+test("SC7 addons: first-fit-DECREASING places the largest first (input order preserved in output)", () => {
+  // A projected 5000, B projected 4000. addons offered small-first.
+  // FDD: big(5000)→A first; small(3000) then must take B. Input order
+  // would have put small on A (leaving 2000) and stranded big — the split
+  // below can only happen with decreasing order.
+  const r = computeGroupAddonPlan(
+    { tp: 2, perSparkMB: 25000 },
+    [
+      { nodeId: "A", totalMB: 30000, usedMB: 0 },
+      { nodeId: "B", totalMB: 29000, usedMB: 0 },
+    ],
+    [
+      { name: "small", footprintMB: 3000, tp: 1 },
+      { name: "big", footprintMB: 5000, tp: 1 },
+    ]
+  );
+  assert.equal(r.fits, true);
+  assert.equal(r.addons[0].name, "small"); // input order kept
+  assert.equal(r.addons[0].placement.nodeId, "B");
+  assert.equal(r.addons[0].projectedFreeAfterMB, 1000);
+  assert.equal(r.addons[1].name, "big");
+  assert.equal(r.addons[1].placement.nodeId, "A");
+  assert.equal(r.addons[1].projectedFreeAfterMB, 0);
+});
+
+test("SC7 addons: floorMB is held back per addon — same addon placed vs skipped", () => {
+  const entries = [{ nodeId: "solo", totalMB: 122880, usedMB: 20000 }];
+  const addons = [{ name: "router", footprintMB: 90880, tp: 1 }];
+
+  // floor 0: group projected = 102880 - 10000 = 92880 >= 90880 → placed, 2000 left.
+  const loose = computeGroupAddonPlan({ tp: 1, perSparkMB: 10000 }, entries, addons, {
+    floorMB: 0,
+  });
+  assert.equal(loose.fits, true);
+  assert.equal(loose.addons[0].placement.nodeId, "solo");
+  assert.equal(loose.addons[0].projectedFreeAfterMB, 2000);
+
+  // floor 2000: group projected = 90880 (floor already held); the addon must
+  // ALSO leave floorMB uncovered headroom → 90880 < 90880 + 2000 → skipped.
+  const tight = computeGroupAddonPlan({ tp: 1, perSparkMB: 10000 }, entries, addons, {
+    floorMB: 2000,
+  });
+  assert.equal(tight.group.fits, true);
+  assert.equal(tight.addons[0].placement.nodeId, null);
+  assert.equal(tight.fits, false);
+});
+
+test("SC7 addons: infeasible group propagates fits=false even when the addon placed", () => {
+  // a: free 110000 → projected 10000 (fine). b: free 880 < shard, nothing
+  // stoppable → infeasible, projected -99120 → an addon can never sit there.
+  const r = computeGroupAddonPlan(
+    { tp: 2, perSparkMB: 100000 },
+    [
+      { nodeId: "a", totalMB: 122880, usedMB: 12880 },
+      { nodeId: "b", totalMB: 122880, usedMB: 122000 },
+    ],
+    [{ name: "embedder", footprintMB: 5000, tp: 1 }]
+  );
+  assert.equal(r.group.fits, false);
+  assert.equal(r.addons[0].placement.nodeId, "a");
+  assert.equal(r.addons[0].placement.feasible, true);
+  assert.equal(r.addons[0].projectedFreeAfterMB, 5000);
+  assert.equal(r.fits, false); // group infeasibility propagates
+});
+
+test("SC7 addons: malformed addon list/entries throw readable TypeErrors", () => {
+  const service = { tp: 1, perSparkMB: 10 };
+  const entries = [{ nodeId: "a", totalMB: 100, usedMB: 0 }];
+  assert.throws(() => computeGroupAddonPlan(service, entries, null), /addons must be an array/);
+  assert.throws(
+    () => computeGroupAddonPlan(service, entries, ["x"]),
+    /addons\[0\] must be an object/
+  );
+  assert.throws(
+    () => computeGroupAddonPlan(service, entries, [{ name: "", footprintMB: 1, tp: 1 }]),
+    /addons\[0\]\.name must be a non-empty string/
+  );
+  assert.throws(
+    () => computeGroupAddonPlan(service, entries, [{ name: "a", footprintMB: -5, tp: 1 }]),
+    /footprintMB must be a non-negative finite number/
+  );
+  assert.throws(
+    () => computeGroupAddonPlan(service, entries, [{ name: "a", footprintMB: NaN, tp: 1 }]),
+    TypeError
+  );
+  // tp > 1 is a group member, not an addon.
+  assert.throws(
+    () => computeGroupAddonPlan(service, entries, [{ name: "a", footprintMB: 1, tp: 2 }]),
+    /multi-TP components belong in their own group plan/
+  );
+  // missing / non-integer tp is a malformed entry.
+  assert.throws(
+    () => computeGroupAddonPlan(service, entries, [{ name: "a", footprintMB: 1 }]),
+    /tp must be an integer >= 1/
+  );
+  assert.throws(
+    () => computeGroupAddonPlan(service, entries, [{ name: "a", footprintMB: 1, tp: 1.5 }]),
+    TypeError
+  );
+  // Empty addons is legal: plan == group, fits == group.fits.
+  const r = computeGroupAddonPlan(service, entries, []);
+  assert.deepEqual(r.addons, []);
+  assert.equal(r.fits, true);
+  // Malformed service/sparkEntries still throw via computeGroupMemoryBudget.
+  assert.throws(() => computeGroupAddonPlan(null, entries, []), TypeError);
+  assert.throws(() => computeGroupAddonPlan({ tp: 2, perSparkMB: 10 }, entries, []), TypeError);
+});
