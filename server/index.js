@@ -34,6 +34,10 @@ import {
   normalizeContextSizes,
 } from "./collectors/PrefillBench.js";
 import { showcaseManager } from "./collectors/ShowcaseManager.js";
+import { BenchResultsStore } from "./bench/results/store.js";
+import { createResultsRecorder } from "./bench/results/recorder.js";
+import { describeProvenance } from "./bench/results/provenance.js";
+import { registerBenchResultsRoutes } from "./bench/results/routes.js";
 import { llmProbeHost } from "./collectors/llmHost.js";
 import { onceClose, resolveLlmHttpTarget } from "./collectors/llmTunnel.js";
 import { formatLlmBaseUrl, parseLlmTargetInput } from "../src/shared/llmTarget.js";
@@ -612,6 +616,41 @@ const server = createServer(app);
 
 app.use(express.json());
 app.use(createAuthMiddleware());
+
+// ─── Bench results store (BENCH1) ─────────────────────────
+const benchResultsStore = new BenchResultsStore();
+const benchResultsRecorder = createResultsRecorder({ store: benchResultsStore });
+decodeBenchManager.resultSink = benchResultsRecorder.sinkFor("DecodeBench");
+prefillBenchManager.resultSink = benchResultsRecorder.sinkFor("PrefillBench");
+showcaseManager.resultSink = benchResultsRecorder.sinkFor("Showcase");
+try {
+  const imported = benchResultsStore.importLegacyHistories({
+    decode: decodeBenchManager.historyPath,
+    prefill: prefillBenchManager.historyPath,
+    showcase: showcaseManager.historyPath,
+  });
+  const added = Object.values(imported).reduce((n, r) => n + (r.added || 0), 0);
+  if (added) console.log(`[bench-results] imported ${added} result(s) from bench history files`);
+} catch (err) {
+  console.warn(`[bench-results] legacy history import failed: ${err.message}`);
+}
+registerBenchResultsRoutes(app, { store: benchResultsStore });
+
+/** Host + lane provenance for a bench run starting now (null on failure). */
+function benchProvenance(spark, monitor, port, ports, customHost = false) {
+  try {
+    return describeProvenance({
+      snapshot: monitor ? monitor.snapshot() : null,
+      allSnapshots: [...monitors.values()].map((m) => m.snapshot()),
+      nodeId: spark.id,
+      port,
+      ports,
+      customHost,
+    });
+  } catch {
+    return null;
+  }
+}
 
 app.get("/api/health", (_req, res) => {
   res.json(inspectHealth(process.env.BIND_HOST || "127.0.0.1"));
@@ -1793,6 +1832,7 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
             }
           : null,
     });
+    benchResultsRecorder.noteStart("DecodeBench", job.benchId, benchProvenance(spark, monitor, port, ports, target.custom));
     res.status(202).json(job);
   } catch (err) {
     const status = err.status || 500;
@@ -1927,6 +1967,7 @@ app.post("/api/sparks/:id/llm/prefill-bench", async (req, res) => {
       tls: target.tls,
       resolveTarget: target.resolveTarget,
     });
+    benchResultsRecorder.noteStart("PrefillBench", job.benchId, benchProvenance(spark, monitor, port, ports, target.custom));
     res.status(202).json(job);
   } catch (err) {
     const status = err.status || 500;
@@ -2050,6 +2091,7 @@ app.post("/api/sparks/:id/llm/showcase", (req, res) => {
       prompts: req.body?.prompts,
       apiKey: resolveLlmApiKey(spark, port),
     });
+    benchResultsRecorder.noteStart("Showcase", result.sessionId, benchProvenance(spark, monitor, port, ports));
     res.status(202).json(result);
   } catch (err) {
     const status = err.status || 500;
