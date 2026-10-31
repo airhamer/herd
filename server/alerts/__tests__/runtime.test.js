@@ -72,10 +72,11 @@ describe("delivery and Activity", () => {
     const h = build();
     await h.rt.updateConfig({ rules: { thermal: { forSec: 0 } }, channels: [pager] });
     h.rt.tick([unitAt(95)]);
-    await waitFor(() => h.log.list().length > 0);
+    const notices = () => h.log.list({ types: ["alert.notify."] });
+    await waitFor(() => notices().length > 0);
     assert.equal(h.fetchImpl.calls.length, 1);
     assert.equal(h.fetchImpl.calls[0].url, pager.url);
-    const [event] = h.log.list();
+    const [event] = notices();
     assert.equal(event.type, "alert.notify.sent");
     assert.equal(event.sparkId, "spark-1");
     assert.equal(event.message, 'Alert notification sent to "Pager" (ntfy): critical · spark-1 GPU is close to its shutdown temperature');
@@ -92,9 +93,10 @@ describe("delivery and Activity", () => {
     const h = build({ fetchImpl: null, lookup: null });
     await h.rt.updateConfig({ rules: { offline: { forSec: 0 } }, channels: [{ ...pager, type: "webhook", url: `http://127.0.0.1:${srv.port}/private-path` }] });
     h.rt.tick([offlineUnit("timeout")]);
-    await waitFor(() => h.log.list().length > 0);
+    const notices = () => h.log.list({ types: ["alert.notify."] });
+    await waitFor(() => notices().length > 0);
     assert.equal(srv.seen.length, 1);
-    const [event] = h.log.list();
+    const [event] = notices();
     assert.equal(event.type, "alert.notify.failed");
     assert.equal(event.severity, "error");
     assert.match(event.message, /failed: HTTP 401/);
@@ -102,6 +104,26 @@ describe("delivery and Activity", () => {
     const all = JSON.stringify({ events: h.log.list(), cfg: h.rt.publicConfig(), status: h.rt.status() });
     assert.equal(all.includes(SECRET_MARKER), false);
     assert.equal(all.includes("private-path"), false);
+  });
+});
+
+describe("alert transitions in Activity (issue #32)", () => {
+  test("firing and resolving are recorded as alert.fired / alert.resolved", async () => {
+    const h = build();
+    await h.rt.updateConfig({ rules: { offline: { forSec: 0 } }, channels: [] });
+    h.rt.tick([offlineUnit()]);
+    const [fired] = h.log.list({ types: ["alert.fired"] });
+    assert.equal(fired.sparkId, "spark-1");
+    assert.equal(fired.sparkName, "spark-1");
+    assert.equal(fired.data.ruleId, "offline");
+    for (let i = 0; i < 40 && h.log.list({ types: ["alert.resolved"] }).length === 0; i++) {
+      h.now.tick(60_000);
+      h.rt.tick([unitAt(40)]);
+    }
+    const [resolved] = h.log.list({ types: ["alert.resolved"] });
+    assert.ok(resolved, "resolved once the unit is healthy long enough");
+    assert.equal(resolved.severity, "success");
+    assert.equal(resolved.data.key, fired.data.key);
   });
 });
 

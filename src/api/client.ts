@@ -6,6 +6,8 @@ import type {
   AlertsResponse,
   AlertTestResult,
   DecodeBenchJob,
+  EventsQuery,
+  EventsResponse,
   DecodeBenchListResponse,
   FleetEnergy,
   MonthlyEnergy,
@@ -499,6 +501,28 @@ export const updateAlertsConfig = (update: AlertsConfigUpdate): Promise<AlertsCo
  */
 export const testAlertChannel = (channelId: string | undefined, channel?: AlertChannel): Promise<AlertTestResult> =>
   apiFetch(`${ALERTS}/test`, { method: "POST", body: JSON.stringify({ channelId, channel }) });
+
+// ─── Activity (/api/events) ─────────────────────────────
+
+/** Build the /api/events query string; empty filters are left out. */
+export function eventsPath(query: EventsQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.limit != null) params.set("limit", String(query.limit));
+  if (query.sparkId) params.set("sparkId", query.sparkId);
+  if (query.sinceId != null) params.set("sinceId", String(query.sinceId));
+  if (query.beforeId != null) params.set("beforeId", String(query.beforeId));
+  if (query.types?.length) params.set("type", query.types.join(","));
+  if (query.severities?.length) params.set("severity", query.severities.join(","));
+  const qs = params.toString();
+  return qs ? `/api/events?${qs}` : "/api/events";
+}
+
+/** Fleet activity, newest first. */
+export const fetchEvents = (query: EventsQuery = {}): Promise<EventsResponse> => apiFetch(eventsPath(query));
+
+/** Delete events at least `olderThanMs` old, or every event when omitted. */
+export const clearEvents = (olderThanMs?: number): Promise<{ removed: number }> =>
+  apiFetch(olderThanMs ? `/api/events?olderThanMs=${Math.floor(olderThanMs)}` : "/api/events", { method: "DELETE" });
 
 // ─── Fleet (node-agent) ─────────────────────────────────
 /** Aggregated fleet snapshot: nodes + topology + requests + memory. */

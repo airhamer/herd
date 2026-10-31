@@ -143,4 +143,15 @@ describe("FleetPage", () => {
     );
     expect(text).toContain("No nodes registered");
   });
+
+  it("renders the activity slot under the cards, with or without nodes", () => {
+    const slot = <section data-testid="activity-slot">Recent activity</section>;
+    const withNodes = render(<FleetPage {...makeProps()} activity={slot} />);
+    const cards = withNodes.container.querySelector(".overview-page");
+    const activity = withNodes.container.querySelector('[data-testid="activity-slot"]');
+    expect(activity).not.toBeNull();
+    expect(cards!.compareDocumentPosition(activity!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const empty = render(<FleetPage {...makeProps({ nodes: [] })} activity={slot} />);
+    expect(empty.container.querySelector('[data-testid="activity-slot"]')).not.toBeNull();
+  });
 });

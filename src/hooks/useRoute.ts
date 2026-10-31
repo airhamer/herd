@@ -97,6 +97,7 @@ export function useRoute(
 // URL scheme (independent of the spark tab bar):
 //   /fleet                → fleet overview
 //   /topology             → topology / RoCE diagram
+//   /activity             → fleet activity log
 //   /node/:id             → node detail
 //   /node/:id/services    → service manager (start/stop/switch)
 //   /node/:id/requests    → requests visualization
@@ -106,6 +107,7 @@ export type FleetView =
   | { page: "topology" }
   | { page: "updates" }
   | { page: "components" }
+  | { page: "activity" }
   | { page: "node"; nodeId: string }
   | { page: "node-services"; nodeId: string }
   | { page: "node-requests"; nodeId: string };
@@ -120,6 +122,8 @@ export function fleetViewToPath(v: FleetView): string {
       return "/updates";
     case "components":
       return "/components";
+    case "activity":
+      return "/activity";
     case "node":
       return `/node/${encodeURIComponent(v.nodeId)}`;
     case "node-services":
@@ -134,6 +138,7 @@ export function parseFleetPath(pathname: string): FleetView | null {
   if (pathname === "/topology") return { page: "topology" };
   if (pathname === "/updates") return { page: "updates" };
   if (pathname === "/components") return { page: "components" };
+  if (pathname === "/activity") return { page: "activity" };
   const m = pathname.match(/^\/node\/([^/]+)(?:\/(services|requests))?$/);
   if (!m) return null;
   const nodeId = decodeURIComponent(m[1]);

@@ -14,6 +14,8 @@ import { NodeDetail } from "./components/SparkPage/NodeDetail";
 import { HermesUpdateDialog } from "./components/SparkPage/HermesUpdateDialog";
 import { OverviewPage } from "./components/OverviewPage/OverviewPage";
 import { FleetPage } from "./components/OverviewPage/FleetPage";
+import { RecentActivityCard } from "./components/Activity/RecentActivityCard";
+import { ActivityPage, type ActivityUnit } from "./components/Activity/ActivityPage";
 import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { TopologyPage } from "./components/Topology/TopologyPage";
 import { UpdatesPage } from "./components/Updates/UpdatesPage";
@@ -163,6 +165,14 @@ function DashboardApp() {
       navigate(id);
     },
     [fleetView, fleetNavigate, navigate]
+  );
+  /** Activity feed unit link: a fleet node opens its detail, a Spark its page. */
+  const selectUnit = useCallback(
+    (unitId: string) => {
+      if (fleet?.nodes.some((n) => n.nodeId === unitId)) fleetNavigate({ page: "node", nodeId: unitId });
+      else if (sparks.some((s) => s.id === unitId)) goSpark(unitId);
+    },
+    [fleet, sparks, fleetNavigate, goSpark]
   );
   const [showAdd, setShowAdd] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
@@ -428,6 +438,8 @@ function DashboardApp() {
               view={fleetView}
               fleet={fleet}
               fleetError={fleetError}
+              sparks={sparks}
+              onSelectUnit={selectUnit}
               onNavigate={fleetNavigate}
               onActionError={(msg) => setActionError(msg)}
             />
@@ -579,15 +591,30 @@ function FleetViewPane({
   view,
   fleet,
   fleetError,
+  sparks,
+  onSelectUnit,
   onNavigate,
   onActionError,
 }: {
   view: FleetView;
   fleet: FleetSnapshot | null;
   fleetError: string | null;
+  sparks: SparkSnapshot[];
+  onSelectUnit: (unitId: string) => void;
   onNavigate: (v: FleetView | null) => void;
   onActionError: (msg: string) => void;
 }) {
+  if (view.page === "activity") {
+    // Self-contained: reads /api/events itself; the unit filter offers every
+    // Spark and fleet node known right now.
+    const units: ActivityUnit[] = [];
+    const seen = new Set<string>();
+    for (const s of sparks) if (!seen.has(s.id) && seen.add(s.id)) units.push({ id: s.id, name: s.name || s.id });
+    for (const n of fleet?.nodes ?? [])
+      if (!seen.has(n.nodeId) && seen.add(n.nodeId)) units.push({ id: n.nodeId, name: n.nodeName || n.nodeId });
+    return <ActivityPage units={units} onSelectUnit={onSelectUnit} />;
+  }
+
   if (view.page === "updates") {
     // Self-contained page: it fetches the fleet-updates + registry reads itself,
     // so it does not depend on the fleet snapshot poll.
@@ -619,6 +646,9 @@ function FleetViewPane({
         requests={fleet.requests}
         memory={fleet.memory}
         onSelectNode={(nodeId) => onNavigate({ page: "node", nodeId })}
+        activity={
+          <RecentActivityCard onViewAll={() => onNavigate({ page: "activity" })} onSelectUnit={onSelectUnit} />
+        }
       />
     );
   }

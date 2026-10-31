@@ -371,6 +371,8 @@ sparkDash/
 | PUT | `/api/sparks/order` | Persist tab order |
 | GET | `/api/sparks/:id/metrics` | One-shot metrics snapshot |
 | GET | `/api/fleet-energy` | Estimated fleet watts, rolling energy, coverage, and Wh/output-token |
+| GET | `/api/events` | Activity log, newest first (`limit` ≤2000, `sparkId`, `sinceId`, `beforeId`, `type` comma list with `prefix.` matching, `severity`); new events are also pushed over `/ws` as `{ "type": "event", "event": … }` |
+| DELETE | `/api/events` | Clear the activity log (`olderThanMs` keeps anything newer) |
 | POST | `/api/sparks/test` | Ephemeral SSH + LLM (+ Comfy if enabled) test (no persist) |
 | POST | `/api/sparks/:id/test` | Connectivity test (can save password) |
 | POST | `/api/sparks/:id/comfy/cancel` | Cancel ComfyUI job by `promptId` |
