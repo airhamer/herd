@@ -623,6 +623,55 @@ export interface StackDraft {
 }
 
 /**
+ * SC4: one recorded run used for the proven-category verdict and ETA
+ * refinement (agent/catalog/history.js). Recorded per stack membership
+ * (componentNames): what actually ran, at what tensor-parallel size, and
+ * how long the boot actually took against what was estimated.
+ */
+export interface ProvenHistoryEntry {
+  /** Stable id of the stack this run belongs to (Stack.id). */
+  stackId: string;
+  /** Stack membership the run was recorded under (sorted Component names). */
+  componentNames: string[];
+  /** Tensor-parallel size the run actually used (1 = single box). */
+  tpSize: number;
+  /** Actual boot time in ms (launch → serving). null when not measured. */
+  actualBootMs: number | null;
+  /** Boot estimate in ms the run was launched against. null when none. */
+  etaMs: number | null;
+  /** Whether the run succeeded (served without OOM / completed). */
+  success: boolean;
+  /** Optional free-form notes (OOM, retry, host, engine version, …). */
+  notes?: string;
+  /** When the run was recorded (ms epoch). */
+  timestamp: number;
+}
+
+/**
+ * SC4: the proven history for one category/stack — all recorded runs for a
+ * stack id, oldest first (append order). Consumed by the proven override
+ * (any success ⇒ proven) and by SC5+ ETA refinement (boot averages).
+ */
+export interface CategoryHistory {
+  /** Stack id this history belongs to. */
+  stackId: string;
+  /** Entries in append order (oldest first); may be empty. */
+  entries: ProvenHistoryEntry[];
+}
+
+/**
+ * SC4 storage shape: the on-disk `agent/config/stack-history.json` file
+ * (agent/catalog/history.js). Appends only — a rewrite is never required
+ * for correctness, and reads are fail-soft like stacks.json.
+ */
+export interface ProvenHistoryFile {
+  /** File-format version. Currently 1. */
+  version: 1;
+  /** Recorded runs, unique (stackId, timestamp), append order preserved. */
+  entries: ProvenHistoryEntry[];
+}
+
+/**
  * SC2 storage shape: the on-disk `agent/config/stacks.json` file
  * (produced and consumed by agent/catalog/stacks-catalog.js; imported by
  * the setup menu for merge/export/import). `category` on load is a hint
@@ -692,6 +741,13 @@ export interface NodeAgentSnapshot {
    * failure surfaces as null. Consumers treat both as "no lanes".
    */
   lanes?: NodeLanes | null;
+  /**
+   * SC4: proven-history per stack (agent/catalog/history.js via snapshot
+   * enrichment), keyed by stackId. Optional: agents older than SC4 omit the
+   * key; enrichment failure or an empty history surfaces as null. Consumers
+   * (SC5+ ETA calc / UI) treat both as "no history".
+   */
+  stackHistory?: Record<string, CategoryHistory> | null;
   /** Last time this snapshot was polled (ms epoch). */
   polledAt: number;
 }

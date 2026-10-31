@@ -52,6 +52,7 @@ import {
 import { computeMemoryBudget } from "./catalog/memory.js";
 import { listServices } from "./catalog/services.js";
 import { deriveLanes } from "./catalog/lanes.js";
+import { createHistoryStore } from "./catalog/history.js";
 import { createHttpServer } from "./http.js";
 import { collectTelemetry, AGENT_VERSION } from "./telemetry.js";
 import { parseLlmAuthTokens } from "./collectors/llm.js";
@@ -298,7 +299,7 @@ export function buildLiveState(recipes, live = {}) {
  * the snapshot the collectors already produced.
  *
  * @param {object} snapshot NodeAgentSnapshot from collectTelemetry
- * @param {{ nodeId?: string, recipes?: object[] }} [opts]
+ * @param {{ nodeId?: string, recipes?: object[], stackHistory?: object }} [opts]
  * @returns {object} the snapshot with services/memory/requests populated
  */
 export function enrichSnapshot(snapshot, opts = {}) {
@@ -404,6 +405,19 @@ export function enrichSnapshot(snapshot, opts = {}) {
     snap.lanes = null;
   }
 
+  // SC4: proven category history (agent/catalog/history.js), attached so the
+  // server/UI (SC5+) can drive proven verdicts and ETA refinement from the
+  // snapshot alone. Fail-safe like the sections above: absent store or a
+  // throw surfaces as null.
+  try {
+    const history = opts.stackHistory;
+    const histories =
+      history && typeof history.allHistories === "function" ? history.allHistories() : null;
+    snap.stackHistory = histories && Object.keys(histories).length > 0 ? histories : null;
+  } catch {
+    snap.stackHistory = null;
+  }
+
   return snap;
 }
 
@@ -438,6 +452,12 @@ export function createNodeAgent(opts = {}) {
   // dgxConfigured:false and nothing throws.
   const dgx = createDgxUpdates();
   const scheduler = createUpdateScheduler({ dgx });
+  // SC4: proven-history store (agent/catalog/history.js). Fail-soft like the
+  // recipe catalog: a corrupt file degrades to empty with a warning.
+  const stackHistory = createHistoryStore(opts.env?.STACK_HISTORY_PATH).load();
+  if (stackHistory.errors.length) {
+    console.warn(`[node-agent] stack history degraded: ${stackHistory.errors.join("; ")}`);
+  }
   const updates = {
     triggerNow: () => dgx.triggerNow(),
     scheduleUpdate: (req) => scheduler.scheduleUpdate(req),
@@ -454,7 +474,13 @@ export function createNodeAgent(opts = {}) {
         identity.llmPorts,
         identity.comfyPort,
         { llmAuthTokens: identity.llmAuthTokens }
-      ).then((snap) => enrichSnapshot(snap, { nodeId: identity.nodeId, recipes: catalog.recipes })),
+      ).then((snap) =>
+        enrichSnapshot(snap, {
+          nodeId: identity.nodeId,
+          recipes: catalog.recipes,
+          stackHistory,
+        })
+      ),
     identity.port,
     identity.bind,
     {
@@ -485,6 +511,8 @@ export function createNodeAgent(opts = {}) {
         }),
       /** Join recipes + live state into ServiceInstance[]. */
       listServices: (liveState) => listServices(catalog.recipes, liveState),
+      /** SC4 proven-history store (append / historyFor / hasProven / recentProven). */
+      stackHistory,
     },
     start() {
       // Re-arm persisted schedules (past-due one-shot fires once) and start
