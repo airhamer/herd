@@ -1,6 +1,7 @@
 // Fleet event log: a bounded, newest-wins list of human-readable events
-// (alert deliveries today), kept in memory and mirrored to a JSON file.
-// docs/specs/alerts.md §9. Clean-room implementation (LIC1).
+// (alert deliveries, node and service transitions, actions, benchmarks),
+// kept in memory and mirrored to a JSON file. docs/specs/alerts.md §9 and
+// issue #32. Clean-room implementation (LIC1, FLEET1).
 import fs from "fs";
 import { atomicWrite, quarantineCorrupt } from "../util/atomicWrite.js";
 
@@ -122,8 +123,15 @@ export class EventLog {
   /**
    * Newest first. `sparkId` narrows to one unit; `sinceId` / `beforeId` page
    * by id (exclusive); `limit` is clamped to 1…max (default 50).
+   * `types` keeps events whose type equals an entry or starts with an entry
+   * that ends in "." (so "gpu." matches every gpu.* type); `severities`
+   * keeps only those severities. Empty arrays mean no filter.
    */
-  list({ limit = 50, sparkId, sinceId, beforeId } = {}) {
+  list({ limit = 50, sparkId, sinceId, beforeId, types, severities } = {}) {
+    const typeList = Array.isArray(types) && types.length > 0 ? types : null;
+    const sevList = Array.isArray(severities) && severities.length > 0 ? severities : null;
+    const typeMatches = (t) =>
+      typeList.some((want) => (want.endsWith(".") ? t.startsWith(want) : t === want));
     const wanted = Math.min(this.max, Math.max(1, Number.isFinite(limit) ? Math.floor(limit) : 50));
     const out = [];
     for (let i = this._items.length - 1; i >= 0 && out.length < wanted; i -= 1) {
@@ -131,6 +139,8 @@ export class EventLog {
       if (sparkId && e.sparkId !== sparkId) continue;
       if (Number.isFinite(sinceId) && e.id <= sinceId) continue;
       if (Number.isFinite(beforeId) && e.id >= beforeId) continue;
+      if (typeList && !typeMatches(e.type)) continue;
+      if (sevList && !sevList.includes(e.severity)) continue;
       out.push(e);
     }
     return out;
@@ -165,6 +175,16 @@ export class EventLog {
   /** Id of the oldest event still held, or null. */
   oldestId() {
     return this._items[0]?.id ?? null;
+  }
+
+  /** Id of the newest event held, or null. */
+  newestId() {
+    return this._items[this._items.length - 1]?.id ?? null;
+  }
+
+  /** How many events are held. */
+  size() {
+    return this._items.length;
   }
 
   /** Call `fn(event)` for every new event; returns an unsubscribe function. */

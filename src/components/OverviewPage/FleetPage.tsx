@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type {
   MemoryBudget,
   NodeAgentSnapshot,
@@ -26,6 +27,8 @@ export interface FleetPageProps {
   };
   /** When set, node cards become clickable and open the node detail view. */
   onSelectNode?: (nodeId: string) => void;
+  /** Rendered under the node cards (the Recent activity card, issue #32). */
+  activity?: ReactNode;
 }
 
 function formatMb(mb: number): string {
@@ -63,9 +66,10 @@ function sumRequests(byMachine: Record<string, RequestStat[]>) {
 }
 
 /**
- * Fleet overview page: summary strip + one FleetCard per node.
+ * Fleet overview page: summary strip + one FleetCard per node, then the
+ * optional activity slot.
  */
-export function FleetPage({ nodes, topology, requests, memory, onSelectNode }: FleetPageProps) {
+export function FleetPage({ nodes, topology, requests, memory, onSelectNode, activity }: FleetPageProps) {
   const onlineCount = nodes.filter((n) => n.online).length;
   const offlineCount = nodes.length - onlineCount;
   const reqs = sumRequests(requests.byMachine);
@@ -168,6 +172,8 @@ export function FleetPage({ nodes, topology, requests, memory, onSelectNode }: F
           })}
         </div>
       )}
+
+      {activity}
     </div>
   );
 }

@@ -598,6 +598,48 @@ export interface SparkSnapshot {
 }
 
 // ─── WebSocket envelope ───────────────────────────────────
+// ─── Activity (server/events, /api/events, issue #32) ───
+
+export type ActivitySeverity = "info" | "warn" | "error" | "success";
+
+/** One fleet activity event. `sparkId` is the fleet-wide unit id (Spark id or node agent id). */
+export interface ActivityEvent {
+  id: number;
+  /** ms epoch */
+  ts: number;
+  /** Dotted type, e.g. spark.offline, gpu.throttle.start, service.started, alert.fired. */
+  type: string;
+  severity: ActivitySeverity;
+  sparkId: string | null;
+  sparkName: string | null;
+  message: string;
+  data?: Record<string, unknown>;
+}
+
+export interface EventsResponse {
+  /** Newest first. */
+  events: ActivityEvent[];
+  oldestId: number | null;
+  newestId: number | null;
+  total: number;
+}
+
+export interface EventsQuery {
+  limit?: number;
+  sparkId?: string;
+  sinceId?: number;
+  beforeId?: number;
+  /** Exact types or trailing-dot prefixes ("gpu."). */
+  types?: string[];
+  severities?: ActivitySeverity[];
+}
+
+/** Live push of one activity event over the dashboard WebSocket. */
+export interface WsActivityEvent {
+  type: "event";
+  event: ActivityEvent;
+}
+
 export interface WsSnapshot {
   type: "snapshot";
   /** Server generation time; optional while clients and servers roll independently. */
