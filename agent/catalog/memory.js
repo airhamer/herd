@@ -10,11 +10,13 @@
  * total + per-spark breakdown) by delegating the per-spark math to
  * computeMemoryBudget, and BOOTSTRAP_COMPONENTS seeds the initial memory
  * estimates (decision #2: unlocked in the UI, basis "estimated", refined
- * after 5 history runs).
+ * after 5 history runs). SC7 extends that layer with
+ * computeGroupAddonPlan: single-spark (tp=1) stack components placed
+ * first-fit-decreasing into the group plan's projected headroom.
  *
  * Seam contract: shared/types.ts → MemoryService, MakeRoomEntry,
- * MemoryBudget, GroupSparkEntry, GroupResourcePlan,
- * BootstrapComponentEstimate.
+ * MemoryBudget, GroupSparkEntry, GroupResourcePlan, GroupAddonSpec,
+ * GroupAddonPlan, BootstrapComponentEstimate.
  * Pure functions: no I/O, no module state — deterministic given their
  * inputs (polledAt is the only clock read).
  */
@@ -376,5 +378,154 @@ export function computeGroupMemoryBudget(service, sparkEntries, opts = {}) {
     sparks,
     fits: sparks.every((s) => s.feasible),
     estimated: service.basis === "estimated",
+  };
+}
+
+// ─── SC7: single-spark addon placement on top of a TP group ───────────────
+
+/**
+ * One single-spark stack component to place onto a planned TP group
+ * (shared/types.ts → GroupAddonSpec).
+ * @typedef {object} GroupAddonSpec
+ * @property {string} name
+ * @property {number} footprintMB whole (unsharded) footprint on one spark
+ * @property {number} tp must be 1 — multi-TP addons belong in their own group plan
+ */
+
+/**
+ * Placement decision for one addon (part of shared/types.ts → GroupAddonPlan).
+ * @typedef {object} GroupAddonPlacement
+ * @property {string|null} nodeId hosting spark, or null when it fits nowhere
+ * @property {boolean} feasible true when placed
+ */
+
+/**
+ * One addon entry in the returned plan (input order preserved).
+ * @typedef {object} GroupAddonPlanEntry
+ * @property {string} name
+ * @property {number} footprintMB
+ * @property {GroupAddonPlacement} placement
+ * @property {number|null} projectedFreeAfterMB spark's projected free after
+ *   this addon; null when the addon was skipped
+ */
+
+/**
+ * Return of computeGroupAddonPlan (shared/types.ts → GroupAddonPlan).
+ * @typedef {object} GroupAddonPlan
+ * @property {GroupResourcePlan} group the TP shard layer the addons sat on
+ * @property {GroupAddonPlanEntry[]} addons
+ * @property {boolean} fits group.fits && every addon feasible
+ */
+
+/**
+ * Plan a stack's single-spark addons on top of a TP group's shard layer
+ * (SC7 multi-spark group resource math).
+ *
+ * A stack is usually a TP=x model plus tp=1 helpers (embedder, TTS,
+ * router). SC7 answers: after the TP=x service takes its shards, does each
+ * helper still fit somewhere in the group, holding the same floor policy?
+ *
+ * Algorithm:
+ *  1. computeGroupMemoryBudget(service, sparkEntries, opts) — the TP shard
+ *     layer (it validates service / sparkEntries / opts in its own
+ *     TypeError style; nothing here re-validates those).
+ *  2. Validate addons: every entry needs a non-empty name, a non-negative
+ *     finite footprintMB, and tp === 1 — a tp > 1 component is a group
+ *     member in its own right and throws (it belongs in its own group
+ *     plan, never scattered as an addon).
+ *  3. First-fit-decreasing: process addons by footprintMB descending (ties
+ *     keep input order). Each goes onto the FIRST spark (in sparkEntries
+ *     order) whose RUNNING projectedFreeMB still covers footprintMB +
+ *     opts.floorMB. The running value starts at the group plan's per-spark
+ *     projectedFreeMB and is decremented by every accepted addon, so two
+ *     helpers on one spark see each other's footprints.
+ *  4. An addon that fits nowhere is SKIPPED with placement
+ *     {nodeId: null, feasible: false} — addons never evict or make room;
+ *     the group plan's make-room is strictly the TP shard's own.
+ *
+ * The returned `addons` array preserves INPUT order (placement ran in FDD
+ * order); fits = group.fits AND every addon feasible.
+ *
+ * @param {{groupId?: string, tp: number, perSparkMB?: number,
+ *   totalEstimateMB?: number, basis?: "measured"|"estimated"}} service
+ *   the planned TP service (same shape computeGroupMemoryBudget accepts).
+ * @param {Array<{nodeId: string, totalMB: number, usedMB: number,
+ *   services?: MemoryService[], head?: boolean}>} sparkEntries live
+ *   per-spark telemetry (same shape computeGroupMemoryBudget accepts).
+ * @param {GroupAddonSpec[]} addons tp=1 stack components to place
+ * @param {{floorMB?: number}} [opts]
+ *   floorMB: per-spark headroom held back (same default as
+ *   computeGroupMemoryBudget); an addon must fit WITH this floor still
+ *   covered on its spark.
+ * @returns {GroupAddonPlan}
+ * @throws {TypeError} on a non-array addons, a malformed addon entry, a
+ *   non-1 tp, or anything computeGroupMemoryBudget itself rejects
+ */
+export function computeGroupAddonPlan(service, sparkEntries, addons, opts = {}) {
+  // (1) The TP shard layer first — it owns all service/sparkEntries validation.
+  const group = computeGroupMemoryBudget(service, sparkEntries, opts);
+
+  // (2) Validate the addons list.
+  if (!Array.isArray(addons)) {
+    throw new TypeError("addons must be an array");
+  }
+  const floorMB = isFiniteNumber(opts?.floorMB) && opts.floorMB >= 0 ? opts.floorMB : 0;
+
+  const normalized = addons.map((a, i) => {
+    const label = `addons[${i}]`;
+    if (typeof a !== "object" || a === null || Array.isArray(a)) {
+      throw new TypeError(`${label} must be an object`);
+    }
+    if (typeof a.name !== "string" || a.name.length === 0) {
+      throw new TypeError(`${label}.name must be a non-empty string`);
+    }
+    if (!isFiniteNumber(a.footprintMB) || a.footprintMB < 0) {
+      throw new TypeError(
+        `${label}.footprintMB must be a non-negative finite number (got ${JSON.stringify(a.footprintMB)})`
+      );
+    }
+    if (!Number.isInteger(a.tp) || a.tp < 1) {
+      throw new TypeError(`${label}.tp must be an integer >= 1 (got ${JSON.stringify(a.tp)})`);
+    }
+    if (a.tp !== 1) {
+      throw new TypeError(
+        `${label}.tp must be 1 (single-spark addon); got tp=${a.tp} — multi-TP components belong in their own group plan`
+      );
+    }
+    return { name: a.name, footprintMB: a.footprintMB };
+  });
+
+  // (3) First-fit-decreasing over the sparks' running projected free.
+  const running = group.sparks.map((s) => s.projectedFreeMB);
+  const order = normalized
+    .map((a, i) => i)
+    .sort((i, j) => normalized[j].footprintMB - normalized[i].footprintMB || i - j);
+
+  const results = new Array(normalized.length);
+  for (const i of order) {
+    const a = normalized[i];
+    let nodeId = null;
+    let projectedFreeAfterMB = null;
+    for (let s = 0; s < group.sparks.length; s++) {
+      if (running[s] >= a.footprintMB + floorMB) {
+        nodeId = group.sparks[s].nodeId;
+        running[s] -= a.footprintMB;
+        projectedFreeAfterMB = running[s];
+        break;
+      }
+    }
+    // (4) Never evict or make room — no host means skipped.
+    results[i] = {
+      name: a.name,
+      footprintMB: a.footprintMB,
+      placement: { nodeId, feasible: nodeId !== null },
+      projectedFreeAfterMB,
+    };
+  }
+
+  return {
+    group,
+    addons: results,
+    fits: group.fits && results.every((a) => a.placement.feasible),
   };
 }

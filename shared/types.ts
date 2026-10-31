@@ -288,6 +288,45 @@ export interface GroupResourcePlan {
 }
 
 /**
+ * One single-spark stack component to place onto a TP group (SC7,
+ * agent/catalog/memory.js → computeGroupAddonPlan). A stack is usually a
+ * TP=x model plus tp=1 helpers (embedder, TTS, router); helpers with
+ * tp > 1 are group members in their own right and are rejected here.
+ */
+export interface GroupAddonSpec {
+  /** Component name (non-empty). */
+  name: string;
+  /** Whole (unsharded) footprint on one spark (MB). */
+  footprintMB: number;
+  /** Tensor-parallel size; must be 1 — the addon layer is single-spark. */
+  tp: number;
+}
+
+/**
+ * Group plan plus its single-spark addons (SC7,
+ * agent/catalog/memory.js → computeGroupAddonPlan). The TP shard layer is
+ * computed first; addons are placed first-fit-decreasing into the sparks'
+ * running projected free (each must fit with opts.floorMB still covered on
+ * its spark). Addons never evict or make room — an addon that fits nowhere
+ * is skipped with a null placement.
+ */
+export interface GroupAddonPlan {
+  /** The TP shard layer the addon math sat on top of. */
+  group: GroupResourcePlan;
+  /** One entry per input addon, in INPUT order (placement ran FDD). */
+  addons: Array<{
+    name: string;
+    footprintMB: number;
+    /** Hosting spark, or null when skipped. */
+    placement: { nodeId: string | null; feasible: boolean };
+    /** Spark's projected free after this addon (MB); null when skipped. */
+    projectedFreeAfterMB: number | null;
+  }>;
+  /** true when group.fits AND every addon placed. */
+  fits: boolean;
+}
+
+/**
  * SC3 bootstrap hardcodes (agent/catalog/memory.js → BOOTSTRAP_COMPONENTS):
  * the seed memory estimates shipped before real-world refinement. Decision
  * #2 (docs/IMPLEMENTATION_PLAN.md): the UI is unlocked and shows these as
