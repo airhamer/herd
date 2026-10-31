@@ -745,6 +745,44 @@ export interface NormalizedEngineRecord {
 /** Normalized records keyed by window span in seconds ("60", "300"). */
 export type NormalizedEngineWindows = Record<string, NormalizedEngineRecord>;
 
+/** Raw counter names a node agent exports (agent/collectors/llmCounters.js). */
+export type AgentEngineCounterKey =
+  | "generated"
+  | "prompt"
+  | "cached"
+  | "decoded"
+  | "first"
+  | "itlSum"
+  | "prefillComputed"
+  | "prefillSeconds"
+  | "queueSum"
+  | "queueCount"
+  | "ttftSum"
+  | "ttftCount"
+  | "e2eSum"
+  | "e2eCount"
+  | "requestsFinished"
+  | "preemptions"
+  | "specAccepted"
+  | "specDrafts"
+  | "specDraftTokens"
+  | "specVerify"
+  | "idleSeconds";
+
+/** STAT3: read time of an engineCounters payload (schema 2). */
+export interface AgentEngineCountersMeta {
+  /** Payload schema: 2 = STAT3 (schema 1, STAT2, sent no meta). */
+  schema: number;
+  /** Page the counters came from. */
+  source: "prometheus" | "json";
+  /** Agent monotonic clock (performance.now() ms); only comparable within one bootId. */
+  monoMs: number;
+  /** Agent wall clock at the read (ms epoch). */
+  wallMs: number;
+  /** Changes when the agent process restarts. */
+  bootId: string;
+}
+
 /**
  * One node-agent LLM port probe (agent/collectors/llm.js), attached to the
  * snapshot as `llm`. Only the fields the dashboard reads are typed here.
@@ -756,8 +794,14 @@ export interface AgentLlmEntry {
   kvCacheUsage?: number | null;
   requestsRunning?: number | null;
   requestsWaiting?: number | null;
-  /** STAT2: raw cumulative engine counters (vLLM / SGLang Prometheus). */
-  engineCounters?: Record<string, number | null> | null;
+  /**
+   * STAT2 / STAT3: raw cumulative engine counters. Agent 0.3 sends vLLM /
+   * SGLang only; agent 0.4+ sends every engine with counters and every key of
+   * AgentEngineCounterKey (null when the engine does not publish it).
+   */
+  engineCounters?: Partial<Record<AgentEngineCounterKey, number | null>> | null;
+  /** STAT3 (agent 0.4+): when and how engineCounters were read. */
+  engineCountersMeta?: AgentEngineCountersMeta | null;
   /** STAT2: added by the dashboard server's fleet poller. */
   normalized?: NormalizedEngineWindows | null;
 }
