@@ -85,7 +85,17 @@ const LIST = [
     owner: "herd",
     comparable: "showcase_agg_window_estimated",
     formula:
-      "Σ post-first-token tokens of one lane's Showcase streams / (max t_last_token − min t_first_token); tokens from usage.completion_tokens, else ~4 chars/token, so not comparable with DecodeBench.",
+      "Σ post-first-token tokens of one Showcase wave's ok streams (one Spark, or one fleet lane) / (max t_last_token − min t_first_token); tokens from usage.completion_tokens, else ~4 chars/token, so not comparable with DecodeBench.",
+    url: null,
+  },
+  // ── Showcase concurrent window, usage tokens only (SHOW2, #40) ─────
+  {
+    name: "herd.showcase.agg_window.v1",
+    metric: "agg_window_tps",
+    owner: "herd",
+    comparable: "agg_concurrent_window",
+    formula:
+      "Σ post-first-token tokens (usage.completion_tokens) of a Showcase wave's ok streams / (max t_last_token − min t_first_token); same definition as DecodeBench's concurrent window. Waves with any ~4 chars/token estimate use herd.showcase.agg_window_estimated.v1.",
     url: null,
   },
   {

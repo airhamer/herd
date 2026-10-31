@@ -15,6 +15,7 @@ export function fleetStream(over: Partial<FleetShowcaseStreamState> = {}): Fleet
     model: "m",
     error: null,
     tokenSource: "usage",
+    estimated: false,
     ...over,
   };
 }
@@ -39,6 +40,8 @@ export function fleetLane(over: Partial<FleetShowcaseLaneState> = {}): FleetShow
     serverSamples: 12,
     serverEngine: "vllm",
     clientTps: 80.2,
+    clientTpsPeak: 84.6,
+    estimated: false,
     streamTpsMean: 40.1,
     ttftP50Ms: 120,
     prefillTps: 900,

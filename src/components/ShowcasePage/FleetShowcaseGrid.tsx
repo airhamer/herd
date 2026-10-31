@@ -21,12 +21,23 @@ const VIA_LABEL: Record<string, string> = {
   local: "local",
 };
 
-function tokenSourceBadge(src: FleetShowcaseLaneState["tokenSource"]): { text: string; title: string } | null {
-  if (src === "usage") return { text: "usage", title: "Token counts from the engine's usage field" };
-  if (src === "estimate")
-    return { text: "≈ est.", title: "No usage from the engine: tokens estimated at ~4 chars/token" };
+/** Token-count badge; `estimated` (SHOW2) wins so live and no-usage counts are always flagged. */
+export function tokenSourceBadge(
+  lane: Pick<FleetShowcaseLaneState, "tokenSource" | "estimated">
+): { text: string; title: string; estimated: boolean } | null {
+  const src = lane.tokenSource;
   if (src === "mixed")
-    return { text: "mixed", title: "Some streams reported usage, others were estimated (~4 chars/token)" };
+    return { text: "≈ mixed", title: "Some streams reported usage, others were estimated (~4 chars/token)", estimated: true };
+  if (src === "estimate" || (lane.estimated && src !== "usage"))
+    return {
+      text: "≈ est.",
+      title:
+        src === "estimate"
+          ? "No usage from the engine: tokens estimated at ~4 chars/token"
+          : "Live token counts are estimated at ~4 chars/token until the engine reports usage",
+      estimated: true,
+    };
+  if (src === "usage") return { text: "usage", title: "Token counts from the engine's usage field", estimated: false };
   return null;
 }
 
@@ -41,7 +52,7 @@ export function FleetShowcaseGrid({ lanes, onSelectLane }: FleetShowcaseGridProp
   return (
     <div className="fleet-showcase-tiles" data-testid="fleet-showcase-tiles">
       {lanes.map((lane) => {
-        const badge = tokenSourceBadge(lane.tokenSource);
+        const badge = tokenSourceBadge(lane);
         const engine = lane.serverEngine || lane.backend || "unknown engine";
         const via = lane.via ? VIA_LABEL[lane.via] || lane.via : null;
         return (
@@ -76,13 +87,25 @@ export function FleetShowcaseGrid({ lanes, onSelectLane }: FleetShowcaseGridProp
               <span className="fleet-showcase-tile__hero-value font-tabular" data-testid="tile-client-tps">
                 {fmtTps(lane.clientTps)}
               </span>
-              <span className="fleet-showcase-tile__hero-unit">tok/s client</span>
+              <span className="fleet-showcase-tile__hero-unit" title="Concurrent window: Σ decode tokens / (last token − first token)">
+                tok/s aggregate
+              </span>
               {badge ? (
-                <span className="fleet-showcase-tile__badge" title={badge.title}>
+                <span
+                  className={`fleet-showcase-tile__badge${badge.estimated ? " fleet-showcase-tile__badge--est" : ""}`}
+                  title={badge.title}
+                  data-testid="tile-token-badge"
+                >
                   {badge.text}
                 </span>
               ) : null}
             </div>
+            {lane.clientTpsPeak != null && lane.clientTpsPeak > 0 ? (
+              <div className="fleet-showcase-tile__peak font-tabular" data-testid="tile-peak">
+                peak {lane.aggregate?.peakEstimated ? "≈" : ""}
+                {fmtTps(lane.clientTpsPeak)} tok/s
+              </div>
+            ) : null}
             <dl className="fleet-showcase-tile__stats">
               <div>
                 <dt>Server</dt>

@@ -141,6 +141,23 @@ test("one session runs an SSH Spark lane and an agent lane at once, with client 
   assert.equal(a.serverTps, null, "Ollama lane is client only");
   assert.equal(a.tokenSource, "estimate");
   assert.ok(a.clientTps > 0 && a.ttftP50Ms > 0);
+  // SHOW2: usage-counted lane is exact, the no-usage lane is flagged estimated.
+  assert.equal(s.estimated, false);
+  assert.ok(s.streams.every((x) => x.estimated === false));
+  assert.equal(a.estimated, true);
+  assert.ok(a.streams.every((x) => x.estimated === true));
+  assert.ok(s.clientTpsPeak >= s.clientTps, "peak ≥ final");
+  assert.equal(s.aggregate.tps, s.clientTps);
+  assert.equal(s.aggregate.streams, 2);
+  const engines = Object.fromEntries(rec.aggregates.engines.map((e) => [e.engine, e]));
+  assert.deepEqual(Object.keys(engines), ["ollama", "vllm"]);
+  assert.deepEqual(engines.vllm.laneIds, [s.laneId]);
+  assert.equal(engines.vllm.estimated, false);
+  assert.equal(engines.ollama.estimated, true);
+  assert.equal(rec.aggregates.fleet.streams, 4);
+  assert.equal(rec.aggregates.fleet.estimated, true, "any estimated lane flags the fleet aggregate");
+  assert.ok(rec.aggregates.fleet.peakTps >= rec.aggregates.fleet.tps);
+  assert.equal(rec.aggregates.fleet.decodeTokens, 2 * 39 + a.streams.reduce((n, x) => n + x.tokenCount - 1, 0));
   assert.deepEqual(tunnels[0].remotePort, 11434);
   assert.ok(tunnels.includes("closed"), "tunnel closed after the lane");
 
@@ -170,6 +187,10 @@ test("one session runs an SSH Spark lane and an agent lane at once, with client 
   const am = metricsOf(rows[1]);
   assert.equal(am.server_generation_tps, undefined);
   assert.equal(am.decode_tps_stream.approximate, true);
+  assert.equal(sm.agg_window_tps.definition, "herd.showcase.agg_window.v1");
+  assert.equal(am.agg_window_tps.definition, "herd.showcase.agg_window_estimated.v1");
+  assert.equal(am.agg_window_tps.approximate, true);
+  assert.equal(rows[1].settings.tokens_estimated, true);
   assert.equal(rows[1].settings.via, "ssh-tunnel");
 
   assert.deepEqual(events, ["running", "completed"]);
@@ -184,6 +205,9 @@ test("one session runs an SSH Spark lane and an agent lane at once, with client 
   assert.equal(h[0].laneCount, 2);
   assert.equal(h[0].streamsPerLane, 2);
   assert.ok(h[0].lanes[0].clientTps > 0);
+  assert.equal(h[0].lanes[1].estimated, true);
+  assert.equal(h[0].fleetEstimated, true);
+  assert.ok(h[0].fleetTps > 0 && h[0].fleetPeakTps >= h[0].fleetTps);
   assert.equal(m2.getSession(sessionId).lanes[1].streams[0].content.length <= FLEET_SHOWCASE_LIMITS.historyTextChars, true);
   m2.clearHistory();
   assert.equal(m2.getHistory().length, 0);
@@ -280,7 +304,7 @@ test("cancel aborts every lane; heartbeat timeout cancels a session nobody polls
   assert.equal(rec.error, "Heartbeat timeout");
 });
 
-test("laneSummary: window aggregate, live sum and token source", () => {
+test("laneSummary: concurrent-window aggregate (live and final), estimate flag and token source", () => {
   const done = laneSummary({
     streams: [
       { status: "completed", tokenCount: 101, _tFirst: 0, _tLast: 1000, decodeTps: 100, ttftMs: 50, prefillTps: 800, tokenSource: "usage" },
@@ -293,13 +317,17 @@ test("laneSummary: window aggregate, live sum and token source", () => {
   assert.equal(done.prefillTps, 700);
   assert.equal(done.tokenSource, "mixed");
   assert.equal(done.streamsDone, 2);
+  assert.equal(done.estimated, true);
+  assert.deepEqual(done.aggregate, { tps: 100, peakTps: null, peakEstimated: false, estimated: true, decodeTokens: 200, windowMs: 2000, streams: 2 });
   const live = laneSummary({
     streams: [
       { status: "streaming", tokenCount: 10, _tFirst: 0, _tLast: 100, liveTokPerSec: 30 },
       { status: "streaming", tokenCount: 10, _tFirst: 0, _tLast: 100, liveTokPerSec: 40 },
     ],
   });
-  assert.equal(live.clientTps, 70);
+  // SHOW2: live is the same window (18 decode tokens / 100 ms), not a sum of rates.
+  assert.equal(live.clientTps, 180);
+  assert.equal(live.estimated, true);
   assert.equal(live.tokenSource, null);
   assert.equal(laneSummary({ streams: [] }).clientTps, null);
 });

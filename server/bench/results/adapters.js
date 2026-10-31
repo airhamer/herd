@@ -327,6 +327,16 @@ export function fromPrefillJob(job, opts = {}) {
  * @param {any} session  publicSessionRecord(...) shape
  * @param {{ provenance?: Provenance, importedFrom?: object, recordedAt?: string }} [opts]
  */
+/**
+ * SHOW2 (#40): a concurrent-window aggregate built only from usage token
+ * counts shares DecodeBench's comparable; one with any ~4 chars/token
+ * estimate keeps the separate, approximate definition.
+ * @param {boolean} estimated
+ */
+function showcaseAggDefinition(estimated) {
+  return estimated ? "herd.showcase.agg_window_estimated.v1" : "herd.showcase.agg_window.v1";
+}
+
 export function fromShowcaseSession(session, opts = {}) {
   if (!session || !session.sessionId) return [];
   const streams = Array.isArray(session.streams) ? session.streams : [];
@@ -367,6 +377,18 @@ export function fromShowcaseSession(session, opts = {}) {
       n: pos(session.serverGenerationSamples) ? session.serverGenerationSamples : null,
     });
   }
+  const agg = session.aggregate;
+  if (agg && pos(agg.tps)) {
+    const estimated = Boolean(agg.estimated);
+    metrics.push({
+      metric: "agg_window_tps",
+      definition: showcaseAggDefinition(estimated),
+      source: "client",
+      value: round2(agg.tps),
+      n: pos(agg.streams) ? agg.streams : null,
+      approximate: estimated,
+    });
+  }
   const ttfts = ok.map((s) => s.ttftMs).filter(pos);
   if (ttfts.length) {
     metrics.push({ metric: "ttft_p50", definition: "herd.ttft.client_first_token.v1", source: "client", value: round2(median(ttfts)), n: ttfts.length });
@@ -399,7 +421,12 @@ export function fromShowcaseSession(session, opts = {}) {
         prompt_set: `showcase/${session.promptType || "custom"}`,
         client_location: base.clientLocation,
       },
-      settings: { port: session.port ?? null, peak_stream_tps: session.peakStreamTps ?? null },
+      settings: {
+        port: session.port ?? null,
+        peak_stream_tps: session.peakStreamTps ?? null,
+        agg_peak_tps: agg?.peakTps ?? null,
+        tokens_estimated: agg ? Boolean(agg.estimated) : null,
+      },
       metrics,
       raw,
     }),
@@ -439,7 +466,7 @@ export function fromFleetShowcaseSession(session, opts = {}) {
       if (!base.lane.engine && lane.backend) base.lane.engine = lane.backend;
 
       const ok = streams.filter((s) => s && s.status === "completed" && !s.error);
-      const estimated = ok.some((s) => s.tokenSource !== "usage");
+      const estimated = typeof lane.estimated === "boolean" ? lane.estimated : ok.some((s) => s.tokenSource !== "usage");
       const rates = ok.map((s) => s.decodeTps).filter(pos);
       const metrics = [];
       if (rates.length) {
@@ -458,7 +485,7 @@ export function fromFleetShowcaseSession(session, opts = {}) {
       if (pos(lane.clientTps) && ok.length) {
         metrics.push({
           metric: "agg_window_tps",
-          definition: "herd.showcase.agg_window_estimated.v1",
+          definition: showcaseAggDefinition(estimated),
           source: "client",
           value: round2(lane.clientTps),
           n: ok.length,
@@ -516,6 +543,8 @@ export function fromFleetShowcaseSession(session, opts = {}) {
           via: lane.via ?? null,
           token_source: lane.tokenSource ?? null,
           server_engine: lane.serverEngine ?? null,
+          agg_peak_tps: lane.clientTpsPeak ?? null,
+          tokens_estimated: estimated,
         },
         metrics,
         raw: { session: { sessionId: session.sessionId, status: session.status, prompts: session.prompts ?? null }, lane: rawLane },

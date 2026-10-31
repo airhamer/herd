@@ -150,6 +150,62 @@ describe("FleetShowcasePage (SHOW1)", () => {
     expect(container.textContent).toContain("cancelled");
   });
 
+  it("shows the fleet and per-engine concurrent-window aggregates with peak and estimate flags (SHOW2)", async () => {
+    const view = { decodeTokens: 1000, windowMs: 5000 };
+    const rec = fleetSession({
+      sessionId: "agg",
+      fromHistory: true,
+      lanes: [
+        fleetLane({ clientTps: 80, streams: [fleetStream()] }),
+        fleetLane({
+          laneId: "node:n1:11434", kind: "node", nodeName: "mac-mini", backend: "ollama", serverEngine: null,
+          serverCounters: false, serverTps: null, clientTps: 30, tokenSource: "estimate", estimated: true,
+          streams: [fleetStream({ tokenSource: "estimate", estimated: true })],
+        }),
+      ],
+      aggregates: {
+        // Not the 110 a sum of lanes would give: lanes overlap in one window.
+        fleet: { ...view, tps: 96.5, peakTps: 121, peakEstimated: true, estimated: true, streams: 4 },
+        engines: [
+          { ...view, engine: "ollama", laneIds: ["node:n1:11434"], tps: 30, peakTps: 33, estimated: true, streams: 2 },
+          { ...view, engine: "vllm", laneIds: ["spark:s1:8000"], tps: 80, peakTps: 90, estimated: false, streams: 2 },
+        ],
+      },
+    });
+    api.listFleetShowcase.mockResolvedValue({
+      active: null,
+      history: [{ sessionId: "agg", status: "completed", startedAt: 1, completedAt: 2, promptType: "mixed", maxTokens: 512, laneCount: 2, streamsPerLane: 1, fleetTps: 96.5, fleetPeakTps: 121, fleetEstimated: true, lanes: [], error: null }],
+    });
+    api.getFleetShowcase.mockResolvedValue(rec);
+    const { container } = render(<FleetShowcasePage />);
+    await flush();
+    await flush();
+    const histBtn = [...container.querySelectorAll("button")].find((b) => /^History/.test(b.textContent || ""))!;
+    await act(async () => {
+      histBtn.click();
+    });
+    await flush();
+    expect(container.querySelector('[data-testid="fleet-history-agg"]')!.textContent).toBe("· fleet ≈ 97 tok/s");
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".showcase-history__main")!.click();
+    });
+    await flush();
+    const hero = container.querySelector('[data-testid="fleet-aggregate"]')!;
+    expect(hero.textContent).toContain("97");
+    expect(hero.textContent).not.toContain("110");
+    expect(container.querySelector('[data-testid="fleet-aggregate-estimated"]')!.textContent).toBe("≈ est.");
+    expect(container.querySelector('[data-testid="fleet-aggregate-peak"]')!.textContent).toBe("peak ≈121");
+    const vllm = container.querySelector('[data-testid="fleet-engine-agg-vllm"]')!;
+    expect(vllm.textContent).toContain("80");
+    expect(vllm.textContent).toContain("peak 90");
+    expect(vllm.textContent).not.toContain("est.");
+    expect(container.querySelector('[data-testid="fleet-engine-agg-ollama"]')!.textContent).toContain("≈ est.");
+    // Terminal of the estimated lane carries the badge; the usage lane's does not.
+    const badges = [...container.querySelectorAll(".showcase-term__badge")];
+    expect(badges).toHaveLength(1);
+    expect(badges[0].textContent).toBe("est.");
+  });
+
   it("shows the server's refusal", async () => {
     api.startFleetShowcase.mockRejectedValue(new Error("A fleet prompt showcase is already running"));
     const { container } = render(<FleetShowcasePage />);
