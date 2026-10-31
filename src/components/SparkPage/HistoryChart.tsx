@@ -1,31 +1,39 @@
+// One chart of the History panel (docs/specs/unit-history.md §10).
+// LIC2 clean-room rewrite: written from the spec, not from upstream code.
+//
+// The SVG uses a fixed coordinate box stretched to the element
+// (preserveAspectRatio="none", non-scaling strokes); all text is HTML on top,
+// so it stays sharp at any width. The crosshair timestamp belongs to the
+// panel, so every chart shows the same bucket.
 import { useId, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { HistoryStat } from "../../api/types";
 
-/**
- * One small-multiple line chart of the History panel. Hand-rolled inline SVG
- * (the fork's Sparkline precedent): the plot stretches to its box
- * (preserveAspectRatio="none" + non-scaling strokes) and every label is HTML,
- * so text stays crisp at any width.
- *
- * The crosshair is shared: the panel owns one timestamp, every chart draws its
- * vertical line there, and the chart under the pointer or keyboard focus also
- * shows a tooltip with the time and values.
- */
+const BOX_W = 300;
+const BOX_H = 90;
+const INSET = 3;
+/** Neighbouring buckets more than this many steps apart are not joined. */
+const MAX_JOIN_STEPS = 1.5;
+const NICE_STEPS = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8];
 
-const VIEW_W = 300;
-const VIEW_H = 90;
-const PAD_Y = 3;
-/** Consecutive buckets further apart than this many steps are a gap. */
-const GAP_STEPS = 1.5;
+/** Stroke presets; strokes keep their pixel width while the SVG stretches. */
+const HAIR = { strokeWidth: 1, vectorEffect: "non-scaling-stroke" } as const;
+const DOT = { strokeWidth: 2.5, strokeLinecap: "round", vectorEffect: "non-scaling-stroke" } as const;
+const TRACE = {
+  fill: "none",
+  strokeWidth: 1.8,
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+  vectorEffect: "non-scaling-stroke",
+} as const;
 
 export interface HistoryChartSeries {
   key: string;
   label: string;
-  /** A theme token, e.g. `var(--color-accent)`. */
+  /** CSS colour, usually a theme variable. */
   color: string;
-  /** Aligned with the shared timeline; null = no samples in that bucket. */
+  /** One entry per timeline slot; null where the bucket has no value. */
   values: ReadonlyArray<HistoryStat | null>;
-  /** Faint band from the avg line to the bucket max — or min, for headroom. */
+  /** Shade between the average and the bucket's max (or min). */
   band?: "max" | "min";
 }
 
@@ -38,72 +46,71 @@ export interface HistoryThreshold {
 export interface HistoryChartProps {
   id: string;
   title: string;
-  /** Bucket start times shared by every chart in the panel, ascending. */
+  /** Ascending bucket start times shared by the whole panel. */
   timeline: readonly number[];
   stepMs: number;
   from: number;
   to: number;
   series: readonly HistoryChartSeries[];
   format: (v: number) => string;
-  /** Fixed y bounds (e.g. 0–100 for a percentage); otherwise from the data. */
   yMin?: number;
   yMax?: number;
-  /** Round an auto y range to this unit (1024 for MB → whole GB, 5 for degrees). */
+  /** Granularity auto bounds snap to (e.g. 1024 MB, 5 degrees). */
   yUnit?: number;
   thresholds?: readonly HistoryThreshold[];
-  /** The shared crosshair timestamp, or null. */
   cursorT: number | null;
   onCursor: (t: number | null) => void;
-  /** Tooltip time label. */
   formatTime: (t: number) => string;
-  /** x-axis start / end labels. */
   formatAxisTime: (t: number) => string;
 }
 
-/**
- * Index runs to draw as one line each: consecutive buckets that both have a
- * value and are no more than GAP_STEPS steps apart. An offline stretch (no
- * buckets at all) or a series missing from some buckets breaks the line.
- */
+/** Groups of timeline indexes to draw as one connected line each. */
 export function segmentRuns(
   timeline: readonly number[],
   values: ReadonlyArray<HistoryStat | null>,
   stepMs: number,
 ): number[][] {
-  const runs: number[][] = [];
-  let run: number[] = [];
-  for (let i = 0; i < timeline.length; i++) {
-    if (!values[i]) {
-      if (run.length) runs.push(run);
-      run = [];
-      continue;
+  const out: number[][] = [];
+  let current: number[] | null = null;
+  timeline.forEach((t, i) => {
+    if (values[i] == null) {
+      current = null;
+      return;
     }
-    const prev = run[run.length - 1];
-    if (prev != null && timeline[i] - timeline[prev] > stepMs * GAP_STEPS) {
-      runs.push(run);
-      run = [];
+    const last = current?.at(-1);
+    if (current === null || last === undefined || t - timeline[last] > stepMs * MAX_JOIN_STEPS) {
+      current = [];
+      out.push(current);
     }
-    run.push(i);
-  }
-  if (run.length) runs.push(run);
-  return runs;
+    current.push(i);
+  });
+  return out;
 }
 
-/** Index of the timeline entry nearest to `t` (timeline ascending), or -1 if empty. */
+/** Index of the timeline value closest to t (the earlier one on a tie); -1 when empty. */
 export function nearestIndex(timeline: readonly number[], t: number): number {
-  if (timeline.length === 0) return -1;
-  let lo = 0;
-  let hi = timeline.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    if (timeline[mid] < t) lo = mid + 1;
-    else hi = mid;
+  const n = timeline.length;
+  if (n === 0) return -1;
+  let low = 0;
+  let high = n;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (timeline[mid] >= t) high = mid;
+    else low = mid + 1;
   }
-  if (lo > 0 && Math.abs(timeline[lo - 1] - t) <= Math.abs(timeline[lo] - t)) return lo - 1;
-  return lo;
+  if (low === n) return n - 1;
+  if (low === 0) return 0;
+  return t - timeline[low - 1] <= timeline[low] - t ? low - 1 : low;
 }
 
-/** y bounds covering avg, the drawn band and the thresholds. */
+function roundUpNice(v: number): number {
+  if (!(v > 0)) return v;
+  const decade = Math.pow(10, Math.floor(Math.log10(v)));
+  const step = NICE_STEPS.find((s) => v <= s * decade * (1 + 1e-12));
+  return (step ?? 10) * decade;
+}
+
+/** Vertical range for the chart, or null when no series has a value. */
 export function yDomain(
   series: readonly HistoryChartSeries[],
   yMin?: number,
@@ -111,353 +118,337 @@ export function yDomain(
   thresholds: readonly HistoryThreshold[] = [],
   yUnit = 1,
 ): { lo: number; hi: number } | null {
-  let lo = Infinity;
-  let hi = -Infinity;
+  const seen: number[] = [];
   for (const s of series) {
     for (const v of s.values) {
       if (!v) continue;
-      lo = Math.min(lo, v.avg, s.band === "min" && v.min != null ? v.min : v.avg);
-      hi = Math.max(hi, v.avg, s.band === "max" ? v.max : v.avg);
+      seen.push(v.avg);
+      if (s.band === "max") seen.push(v.max);
+      if (s.band === "min" && v.min != null) seen.push(v.min);
     }
   }
-  if (!Number.isFinite(lo)) return null;
-  for (const th of thresholds) {
-    lo = Math.min(lo, th.value);
-    hi = Math.max(hi, th.value);
+  if (seen.length === 0) return null;
+  const marks = thresholds.map((th) => th.value);
+  let lo = Math.min(...seen, ...marks);
+  let hi = Math.max(...seen, ...marks);
+  if (yMin !== undefined) lo = Math.min(lo, yMin);
+  if (yMax !== undefined) hi = Math.max(hi, yMax);
+
+  if (yMax === undefined && marks.length) {
+    // Room for the label drawn above the top threshold line.
+    const top = Math.max(...marks);
+    const base = Math.min(lo, 0);
+    hi = Math.max(hi, top + 0.25 * (top - base));
   }
-  if (yMin != null) lo = Math.min(yMin, lo);
-  if (yMax != null) hi = Math.max(yMax, hi);
-  if (yMax == null && thresholds.length > 0) {
-    // A threshold's label sits just above its line; keep the highest one off
-    // the top edge, where it would collide with the line and the y-max label.
-    const top = Math.max(...thresholds.map((th) => th.value));
-    hi = Math.max(hi, top + (top - Math.min(lo, 0)) * 0.25);
+  if (yMin === undefined) {
+    const spread = hi - lo;
+    const air = spread > 0 ? spread / 10 : lo !== 0 ? Math.abs(lo) / 10 : 1;
+    const snap = Math.max(yUnit, Math.pow(10, Math.floor(Math.log10(spread + air))));
+    lo = Math.floor((lo - air) / snap) * snap;
   }
-  if (yMin == null) {
-    // Leave a little air under the lowest point, on a round number.
-    const pad = (hi - lo) * 0.1 || Math.abs(lo) * 0.1 || 1;
-    const unit = Math.max(yUnit, 10 ** Math.floor(Math.log10(hi - lo + pad)));
-    lo = Math.floor((lo - pad) / unit) * unit;
-  }
-  if (yMax == null) hi = niceCeil(hi / yUnit) * yUnit;
-  if (hi <= lo) hi = lo + 1;
+  if (yMax === undefined) hi = yUnit * roundUpNice(hi / yUnit);
+  if (!(hi > lo)) hi = lo + 1;
   return { lo, hi };
 }
 
-/** Round up to a 1-1.2-1.5-2-2.5-3-4-5-6-8 × 10^k step. */
-function niceCeil(v: number): number {
-  if (!(v > 0)) return v;
-  const unit = 10 ** Math.floor(Math.log10(v));
-  for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8]) if (v <= m * unit + 1e-9) return m * unit;
-  return 10 * unit;
-}
-
-function latestIndex(series: readonly HistoryChartSeries[]): number | null {
-  for (let i = (series[0]?.values.length ?? 0) - 1; i >= 0; i--) {
-    if (series.some((s) => s.values[i])) return i;
-  }
+/** Newest timeline index where any series has a value. */
+function newestWithData(series: readonly HistoryChartSeries[], length: number): number | null {
+  for (let i = length - 1; i >= 0; i--) if (series.some((s) => s.values[i] != null)) return i;
   return null;
 }
 
-export function HistoryChart({
-  id,
-  title,
-  timeline,
-  stepMs,
-  from,
-  to,
-  series,
-  format,
-  yMin,
-  yMax,
-  yUnit,
-  thresholds = [],
-  cursorT,
-  onCursor,
-  formatTime,
-  formatAxisTime,
-}: HistoryChartProps) {
-  const plotRef = useRef<HTMLDivElement>(null);
-  /** This chart is the one under the pointer / keyboard focus: it shows the tooltip. */
-  const [active, setActive] = useState(false);
-  const [focused, setFocused] = useState(false);
-  const tooltipId = useId();
+function bandEdge(s: HistoryChartSeries, v: HistoryStat): number {
+  if (s.band === "max") return v.max;
+  return v.min ?? v.avg;
+}
 
-  const domain = yDomain(series, yMin, yMax, thresholds, yUnit);
-  const span = Math.max(1, to - from);
-  // A bucket is drawn at its middle, clamped into the window.
-  const xOf = (t: number) =>
-    Math.min(VIEW_W, Math.max(0, ((t + stepMs / 2 - from) / span) * VIEW_W));
-  const yOf = (v: number) =>
-    domain
-      ? VIEW_H - PAD_Y - ((v - domain.lo) / (domain.hi - domain.lo)) * (VIEW_H - PAD_Y * 2)
-      : VIEW_H;
+export function HistoryChart(props: HistoryChartProps) {
+  const { id, title, timeline, stepMs, from, to, series, format, thresholds = [], cursorT, onCursor } = props;
+  const plotEl = useRef<HTMLDivElement>(null);
+  const [hot, setHot] = useState(false); // pointer or keyboard is on this chart
+  const [hasFocus, setHasFocus] = useState(false);
+  const tipId = useId();
 
-  const cursorIdx = cursorT != null ? nearestIndex(timeline, cursorT) : -1;
-  const hasCursor = cursorIdx >= 0 && domain != null;
-  const readIdx = hasCursor ? cursorIdx : latestIndex(series);
+  const domain = yDomain(series, props.yMin, props.yMax, thresholds, props.yUnit);
+  const width = Math.max(1, to - from);
+  const x = (t: number) => Math.max(0, Math.min(BOX_W, ((t + stepMs / 2 - from) / width) * BOX_W));
+  const y = (v: number) =>
+    domain ? BOX_H - INSET - ((v - domain.lo) / (domain.hi - domain.lo)) * (BOX_H - 2 * INSET) : BOX_H;
+  const xy = (i: number, v: number) => `${x(timeline[i]).toFixed(2)},${y(v).toFixed(2)}`;
 
-  const move = (idx: number | null) => onCursor(idx == null ? null : timeline[idx] ?? null);
+  const at = cursorT === null ? -1 : nearestIndex(timeline, cursorT);
+  const cursorOn = domain !== null && at >= 0;
+  const shownIdx = cursorOn ? at : newestWithData(series, timeline.length);
+  const cursorX = cursorOn ? x(timeline[at]) : null;
+  const cursorPct = cursorX === null ? null : (100 * cursorX) / BOX_W;
+  const tooltipOn = cursorOn && hot;
 
-  const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
-    const rect = plotRef.current?.getBoundingClientRect();
-    if (!rect || rect.width <= 0 || timeline.length === 0) return;
-    const frac = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
-    setActive(true);
-    // Invert xOf: the pointer sits over a bucket's middle.
-    move(nearestIndex(timeline, from + frac * span - stepMs / 2));
+  const select = (i: number | null) => onCursor(i === null ? null : (timeline[i] ?? null));
+
+  const follow = (e: PointerEvent<HTMLDivElement>) => {
+    const box = plotEl.current?.getBoundingClientRect();
+    if (!box || box.width <= 0 || !timeline.length) return;
+    const share = Math.max(0, Math.min(1, (e.clientX - box.left) / box.width));
+    setHot(true);
+    select(nearestIndex(timeline, from + share * width - stepMs / 2));
   };
 
-  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    const n = timeline.length;
-    if (n === 0) return;
-    const cur = cursorIdx >= 0 ? cursorIdx : n - 1;
-    let next: number | null = null;
-    if (e.key === "ArrowLeft") next = cursorIdx >= 0 ? Math.max(0, cur - 1) : cur;
-    else if (e.key === "ArrowRight") next = Math.min(n - 1, cur + 1);
-    else if (e.key === "Home") next = 0;
-    else if (e.key === "End") next = n - 1;
-    else if (e.key === "Escape") {
+  const keys = (e: KeyboardEvent<HTMLDivElement>) => {
+    const last = timeline.length - 1;
+    if (last < 0) return;
+    if (e.key === "Escape") {
       e.preventDefault();
       onCursor(null);
       return;
     }
-    if (next == null) return;
+    const from = at >= 0 ? at : last;
+    const target: Record<string, number> = {
+      ArrowLeft: at >= 0 ? Math.max(0, from - 1) : from,
+      ArrowRight: Math.min(last, from + 1),
+      Home: 0,
+      End: last,
+    };
+    if (!(e.key in target)) return;
     e.preventDefault();
-    setActive(true);
-    move(next);
+    setHot(true);
+    select(target[e.key]);
   };
 
-  const crossX = hasCursor ? xOf(timeline[cursorIdx]) : null;
-  const crossPct = crossX != null ? (crossX / VIEW_W) * 100 : null;
-  const showTooltip = hasCursor && active;
-
-  const point = (i: number, v: number) => `${xOf(timeline[i]).toFixed(2)},${yOf(v).toFixed(2)}`;
+  const gridLines = [INSET, BOX_H / 2, BOX_H - INSET];
 
   return (
-    <div className="flex flex-col gap-1" data-chart={id}>
+    <div data-chart={id} className="flex flex-col gap-1">
       <div className="flex min-w-0 items-baseline justify-between gap-2">
         <span className="min-w-0 truncate text-[10px] uppercase tracking-wider text-muted">{title}</span>
         <span className="flex shrink-0 items-center gap-2 font-tabular text-xs">
           {series.map((s) => {
-            const v = readIdx != null ? s.values[readIdx] : null;
+            const v = shownIdx === null ? null : s.values[shownIdx];
             return (
               <span key={s.key} data-readout={s.key}>
-                {series.length > 1 && <small className="mr-1 text-muted">{s.label}</small>}
-                <b style={{ color: s.color }}>{v ? format(v.avg) : "—"}</b>
+                {series.length > 1 ? <small className="mr-1 text-muted">{s.label}</small> : null}
+                <b style={{ color: s.color }}>{v === null || v === undefined ? "—" : format(v.avg)}</b>
               </span>
             );
           })}
         </span>
       </div>
+
       <div className="flex gap-1">
         <div
-          className="flex w-12 shrink-0 flex-col items-end justify-between font-tabular text-[10px] text-muted"
-          style={{ height: VIEW_H }}
           aria-hidden="true"
+          style={{ height: BOX_H }}
+          className="flex w-12 shrink-0 flex-col items-end justify-between font-tabular text-[10px] text-muted"
         >
-          <span data-axis="ymax">{domain ? format(domain.hi) : ""}</span>
-          <span data-axis="ymin">{domain ? format(domain.lo) : ""}</span>
+          <span data-axis="ymax">{domain && format(domain.hi)}</span>
+          <span data-axis="ymin">{domain && format(domain.lo)}</span>
         </div>
+
         <div
-          ref={plotRef}
-          className="relative min-w-0 flex-1 cursor-crosshair rounded-sm outline-none focus:ring-1 focus:ring-accent"
-          tabIndex={domain ? 0 : -1}
+          ref={plotEl}
           role="group"
-          aria-label={`${title} from ${formatTime(from)} to ${formatTime(to)}. Use the arrow keys to read values; Escape clears.`}
-          aria-describedby={showTooltip ? tooltipId : undefined}
-          onKeyDown={onKeyDown}
-          onPointerMove={onPointerMove}
-          onPointerDown={onPointerMove}
+          tabIndex={domain ? 0 : -1}
+          aria-label={`${title}, ${props.formatTime(from)} to ${props.formatTime(to)}. Arrow keys step through the buckets, Escape clears.`}
+          aria-describedby={tooltipOn ? tipId : undefined}
+          className="relative min-w-0 flex-1 cursor-crosshair rounded-sm outline-none focus:ring-1 focus:ring-accent"
+          onKeyDown={keys}
+          onPointerDown={follow}
+          onPointerMove={follow}
           onPointerLeave={() => {
-            setActive(false);
-            if (!focused) onCursor(null);
+            setHot(false);
+            if (!hasFocus) onCursor(null);
           }}
           onFocus={() => {
-            setFocused(true);
-            setActive(true);
-            if (cursorIdx < 0 && timeline.length > 0) move(timeline.length - 1);
+            setHasFocus(true);
+            setHot(true);
+            if (at < 0 && timeline.length) select(timeline.length - 1);
           }}
           onBlur={() => {
-            setFocused(false);
-            setActive(false);
+            setHasFocus(false);
+            setHot(false);
             onCursor(null);
           }}
         >
-          <svg viewBox={`0 0 ${VIEW_W} ${VIEW_H}`} preserveAspectRatio="none" style={{ height: VIEW_H }} aria-hidden="true">
-            {[PAD_Y, VIEW_H / 2, VIEW_H - PAD_Y].map((y) => (
+          <svg aria-hidden="true" viewBox={`0 0 ${BOX_W} ${BOX_H}`} preserveAspectRatio="none" style={{ height: BOX_H }}>
+            {gridLines.map((gy, i) => (
               <line
-                key={y}
+                key={gy}
                 x1={0}
-                x2={VIEW_W}
-                y1={y}
-                y2={y}
+                x2={BOX_W}
+                y1={gy}
+                y2={gy}
+                {...HAIR}
                 stroke="var(--color-border)"
-                strokeWidth={1}
-                strokeDasharray={y === VIEW_H - PAD_Y ? undefined : "2 4"}
-                vectorEffect="non-scaling-stroke"
+                strokeDasharray={i === gridLines.length - 1 ? undefined : "2 4"}
               />
             ))}
-            {domain &&
-              thresholds.map((th) => (
-                <line
-                  key={th.label}
-                  data-threshold={th.label}
-                  x1={0}
-                  x2={VIEW_W}
-                  y1={yOf(th.value)}
-                  y2={yOf(th.value)}
-                  stroke={th.color}
-                  strokeWidth={1}
-                  strokeDasharray="4 3"
-                  opacity={0.8}
-                  vectorEffect="non-scaling-stroke"
-                />
-              ))}
-            {domain &&
-              series.map((s) =>
-                segmentRuns(timeline, s.values, stepMs).map((run, r) => {
-                  const avgPts = run.map((i) => point(i, s.values[i]!.avg));
-                  const bandPts = s.band
-                    ? run.map((i) => {
-                        const v = s.values[i]!;
-                        return point(i, s.band === "max" ? v.max : v.min ?? v.avg);
-                      })
-                    : null;
-                  if (run.length === 1) {
-                    // A lone bucket: a short tick, so it is visible at all.
-                    const x = xOf(timeline[run[0]]);
-                    const y = yOf(s.values[run[0]]!.avg);
-                    return (
-                      <line
-                        key={`${s.key}-${r}`}
-                        data-series={s.key}
-                        x1={x - 0.6}
-                        x2={x + 0.6}
-                        y1={y}
-                        y2={y}
-                        stroke={s.color}
-                        strokeWidth={2.5}
-                        strokeLinecap="round"
-                        vectorEffect="non-scaling-stroke"
-                      />
-                    );
-                  }
-                  return (
-                    <g key={`${s.key}-${r}`}>
-                      {bandPts && (
-                        <polygon
-                          data-band={s.key}
-                          points={[...bandPts, ...avgPts.slice().reverse()].join(" ")}
-                          fill={s.color}
-                          opacity={0.16}
+            {domain
+              ? thresholds.map((th) => (
+                  <line
+                    key={th.label}
+                    data-threshold={th.label}
+                    x1={0}
+                    x2={BOX_W}
+                    y1={y(th.value)}
+                    y2={y(th.value)}
+                    {...HAIR}
+                    style={{ stroke: th.color, opacity: 0.8, strokeDasharray: "4 3" }}
+                  />
+                ))
+              : null}
+            {domain
+              ? series.flatMap((s) =>
+                  segmentRuns(timeline, s.values, stepMs).map((run, n) => {
+                    const rowKey = `${s.key}:${n}`;
+                    if (run.length === 1) {
+                      const cx = x(timeline[run[0]]);
+                      const cy = y(s.values[run[0]]!.avg);
+                      return (
+                        <line
+                          key={rowKey}
+                          data-series={s.key}
+                          x1={cx - 0.6}
+                          x2={cx + 0.6}
+                          y1={cy}
+                          y2={cy}
+                          {...DOT}
+                          style={{ stroke: s.color }}
                         />
-                      )}
-                      <polyline
-                        data-series={s.key}
-                        points={avgPts.join(" ")}
-                        fill="none"
-                        stroke={s.color}
-                        strokeWidth={1.8}
-                        strokeLinejoin="round"
-                        strokeLinecap="round"
-                        vectorEffect="non-scaling-stroke"
-                      />
-                    </g>
-                  );
-                }),
-              )}
-            {crossX != null && (
+                      );
+                    }
+                    const mid = run.map((i) => xy(i, s.values[i]!.avg));
+                    const edge = s.band ? run.map((i) => xy(i, bandEdge(s, s.values[i]!))) : null;
+                    return (
+                      <g key={rowKey}>
+                        {edge ? (
+                          <polygon data-band={s.key} points={edge.concat([...mid].reverse()).join(" ")} fill={s.color} opacity={0.16} />
+                        ) : null}
+                        <polyline
+                          data-series={s.key}
+                          points={mid.join(" ")}
+                          {...TRACE}
+                          style={{ stroke: s.color }}
+                        />
+                      </g>
+                    );
+                  }),
+                )
+              : null}
+            {cursorX !== null ? (
               <line
                 data-crosshair=""
-                x1={crossX}
-                x2={crossX}
+                x1={cursorX}
+                x2={cursorX}
                 y1={0}
-                y2={VIEW_H}
+                y2={BOX_H}
+                {...HAIR}
                 stroke="var(--color-muted)"
-                strokeWidth={1}
-                vectorEffect="non-scaling-stroke"
               />
-            )}
+            ) : null}
           </svg>
-          {domain &&
-            thresholds.map((th) => (
-              <span
-                key={th.label}
-                className="pointer-events-none absolute left-1 font-tabular text-[9px]"
-                style={{ top: `${(yOf(th.value) / VIEW_H) * 100}%`, color: th.color }}
-                aria-hidden="true"
-              >
-                {th.label}
-              </span>
-            ))}
-          {hasCursor &&
-            series.map((s) => {
-              const v = s.values[cursorIdx];
-              if (!v) return null;
-              return (
+
+          {domain
+            ? thresholds.map((th) => (
                 <span
-                  key={s.key}
-                  className="pointer-events-none absolute h-[5px] w-[5px] rounded-full"
-                  style={{
-                    left: `${crossPct}%`,
-                    top: `${(yOf(v.avg) / VIEW_H) * 100}%`,
-                    background: s.color,
-                    transform: "translate(-50%, -50%)",
-                  }}
+                  key={th.label}
                   aria-hidden="true"
-                />
-              );
-            })}
-          {!domain && (
-            <p className="absolute inset-0 flex items-center justify-center text-xs text-muted">
-              No data in this range
-            </p>
+                  className="pointer-events-none absolute left-1 font-tabular text-[9px]"
+                  style={{ color: th.color, top: `${(100 * y(th.value)) / BOX_H}%` }}
+                >
+                  {th.label}
+                </span>
+              ))
+            : null}
+
+          {cursorOn
+            ? series.map((s) => {
+                const v = s.values[at];
+                return v ? (
+                  <span
+                    key={s.key}
+                    aria-hidden="true"
+                    className="pointer-events-none absolute h-[5px] w-[5px] rounded-full"
+                    style={{
+                      background: s.color,
+                      left: `${cursorPct}%`,
+                      top: `${(100 * y(v.avg)) / BOX_H}%`,
+                      transform: "translate(-50%, -50%)",
+                    }}
+                  />
+                ) : null;
+              })
+            : null}
+
+          {domain ? null : (
+            <p className="absolute inset-0 flex items-center justify-center text-xs text-muted">No data in this range</p>
           )}
-          {showTooltip && crossPct != null && (
-            <div
-              id={tooltipId}
-              role="status"
-              data-tooltip=""
-              className="pointer-events-none absolute top-1 z-10 min-w-[7rem] rounded-lg border border-border bg-surface-elevated px-2 py-1.5 text-[11px] text-text shadow-lg"
-              style={
-                crossPct < 55
-                  ? { left: `calc(${crossPct}% + 8px)` }
-                  : { right: `calc(${100 - crossPct}% + 8px)` }
-              }
-            >
-              <b>{formatTime(timeline[cursorIdx])}</b>
-              {series.map((s) => {
-                const v = s.values[cursorIdx];
-                return (
-                  <div key={s.key} className="flex items-center gap-1.5">
-                    <i className="h-2 w-2 shrink-0 rounded-full" style={{ background: s.color }} />
-                    {s.label}
-                    <em className="ml-auto font-tabular not-italic">{v ? format(v.avg) : "—"}</em>
-                  </div>
-                );
-              })}
-              {series.some((s) => s.band && s.values[cursorIdx]) && (
-                <div className="mt-1 border-t border-border pt-1 text-[10px] text-muted">
-                  {series
-                    .map((s) => {
-                      const v = s.values[cursorIdx];
-                      if (!v || !s.band) return null;
-                      const edge = s.band === "max" ? `max ${format(v.max)}` : v.min != null ? `min ${format(v.min)}` : null;
-                      return edge && (series.length > 1 ? `${s.label} ${edge}` : edge);
-                    })
-                    .filter(Boolean)
-                    .join(" · ")}
-                </div>
-              )}
-            </div>
-          )}
+
+          {tooltipOn && cursorPct !== null ? (
+            <ChartTooltip
+              id={tipId}
+              leftPct={cursorPct}
+              time={props.formatTime(timeline[at])}
+              series={series}
+              index={at}
+              format={format}
+            />
+          ) : null}
         </div>
       </div>
-      <div className="flex justify-between font-tabular text-[10px] text-muted" aria-hidden="true">
-        <span data-axis="xstart">{formatAxisTime(from)}</span>
-        <span data-axis="xend">{formatAxisTime(to)}</span>
+
+      <div aria-hidden="true" className="flex justify-between font-tabular text-[10px] text-muted">
+        <span data-axis="xstart">{props.formatAxisTime(from)}</span>
+        <span data-axis="xend">{props.formatAxisTime(to)}</span>
       </div>
+    </div>
+  );
+}
+
+function ChartTooltip({
+  id,
+  leftPct,
+  time,
+  series,
+  index,
+  format,
+}: {
+  id: string;
+  leftPct: number;
+  time: string;
+  series: readonly HistoryChartSeries[];
+  index: number;
+  format: (v: number) => string;
+}) {
+  // Flip to the left of the crosshair past the middle, so it stays inside the plot.
+  const place = leftPct < 55 ? { left: `calc(${leftPct}% + 8px)` } : { right: `calc(${100 - leftPct}% + 8px)` };
+  const extremes: string[] = [];
+  for (const s of series) {
+    const v = s.values[index];
+    if (!v || !s.band) continue;
+    const text = s.band === "max" ? `max ${format(v.max)}` : v.min != null ? `min ${format(v.min)}` : null;
+    if (text) extremes.push(series.length > 1 ? `${s.label} ${text}` : text);
+  }
+  return (
+    <div
+      id={id}
+      role="status"
+      data-tooltip=""
+      style={place}
+      className="pointer-events-none absolute top-1 z-10 min-w-[7rem] rounded-lg border border-border bg-surface-elevated px-2 py-1.5 text-[11px] text-text shadow-lg"
+    >
+      <b>{time}</b>
+      {series.map((s) => {
+        const v = s.values[index];
+        return (
+          <div key={s.key} className="flex items-center gap-1.5">
+            <i className="h-2 w-2 shrink-0 rounded-full" style={{ background: s.color }} />
+            {s.label}
+            <em className="ml-auto font-tabular not-italic">{v ? format(v.avg) : "—"}</em>
+          </div>
+        );
+      })}
+      {extremes.length ? (
+        <div className="mt-1 border-t border-border pt-1 text-[10px] text-muted">{extremes.join(" · ")}</div>
+      ) : null}
     </div>
   );
 }

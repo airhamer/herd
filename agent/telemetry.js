@@ -32,7 +32,11 @@ import { collectSystemd } from "./collectors/systemd.js";
 import { collectLlm } from "./collectors/llm.js";
 import { collectComfy } from "./collectors/comfy.js";
 import { collectTailscale } from "./collectors/tailscale.js";
+import { loadRecipes } from "./catalog/recipes.js";
 import { readTextFile, parseUptimeSeconds } from "./collectors/util.js";
+
+/** Runtime recipes file (agent/config/recipes.json), same default as main.js. */
+const DEFAULT_RECIPES_PATH = "agent/config/recipes.json";
 
 export const AGENT_VERSION = "0.4.0";
 
@@ -179,6 +183,23 @@ export async function collectTelemetry(nodeId, nodeName, lanIp, ports = [], comf
   const inj = opts.inject || {};
   const readFile = opts.readFile || readTextFile;
 
+  // SC6: pin claims for the library collector come from the node's recipe
+  // store — the same file and the same validated loader the catalog seam
+  // uses (main.js loadCatalog). Fail-soft exactly like the catalog: an
+  // unreadable/invalid recipes file yields an empty pin set plus a
+  // reported note, never a broken snapshot. opts.recipes overrides the
+  // read (tests, and a caller that already loaded the catalog).
+  let libraryRecipes = Array.isArray(opts.recipes) ? opts.recipes : null;
+  let libraryPinNote = null;
+  if (!libraryRecipes) {
+    try {
+      libraryRecipes = loadRecipes(opts.recipePath || DEFAULT_RECIPES_PATH).recipes;
+    } catch (e) {
+      libraryRecipes = [];
+      libraryPinNote = `recipes unavailable: ${e.message} — library reports disk truth with no pins`;
+    }
+  }
+
   const [
     gpu,
     cpu,
@@ -204,7 +225,11 @@ export async function collectTelemetry(nodeId, nodeName, lanIp, ports = [], comf
     inj.comfy ? inj.comfy(comfyPort) : collectComfy(comfyPort, opts),
     inj.tailscale ? inj.tailscale() : collectTailscale(opts),
     inj.proxy ? inj.proxy() : collectProxy(opts),
-    inj.library ? inj.library() : collectLibrary(opts),
+    inj.library ? inj.library() : collectLibrary({
+      ...opts,
+      recipes: libraryRecipes,
+      ...(libraryPinNote ? { pinsNote: libraryPinNote } : {}),
+    }),
   ]);
 
   let uptimeSeconds = null;

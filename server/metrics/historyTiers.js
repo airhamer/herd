@@ -1,47 +1,35 @@
-/**
- * The downsampled tiers of UnitHistory: fixed-size rings of 1-minute and
- * 15-minute buckets, the way Netdata (and RRDtool before it) trades resolution
- * for reach. Both tiers are fed straight from the samples (not rolled up from
- * one another), so every bucket's avg / max / min is exact.
- *
- *   1m    1-minute buckets    last 48 h
- *   15m   15-minute buckets   last 30 days
- *
- * A bucket keeps avg, max and the sample count per series; `memFreeMB` also
- * keeps its min, because for headroom the low point is the one that hurts. A
- * value the unit did not report is never stored, so the charts show a gap.
- *
- * Slot = bucket index modulo the ring length, so memory is fixed per series
- * once it exists: 2 tiers × 2,880 slots × (4 + 4 + 2 bytes) ≈ 58 KB, plus 23 KB
- * of min for headroom and 46 KB of bucket times per unit.
- */
+// Bucketed unit history: series names, tiers, query ranges and the per-tier
+// column store. LIC2 clean-room rewrite from docs/specs/unit-history.md §3.
 
-const MINUTE_MS = 60_000;
-const HOUR_MS = 60 * MINUTE_MS;
-const DAY_MS = 24 * HOUR_MS;
+const MIN = 60_000;
+const HR = 60 * MIN;
+const DAY = 24 * HR;
 
-/** The bucket tiers, finest first. `name` is the key in the persisted file. */
+/** Finest first; `name` is the tier's key in metrics-history.json. */
 export const BUCKET_TIERS = Object.freeze([
-  Object.freeze({ name: "1m", stepMs: MINUTE_MS, retentionMs: 48 * HOUR_MS }),
-  Object.freeze({ name: "15m", stepMs: 15 * MINUTE_MS, retentionMs: 30 * DAY_MS }),
+  Object.freeze({ name: "1m", stepMs: MIN, retentionMs: 2 * DAY }),
+  Object.freeze({ name: "15m", stepMs: 15 * MIN, retentionMs: 30 * DAY }),
 ]);
 
 /**
- * Query ranges: which tier answers, and the step of the points returned. The
- * step coarsens a tier's buckets (weighted merge, same math as the buckets) so
- * a response stays at or under ~500 points per series. Steps are fixed per
- * range, so the grid does not shift between polls. There is no raw tier for
- * these series (see UnitHistory), so 1h is sixty 1-minute buckets.
+ * Query ranges → the tier that answers and the step of the returned grid.
+ * Every range stays at or below 500 points per series, and its step is a
+ * whole multiple of its tier's step, so the grid never shifts between polls.
  */
 export const HISTORY_RANGES = Object.freeze({
-  "1h": Object.freeze({ spanMs: HOUR_MS, tier: 0, stepMs: MINUTE_MS }),
-  "6h": Object.freeze({ spanMs: 6 * HOUR_MS, tier: 0, stepMs: MINUTE_MS }),
-  "24h": Object.freeze({ spanMs: DAY_MS, tier: 0, stepMs: 3 * MINUTE_MS }),
-  "7d": Object.freeze({ spanMs: 7 * DAY_MS, tier: 1, stepMs: 30 * MINUTE_MS }),
-  "30d": Object.freeze({ spanMs: 30 * DAY_MS, tier: 1, stepMs: 90 * MINUTE_MS }),
+  "1h": Object.freeze({ spanMs: HR, tier: 0, stepMs: MIN }),
+  "6h": Object.freeze({ spanMs: 6 * HR, tier: 0, stepMs: MIN }),
+  "24h": Object.freeze({ spanMs: DAY, tier: 0, stepMs: 3 * MIN }),
+  "7d": Object.freeze({ spanMs: 7 * DAY, tier: 1, stepMs: 30 * MIN }),
+  "30d": Object.freeze({ spanMs: 30 * DAY, tier: 1, stepMs: 90 * MIN }),
 });
 
-/** Unit-level series. Memory is in MB, network in bytes/s, GPU power in W. */
+export const RANGE_NAMES = Object.freeze(Object.keys(HISTORY_RANGES));
+
+/** True for an own range name only ("__proto__", "toString" … are not ranges). */
+export const isRange = (name) => typeof name === "string" && Object.hasOwn(HISTORY_RANGES, name);
+
+/** Per-unit series: % / °C / W / MB / bytes per second. */
 export const UNIT_SERIES = Object.freeze([
   "gpuUtil",
   "gpuTemp",
@@ -55,201 +43,259 @@ export const UNIT_SERIES = Object.freeze([
   "netTx",
 ]);
 
-/** Per LLM endpoint. kvUsage is the 0–1 share of the engine's KV pool. */
+/** Per LLM endpoint: tokens/s and the KV pool fill (0–1). */
 export const LLM_SERIES = Object.freeze(["genTps", "prefillTps", "kvUsage"]);
 
-/** Series whose buckets also keep the minimum. */
-const MIN_SERIES = new Set(["memFreeMB"]);
+const unitSeriesSet = new Set(UNIT_SERIES);
+const llmSeriesSet = new Set(LLM_SERIES);
+const LLM_KEY = /^llm:(\d{1,5}):([A-Za-z]+)$/;
 
-const UNIT_SERIES_SET = new Set(UNIT_SERIES);
-const LLM_SERIES_SET = new Set(LLM_SERIES);
-const LLM_KEY_RE = /^llm:(\d{1,5}):([A-Za-z]+)$/;
-const MAX_COUNT = 65_535;
+/** Count kept per bucket on the wire / on disk (it is stored as uint16). */
+export const COUNT_CAP = 65_535;
 
-/** Internal key for one endpoint's series: `llm:<port>:<name>`. */
+export const isNum = (v) => typeof v === "number" && Number.isFinite(v);
+
 export function llmKey(port, name) {
   return `llm:${port}:${name}`;
 }
 
-/** `{ port, name }` for an LLM key, or null for a unit-level key. */
+/** `{ port, name }` for a well-formed LLM key, else null. */
 export function parseLlmKey(key) {
-  const m = LLM_KEY_RE.exec(key);
-  if (!m || !LLM_SERIES_SET.has(m[2])) return null;
+  const m = typeof key === "string" ? LLM_KEY.exec(key) : null;
+  if (!m || !llmSeriesSet.has(m[2])) return null;
   return { port: Number(m[1]), name: m[2] };
 }
 
 export function isKnownKey(key) {
-  return UNIT_SERIES_SET.has(key) || parseLlmKey(key) !== null;
+  return unitSeriesSet.has(key) || parseLlmKey(key) !== null;
 }
 
-export function keepsMin(key) {
-  return MIN_SERIES.has(parseLlmKey(key)?.name ?? key);
+/** Only free memory keeps its low point (headroom is about the minimum). */
+export const tracksMin = (key) => key === "memFreeMB";
+
+/** Rounding for transport and storage: integers from 100, cents from 1, 4 places below. */
+export function wireRound(v) {
+  const mag = Math.abs(v);
+  if (mag >= 100) return Math.round(v);
+  const places = mag >= 1 ? 100 : 10_000;
+  return Math.round(v * places) / places;
 }
 
-export const finite = (v) => typeof v === "number" && Number.isFinite(v);
+// ─── Accumulators: { sum, max, min, n } ───────────────────
 
-/** A running aggregate of one value: sum (not avg) so merges stay exact. */
-export function statOf(value) {
-  return { sum: value, max: value, min: value, n: 1 };
+export const accOf = (v) => ({ sum: v, max: v, min: v, n: 1 });
+
+/** Weighted merge; returns a new accumulator (neither argument is changed). */
+export function accMerge(a, b) {
+  if (!a) return { ...b };
+  if (!b) return { ...a };
+  return { sum: a.sum + b.sum, max: Math.max(a.max, b.max), min: Math.min(a.min, b.min), n: a.n + b.n };
 }
 
-/** Fold `add` into `into` (weighted by sample count). */
-export function mergeStat(into, add) {
-  if (!into) return { ...add };
-  into.sum += add.sum;
-  into.max = Math.max(into.max, add.max);
-  into.min = Math.min(into.min, add.min);
-  into.n += add.n;
-  return into;
+/** `{ avg, max, min? }` for the API. */
+export function accOut(key, acc) {
+  const out = { avg: wireRound(acc.sum / acc.n), max: wireRound(acc.max) };
+  if (tracksMin(key)) out.min = wireRound(acc.min);
+  return out;
 }
 
-export function addToStats(stats, key, stat) {
-  stats.set(key, mergeStat(stats.get(key), stat));
+/** Group [{ t, accs: Map }] (ascending) onto an epoch-aligned grid of `stepMs`. */
+export function regrid(rows, stepMs) {
+  const out = [];
+  for (const row of rows) {
+    const g = row.t - (row.t % stepMs);
+    let cell = out[out.length - 1];
+    if (!cell || cell.t !== g) {
+      cell = { t: g, accs: new Map() };
+      out.push(cell);
+    }
+    for (const [key, acc] of row.accs) cell.accs.set(key, accMerge(cell.accs.get(key), acc));
+  }
+  return out;
 }
 
-/** Round for transport and storage: whole numbers from 100, else 2 decimals (4 below 1). */
-export function round(v) {
-  const a = Math.abs(v);
-  if (a >= 100) return Math.round(v);
-  if (a >= 1) return Math.round(v * 100) / 100;
-  return Math.round(v * 10_000) / 10_000;
-}
+// ─── Column store for one tier of one unit ────────────────
 
 /**
- * Fixed-size ring of closed buckets for one tier. A slot whose stored time is
- * not the bucket being written is reclaimed. Columns are allocated per series
- * on first use.
+ * Bucket rows in ascending time, with one column group per series. Rows
+ * arrive almost always in order, so appending is the fast path; a clock that
+ * stepped back merges into (or inserts) the row for its time. Rows older than
+ * the retention are cut from the front.
  */
-export class BucketRing {
-  constructor(stepMs, retentionMs) {
-    this.stepMs = stepMs;
-    this.retentionMs = retentionMs;
-    this.slots = Math.ceil(retentionMs / stepMs);
-    this.times = new Float64Array(this.slots).fill(NaN);
-    /** key → { avg, max, min|null, n } typed arrays */
+export class TierColumns {
+  constructor(tier) {
+    this.tier = tier;
+    /** Bucket starts, ascending. */
+    this.t = [];
+    /** key → { sum[], max[], min[]|null, n[] } parallel to `t`. */
     this.cols = new Map();
   }
 
-  _slot(t) {
-    const k = Math.floor(t / this.stepMs) % this.slots;
-    return k < 0 ? k + this.slots : k;
+  get size() {
+    return this.t.length;
   }
 
-  _col(key) {
+  _column(key) {
     let col = this.cols.get(key);
     if (!col) {
+      const len = this.t.length;
       col = {
-        avg: new Float32Array(this.slots),
-        max: new Float32Array(this.slots),
-        min: keepsMin(key) ? new Float32Array(this.slots) : null,
-        n: new Uint16Array(this.slots),
+        sum: new Array(len).fill(0),
+        max: new Array(len).fill(0),
+        min: tracksMin(key) ? new Array(len).fill(0) : null,
+        n: new Array(len).fill(0),
       };
       this.cols.set(key, col);
     }
     return col;
   }
 
-  /** Store (or merge into) the bucket starting at `t`. */
-  put(t, stats) {
-    const i = this._slot(t);
-    if (this.times[i] !== t) {
-      this.times[i] = t;
-      for (const col of this.cols.values()) col.n[i] = 0;
-    }
-    for (const [key, s] of stats) {
-      if (!(s.n > 0)) continue;
-      const col = this._col(key);
-      const prev = col.n[i] > 0 ? this._stat(col, i) : null;
-      const next = prev ? mergeStat(prev, s) : s;
-      col.avg[i] = next.sum / next.n;
-      col.max[i] = next.max;
-      if (col.min) col.min[i] = next.min;
-      col.n[i] = Math.min(MAX_COUNT, next.n);
-    }
-  }
-
-  _stat(col, i) {
-    const n = col.n[i];
-    const avg = col.avg[i];
-    return { sum: avg * n, max: col.max[i], min: col.min ? col.min[i] : avg, n };
-  }
-
-  /** Closed buckets with t ≥ fromMs, oldest first: [{ t, stats: Map }]. */
-  entries(fromMs) {
-    const out = [];
-    for (let i = 0; i < this.slots; i++) {
-      const t = this.times[i];
-      if (!(t >= fromMs)) continue;
-      const stats = new Map();
-      for (const [key, col] of this.cols) {
-        if (col.n[i] > 0) stats.set(key, this._stat(col, i));
+  /** Index of the row for bucket start `start`, creating it if needed. */
+  _row(start) {
+    const t = this.t;
+    const last = t.length - 1;
+    if (last >= 0 && t[last] === start) return last;
+    let at = t.length;
+    if (last >= 0 && t[last] > start) {
+      let lo = 0;
+      let hi = last;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (t[mid] < start) lo = mid + 1;
+        else hi = mid;
       }
-      if (stats.size > 0) out.push({ t, stats });
+      if (t[lo] === start) return lo;
+      at = lo;
     }
-    return out.sort((a, b) => a.t - b.t);
+    t.splice(at, 0, start);
+    for (const col of this.cols.values()) {
+      col.sum.splice(at, 0, 0);
+      col.max.splice(at, 0, 0);
+      col.min?.splice(at, 0, 0);
+      col.n.splice(at, 0, 0);
+    }
+    return at;
+  }
+
+  /** Fold an accumulator into the bucket that contains `atMs`. */
+  add(atMs, key, acc) {
+    const step = this.tier.stepMs;
+    const i = this._row(atMs - (atMs % step));
+    const col = this._column(key);
+    if (col.n[i] > 0) {
+      col.sum[i] += acc.sum;
+      col.max[i] = Math.max(col.max[i], acc.max);
+      if (col.min) col.min[i] = Math.min(col.min[i], acc.min);
+      col.n[i] += acc.n;
+    } else {
+      col.sum[i] = acc.sum;
+      col.max[i] = acc.max;
+      if (col.min) col.min[i] = acc.min;
+      col.n[i] = acc.n;
+    }
+  }
+
+  /** Drop rows that start before `cutoffMs`; true when something went. */
+  cut(cutoffMs) {
+    let k = 0;
+    while (k < this.t.length && this.t[k] < cutoffMs) k++;
+    if (k === 0) return false;
+    this.t.splice(0, k);
+    for (const col of this.cols.values()) {
+      col.sum.splice(0, k);
+      col.max.splice(0, k);
+      col.min?.splice(0, k);
+      col.n.splice(0, k);
+    }
+    return true;
+  }
+
+  /** Remove series for which `drop(key)` is true; true when any went. */
+  dropSeries(drop) {
+    let changed = false;
+    for (const key of [...this.cols.keys()]) {
+      if (drop(key)) {
+        this.cols.delete(key);
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /** Rows with t ≥ fromMs as [{ t, accs: Map(key → acc) }]; empty rows skipped. */
+  rowsSince(fromMs) {
+    const out = [];
+    for (let i = 0; i < this.t.length; i++) {
+      if (this.t[i] < fromMs) continue;
+      const accs = new Map();
+      for (const [key, col] of this.cols) {
+        const n = col.n[i];
+        if (n > 0) accs.set(key, { sum: col.sum[i], max: col.max[i], min: col.min ? col.min[i] : col.sum[i] / n, n });
+      }
+      if (accs.size > 0) out.push({ t: this.t[i], accs });
+    }
+    return out;
   }
 
   /**
-   * Columnar form of the buckets with t ≥ fromMs, `open` (the bucket still
-   * filling) merged in: { t: [...], series: { key: { avg, max, min?, n } } },
-   * arrays aligned with t, null / 0 where a series has no samples. Reads the
-   * typed arrays directly — no per-bucket objects — because a large fleet
-   * serializes a few hundred thousand buckets per save.
+   * File form of the rows with t ≥ fromMs: `{ t: [], series: { key: { avg,
+   * max, min?, n } } }`, columns parallel to t, null/0 for empty cells, keys
+   * sorted, series without any data left out. null when nothing to keep.
    */
-  columns(fromMs, open) {
-    const rows = [];
-    for (let i = 0; i < this.slots; i++) {
-      if (this.times[i] >= fromMs) rows.push({ t: this.times[i], slot: i });
-    }
-    const openT = open && open.t >= fromMs && open.stats.size > 0 ? open.t : null;
-    if (openT !== null && !rows.some((r) => r.t === openT)) rows.push({ t: openT, slot: -1 });
-    rows.sort((a, b) => a.t - b.t);
-    const keys = new Set(this.cols.keys());
-    if (openT !== null) for (const key of open.stats.keys()) keys.add(key);
-    const series = Object.create(null);
-    for (const key of [...keys].sort()) {
+  toFileForm(fromMs) {
+    const idx = [];
+    for (let i = 0; i < this.t.length; i++) if (this.t[i] >= fromMs) idx.push(i);
+    const series = {};
+    for (const key of [...this.cols.keys()].sort()) {
       const col = this.cols.get(key);
-      const extra = openT !== null ? open.stats.get(key) : undefined;
-      const out = { avg: [], max: [], n: [] };
-      if (keepsMin(key)) out.min = [];
-      let any = false;
-      for (const { t, slot } of rows) {
-        let s = slot >= 0 && col && col.n[slot] > 0 ? this._stat(col, slot) : null;
-        if (extra && t === openT) s = mergeStat(s ?? undefined, extra);
-        out.avg.push(s ? round(s.sum / s.n) : null);
-        out.max.push(s ? round(s.max) : null);
-        if (out.min) out.min.push(s ? round(s.min) : null);
-        out.n.push(s ? Math.min(MAX_COUNT, s.n) : 0);
-        if (s) any = true;
+      if (!idx.some((i) => col.n[i] > 0)) continue;
+      const avg = [];
+      const max = [];
+      const min = col.min ? [] : null;
+      const n = [];
+      for (const i of idx) {
+        const count = col.n[i];
+        avg.push(count > 0 ? wireRound(col.sum[i] / count) : null);
+        max.push(count > 0 ? wireRound(col.max[i]) : null);
+        if (min) min.push(count > 0 ? wireRound(col.min[i]) : null);
+        n.push(Math.min(COUNT_CAP, count));
       }
-      if (any) series[key] = out;
+      series[key] = min ? { avg, max, min, n } : { avg, max, n };
     }
-    return { t: rows.map((r) => r.t), series };
-  }
-
-  dropKeys(predicate) {
-    for (const key of [...this.cols.keys()]) if (predicate(key)) this.cols.delete(key);
-  }
-}
-
-/** Merge entries onto a coarser grid of `stepMs` (bucket starts aligned to the epoch). */
-export function coarsen(entries, stepMs) {
-  const grid = new Map();
-  for (const { t, stats } of entries) {
-    const g = Math.floor(t / stepMs) * stepMs;
-    let into = grid.get(g);
-    if (!into) {
-      into = new Map();
-      grid.set(g, into);
+    if (Object.keys(series).length === 0) return null;
+    // Rows where no series has data are noise in the file.
+    const keep = idx.map((i) => [...this.cols.values()].some((c) => c.n[i] > 0));
+    if (keep.every(Boolean)) return { t: idx.map((i) => this.t[i]), series };
+    const pick = (arr) => arr.filter((_, j) => keep[j]);
+    for (const s of Object.values(series)) {
+      for (const field of Object.keys(s)) s[field] = pick(s[field]);
     }
-    for (const [key, s] of stats) addToStats(into, key, { ...s });
+    return { t: pick(idx.map((i) => this.t[i])), series };
   }
-  return [...grid.entries()].sort((a, b) => a[0] - b[0]).map(([t, stats]) => ({ t, stats }));
-}
 
-/** `{ avg, max, min? }` of one merged stat, rounded for transport. */
-export function statOut(key, s) {
-  const out = { avg: round(s.sum / s.n), max: round(s.max) };
-  if (keepsMin(key)) out.min = round(s.min);
-  return out;
+  /**
+   * Rebuild from the file form, keeping rows inside the retention at `atMs`
+   * and aligned to the tier step, and cells with a positive integer count
+   * and finite avg/max. Unknown keys are ignored.
+   */
+  static fromFileForm(tier, form, atMs) {
+    const cols = new TierColumns(tier);
+    if (!form || typeof form !== "object" || !Array.isArray(form.t)) return cols;
+    const series = form.series && typeof form.series === "object" ? form.series : {};
+    const oldest = atMs - tier.retentionMs;
+    form.t.forEach((t, j) => {
+      if (!isNum(t) || t < oldest || t % tier.stepMs !== 0) return;
+      for (const key of Object.keys(series)) {
+        if (!isKnownKey(key)) continue;
+        const s = series[key];
+        const n = s?.n?.[j];
+        const avg = s?.avg?.[j];
+        const max = s?.max?.[j];
+        if (!Number.isInteger(n) || n <= 0 || !isNum(avg) || !isNum(max)) continue;
+        const low = tracksMin(key) && isNum(s.min?.[j]) ? s.min[j] : avg;
+        cols.add(t, key, { sum: avg * n, max, min: low, n });
+      }
+    });
+    return cols;
+  }
 }

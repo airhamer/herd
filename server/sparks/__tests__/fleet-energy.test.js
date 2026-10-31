@@ -376,25 +376,39 @@ test("fleet-energy handler returns the exact populated tracker response contract
   assert.equal(response.hourlyWatts24h.some(Number.isFinite), true);
 });
 
-test("fleet-energy membership changes invalidate aggregates until restart", () => {
+test("fleet-energy membership changes re-scope live without a restart (#33)", () => {
   const now = Date.UTC(2026, 7, 23, 12, 34, 0);
   const tracker = new FleetEnergyTracker({ ...noTimerOptions(), now: () => now });
   tracker.record(fleetSnapshots(100, { outputTokens: 100 }), now - 2_000);
   tracker.record(fleetSnapshots(100, { outputTokens: 120 }), now);
-  assert.equal(tracker.snapshot(now).currentWatts30s, 400);
+  const before = tracker.snapshot(now);
+  assert.equal(before.currentWatts30s, 400);
 
-  assert.equal(tracker.invalidateMembership([...CANONICAL_NODE_IDS, "node-e"]), true);
+  // invalidateMembership is the pre-#33 name; it now re-scopes and never asks for a restart.
+  assert.equal(tracker.invalidateMembership([...CANONICAL_NODE_IDS, "node-e"]), false);
   const changed = tracker.snapshot(now);
-  assert.equal(changed.membershipChanged, true);
-  assert.equal(changed.restartRequired, true);
-  assert.deepEqual(changed.trackedNodeIds, CANONICAL_NODE_IDS);
+  assert.equal(changed.membershipChanged, false);
+  assert.equal(changed.restartRequired, false);
+  assert.deepEqual(changed.trackedNodeIds, [...CANONICAL_NODE_IDS, "node-e"]);
   assert.deepEqual(changed.currentNodeIds, [...CANONICAL_NODE_IDS, "node-e"]);
+  // Energy already recorded survives; live samples restart with the new scope.
+  almostEqual(changed.energy24hKwh, before.energy24hKwh);
   assert.equal(changed.freshNodeCount, 0);
   assert.equal(changed.currentWatts30s, null);
-  assert.equal(changed.energy24hKwh, null);
-  assert.equal(changed.energy31dKwh, null);
-  assert.equal(changed.whPerOutputToken24h, null);
-  assert.deepEqual(changed.hourlyWatts24h, Array(24).fill(null));
+  assert.equal(changed.nodeCoverage24hMs["node-e"], 0);
+
+  // node-e has not reported yet: current W is the four that did.
+  tracker.record(fleetSnapshots(100), now + 2_000);
+  const partial = tracker.snapshot(now + 2_000);
+  assert.equal(partial.freshNodeCount, 4);
+  assert.equal(partial.currentWatts30s, 400);
+
+  // Dropping a unit keeps its minutes in the totals until they age out.
+  assert.equal(tracker.setNodeIds(["node-a"]), true);
+  const shrunk = tracker.snapshot(now + 2_000);
+  assert.deepEqual(shrunk.trackedNodeIds, ["node-a"]);
+  almostEqual(shrunk.energy24hKwh, partial.energy24hKwh);
+  assert.equal(tracker.setNodeIds(["node-a"]), false);
 });
 
 test("fleet-energy runtime samples without WebSockets and schedules decorated ticks every 2000ms", () => {
@@ -1380,7 +1394,8 @@ test("reload rejects relationally impossible buckets while allowing floating tol
     ...changes,
   });
   const invalidNodeEnergy = bucket(0, 1, {
-    nodeWh: { ...zeros, "node-a": 0.07 },
+    // 7 Wh in one second is 25.2 kW: above any one host (#33 ceiling 20 kW).
+    nodeWh: { ...zeros, "node-a": 7 },
     nodeCoverageMs: { ...thousands },
   });
   const invalidFleetPower = bucket(MINUTE_MS, 2, {
@@ -1398,11 +1413,11 @@ test("reload rejects relationally impossible buckets while allowing floating tol
     nodeWh: Object.fromEntries(
       CANONICAL_NODE_IDS.map((id) => [
         id,
-        (240 * tolerantCoverage) / 3_600_000 + 1e-12,
+        (20_000 * tolerantCoverage) / 3_600_000 + 1e-12,
       ])
     ),
     nodeCoverageMs: { ...thousands },
-    fleetWattMs: 960 * tolerantFleetCoverage + 1e-6,
+    fleetWattMs: 80_000 * tolerantFleetCoverage + 1e-6,
     fleetCoverageMs: tolerantFleetCoverage,
   });
   fs.writeFileSync(
@@ -1428,7 +1443,7 @@ test("reload rejects relationally impossible buckets while allowing floating tol
   assert.deepEqual(saved.buckets.map((entry) => entry.minuteStartMs), [3 * MINUTE_MS]);
 });
 
-test("reload rejects energy below estimator minima and fleet energy above node energy", (t) => {
+test("reload accepts low-power minutes but rejects fleet energy above node energy", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sparkdash-energy-minimums-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const filePath = path.join(dir, "fleet-energy.json");
@@ -1478,10 +1493,12 @@ test("reload rejects energy below estimator minima and fleet energy above node e
     setIntervalFn: () => 1,
     clearIntervalFn: () => {},
   });
-  assert.equal(tracker.snapshot(now).outputTokens24h, 8);
+  // Since #33 there is no per-host floor (idle baselines are configurable down
+  // to 0 W), so only the minute whose fleet sum exceeds its units is dropped.
+  assert.equal(tracker.snapshot(now).outputTokens24h, 11);
   tracker.close();
   const saved = JSON.parse(fs.readFileSync(filePath, "utf8"));
-  assert.deepEqual(saved.buckets.map((entry) => entry.minuteStartMs), [3 * MINUTE_MS]);
+  assert.deepEqual(saved.buckets.map((entry) => entry.minuteStartMs), [0, MINUTE_MS, 3 * MINUTE_MS]);
 });
 
 test("reload keeps the first valid bucket when persisted minute timestamps are duplicated", (t) => {
