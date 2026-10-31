@@ -14,6 +14,7 @@ import { PrefillBenchDialog } from "./PrefillBenchDialog";
 import { QualityBenchDialog } from "./QualityBenchDialog";
 import { AeonLadderDialog } from "./AeonLadderDialog";
 import { HassoBatteryDialog } from "./HassoBatteryDialog";
+import { UpgradeCompareDialog } from "../UpgradeCompare/UpgradeCompareDialog";
 import { LlmDailyChart } from "./LlmDailyChart";
 import { parseLlmTargetInput } from "../../shared/llmTarget.js";
 import { LlmTrendChart } from "./LlmTrendChart";
@@ -86,6 +87,7 @@ function LlmLaunchers({
   onRemoteAeon,
   onHasso,
   onRemoteHasso,
+  onUpgrade,
 }: {
   sparkId: string;
   llmPort: number;
@@ -100,6 +102,7 @@ function LlmLaunchers({
   onRemoteAeon: (target: LlmBenchTarget) => void;
   onHasso: () => void;
   onRemoteHasso: (target: LlmBenchTarget) => void;
+  onUpgrade: () => void;
 }) {
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [hostDraft, setHostDraft] = useState(() => readStoredRemote().host);
@@ -223,6 +226,14 @@ function LlmLaunchers({
         title="Hasso battery v1: bench.sh greedy median (4 streamed probes) and bench-matrix.sh two-call delta (8 workloads × EN/FR/DE, 80 vs 680 tokens). Unreliable samples are refused."
       >
         Run Hasso battery
+      </button>
+      <button
+        type="button"
+        onClick={onUpgrade}
+        className={`${LAUNCHER_BTN} w-full`}
+        title="Compare a baseline run with a candidate run after an engine, model or recipe upgrade: throughput Δ against the noise band, quality per category (McNemar), energy and memory headroom."
+      >
+        Upgrade worth it?
       </button>
       {remoteOpen && (
         <div className="space-y-2 rounded border border-border bg-surface-elevated p-2">
@@ -514,6 +525,7 @@ export function LlmPanel({
     setAeonOpen(true);
   }, []);
   const [hassoOpen, setHassoOpen] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const openLocalHasso = useCallback(() => {
     setRemoteTarget(null);
     setHassoOpen(true);
@@ -772,6 +784,7 @@ export function LlmPanel({
             onRemoteAeon={openRemoteAeon}
             onHasso={openLocalHasso}
             onRemoteHasso={openRemoteHasso}
+            onUpgrade={() => setUpgradeOpen(true)}
           />
           <LlmDailyChart sparkId={sparkId} llmPort={llmPort} />
         </div>
@@ -1106,6 +1119,7 @@ export function LlmPanel({
             onRemoteAeon={openRemoteAeon}
             onHasso={openLocalHasso}
             onRemoteHasso={openRemoteHasso}
+            onUpgrade={() => setUpgradeOpen(true)}
           />
         </div>
       )}
@@ -1157,6 +1171,12 @@ export function LlmPanel({
         port={llmPort}
         modelId={remoteTarget ? null : llm?.modelId ?? null}
         remoteTarget={remoteTarget}
+        title={sparkName ?? null}
+      />
+      <UpgradeCompareDialog
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
+        nodeId={sparkId}
         title={sparkName ?? null}
       />
     </Panel>

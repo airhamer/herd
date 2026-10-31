@@ -631,6 +631,40 @@ export class FleetEnergyTracker {
     };
   }
 
+  /**
+   * Estimated energy one node drew between two instants (BENCH6: the run
+   * window of a bench). Minute buckets that straddle an edge are prorated by
+   * their overlap, assuming even power inside the minute. Null when the node
+   * is not tracked or the window is outside retention / empty.
+   * @param {string} nodeId
+   * @param {number} startMs
+   * @param {number} endMs
+   * @returns {{ wh: number, coverage_ms: number, window_ms: number, coverage: number, estimated: true } | null}
+   */
+  windowEnergy(nodeId, startMs, endMs) {
+    if (!this._nodeIdSet.has(nodeId)) return null;
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+    let wh = 0;
+    let coverageMs = 0;
+    for (const bucket of this._buckets.values()) {
+      const bucketEnd = bucket.minuteStartMs + MINUTE_MS;
+      const overlap = Math.min(endMs, bucketEnd) - Math.max(startMs, bucket.minuteStartMs);
+      if (overlap <= 0) continue;
+      const fraction = overlap / MINUTE_MS;
+      wh += (bucket.nodeWh[nodeId] ?? 0) * fraction;
+      coverageMs += (bucket.nodeCoverageMs[nodeId] ?? 0) * fraction;
+    }
+    if (coverageMs <= 0) return null;
+    const windowMs = endMs - startMs;
+    return {
+      wh,
+      coverage_ms: Math.round(coverageMs),
+      window_ms: windowMs,
+      coverage: Math.min(1, coverageMs / windowMs),
+      estimated: true,
+    };
+  }
+
   _hourly(atMs) {
     const graphEnd = Math.floor(atMs / MINUTE_MS) * MINUTE_MS;
     const graphStart = graphEnd - DAY_MS;

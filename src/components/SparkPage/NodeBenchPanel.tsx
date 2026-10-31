@@ -5,6 +5,7 @@ import { ActivityIcon } from "../ui/icons";
 import { AeonLadderDialog } from "./AeonLadderDialog";
 import { BenchmarkDialog } from "./BenchmarkDialog";
 import { HassoBatteryDialog } from "./HassoBatteryDialog";
+import { UpgradeCompareDialog } from "../UpgradeCompare/UpgradeCompareDialog";
 
 const LAUNCHER_BTN =
   "rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs font-medium text-text transition-colors hover:border-accent hover:bg-accent-soft";
@@ -56,6 +57,7 @@ export function NodeBenchPanel({
 }) {
   const endpoints = nodeBenchEndpoints(lanes, versions);
   const [open, setOpen] = useState<{ kind: "aeon" | "hasso" | "decode"; ep: NodeBenchEndpoint } | null>(null);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   return (
     <Panel title="LLM benchmarks" icon={<ActivityIcon />} bodyClassName="space-y-2">
       {endpoints.length === 0 ? (
@@ -81,6 +83,9 @@ export function NodeBenchPanel({
           ))}
         </ul>
       )}
+      <button type="button" className={LAUNCHER_BTN} onClick={() => setUpgradeOpen(true)}>
+        Upgrade worth it?
+      </button>
       <p className="text-[10px] leading-snug text-muted">
         Runs from the dashboard host over the LAN to the lane port. AEON ladder and Hasso battery results are stored with
         their own metric definitions in the bench results store.
@@ -118,6 +123,7 @@ export function NodeBenchPanel({
           sparkName={nodeName}
         />
       )}
+      <UpgradeCompareDialog open={upgradeOpen} onClose={() => setUpgradeOpen(false)} nodeId={nodeId} title={nodeName} />
     </Panel>
   );
 }

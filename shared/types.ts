@@ -1388,3 +1388,148 @@ export interface BenchMcNemar {
   /** p ≥ 0.05. */
   within_noise: boolean;
 }
+
+// ─── "Upgrade worth it?" (BENCH6, #46) ─────────────────────────────────
+
+/** One run the upgrade view can pick (GET /api/bench-results/upgrade/runs). */
+export interface BenchUpgradeRun {
+  run_id: string;
+  bench: string;
+  origin: BenchOrigin;
+  suite: string;
+  suite_version: string;
+  status: string | null;
+  started_at: string;
+  completed_at: string | null;
+  node_id: string | null;
+  node_name: string | null;
+  hw_bucket: string | null;
+  model_id: string | null;
+  engine: string | null;
+  engine_version: string | null;
+  quant: string | null;
+  cells: number;
+  concurrencies: number[];
+  has_energy: boolean;
+  has_memory: boolean;
+}
+
+export interface BenchUpgradeRunsResponse {
+  total: number;
+  runs: BenchUpgradeRun[];
+}
+
+export type BenchUpgradeVerdictCode = "worth_it" | "within_noise" | "regression" | "refused";
+
+export interface BenchUpgradeThroughputCell {
+  cell: string;
+  bench: string;
+  concurrency: number | null;
+  metric: BenchMetric;
+  unit: string;
+  definition: string;
+  baseline: number;
+  candidate: number;
+  delta_pct: number | null;
+  /** ± band in %: measured spread of repeated runs (floored at 3%), or the 15% default. */
+  noise_pct: number;
+  noise_source: "repeats" | "default";
+  measured_noise_pct: number | null;
+  /** False for AEON per-category detail cells: shown, not voted. */
+  headline: boolean;
+  status: "gain" | "loss" | "noise" | "unknown";
+  baseline_id: string;
+  candidate_id: string;
+}
+
+export interface BenchUpgradeQualityCategory {
+  cell: string;
+  category: string;
+  baseline_pct: number | null;
+  candidate_pct: number | null;
+  /** Percentage points. */
+  delta_pp: number | null;
+  mcnemar: BenchMcNemar | null;
+  status: "better" | "worse" | "noise" | "unpaired";
+}
+
+/** Energy drawn by the node over the run window, from the fleet energy tracker. */
+export interface BenchUpgradeRunEnergy {
+  wh: number;
+  window_s: number;
+  /** Share of the window covered by power samples (0–1). */
+  coverage: number;
+  output_tokens: number | null;
+  wh_per_1k_tokens: number | null;
+  source: string;
+  run_id: string;
+  /** Stored when the run finished, or read from the tracker now (31-day retention). */
+  from: "recorded" | "tracker_now";
+}
+
+export interface BenchUpgradeRunMemory {
+  total_mb: number | null;
+  available_start_mb: number | null;
+  available_end_mb: number | null;
+  /** Lower of the start and end readings. */
+  headroom_mb: number;
+  run_id: string;
+}
+
+export interface BenchUpgradeSide {
+  run_ids: string[];
+  benches: string[];
+  node_id: string | null;
+  node_name: string | null;
+  hw_bucket: string | null;
+  suite: string;
+  suite_version: string;
+  started_at: string;
+  lane: {
+    model_id: string | null;
+    engine: string | null;
+    engine_version: string | null;
+    quant: string | null;
+    recipe_flags: string | null;
+    spec_decode: string | null;
+  };
+}
+
+/** GET /api/bench-results/upgrade?baseline=&candidate= */
+export interface BenchUpgradeResponse {
+  comparable: boolean;
+  baseline: BenchUpgradeSide;
+  candidate: BenchUpgradeSide;
+  verdict: {
+    code: BenchUpgradeVerdictCode;
+    worth_it: boolean;
+    throughput: "gain" | "loss" | "mixed" | "noise" | "none";
+    quality: "regression" | "ok" | "not_measured";
+    reasons: string[];
+  };
+  throughput: BenchUpgradeThroughputCell[];
+  quality: BenchUpgradeQualityCategory[];
+  unpaired: { baseline: string[]; candidate: string[] };
+  cost: {
+    energy: {
+      definition: string;
+      baseline: BenchUpgradeRunEnergy | null;
+      candidate: BenchUpgradeRunEnergy | null;
+      delta_pct: number | null;
+    };
+    memory: {
+      baseline: BenchUpgradeRunMemory | null;
+      candidate: BenchUpgradeRunMemory | null;
+      delta_mb: number | null;
+    };
+  };
+  /** Nearest published figure (BENCH5) for the candidate's headline cells; shown beside, never diffed. */
+  reference: {
+    cell: string;
+    metric: BenchMetric;
+    unit: string;
+    candidate: number;
+    reference: BenchNearestReferencesResponse["metrics"][number]["references"][number];
+  } | null;
+  rules: { default_noise_pct: number; quality_alpha: number; worth_it: string };
+}

@@ -5,6 +5,7 @@
  *   GET    /api/bench-results/definitions     metric/definition/source catalog
  *   GET    /api/bench-results/compare?baseline=&candidate=
  *   GET    /api/bench-results/references      the published reference registry (BENCH5)
+ *   GET    /api/bench-results/upgrade[/runs]  "Upgrade worth it?" run compare (BENCH6, see ../upgrade/routes.js)
  *   GET    /api/bench-results/:id
  *   GET    /api/bench-results/:id/references  nearest published figures, same definition group
  *   POST   /api/bench-results                 add a reference / AEON-pod result
@@ -15,6 +16,7 @@ import { makeResult, SCHEMA_VERSION } from "./schema.js";
 import { METRICS, SOURCES, ORIGINS, listDefinitions } from "./definitions.js";
 import { isRegistryId } from "../references/loader.js";
 import { nearestReferences } from "../references/nearest.js";
+import { registerUpgradeRoutes } from "../upgrade/routes.js";
 
 const LIST_FILTERS = [
   "run_id",
@@ -43,10 +45,11 @@ function sendError(res, err) {
 
 /**
  * @param {import("express").Express} app
- * @param {{ store: import("./store.js").BenchResultsStore, registry?: any }} deps
+ * @param {{ store: import("./store.js").BenchResultsStore, registry?: any, energyWindow?: any }} deps
  *   `registry` is the parsed reference registry (server/bench/references), if loaded.
+ *   `energyWindow(nodeId, startMs, endMs)` reads the fleet energy tracker (BENCH6).
  */
-export function registerBenchResultsRoutes(app, { store, registry = null }) {
+export function registerBenchResultsRoutes(app, { store, registry = null, energyWindow = null }) {
   app.get("/api/bench-results", (req, res) => {
     const filter = {};
     for (const k of LIST_FILTERS) {
@@ -105,6 +108,8 @@ export function registerBenchResultsRoutes(app, { store, registry = null }) {
       results,
     });
   });
+
+  registerUpgradeRoutes(app, { store, energyWindow });
 
   app.get("/api/bench-results/:id", (req, res) => {
     const rec = store.get(req.params.id);

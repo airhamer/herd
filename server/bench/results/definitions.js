@@ -308,6 +308,15 @@ const LIST = [
       "Mean sampled GPU power (W) × wave duration (h) / (completion tokens / 1000). GPU board power only; approximate.",
     url: null,
   },
+  {
+    name: "herd.energy.node_tracker_run.v1",
+    metric: "wh_per_1k_tokens",
+    owner: "herd",
+    comparable: "node_power_estimate_over_run",
+    formula:
+      "Fleet energy tracker estimate of the benched node's power (GPU draw + CPU estimate + 23 W platform) integrated over the run window, scaled up by sample coverage, / (output tokens of the run / 1000). Whole run, all concurrency levels; approximate (BENCH6).",
+    url: null,
+  },
 ];
 
 export const DEFINITIONS = Object.freeze(
