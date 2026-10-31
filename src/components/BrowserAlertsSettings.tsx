@@ -2,75 +2,86 @@ import { useState } from "react";
 import { notificationSupport, useBrowserAlertPrefs } from "../hooks/useBrowserAlerts";
 import { ToggleRow } from "./SettingRows";
 
+const NOTES = {
+  insecure:
+    "Desktop notifications need HTTPS or localhost; this page is served over plain HTTP. Reach it through an SSH tunnel, Tailscale Serve or an HTTPS reverse proxy, or add an ntfy channel under Alert notifications instead.",
+  unsupported: "Desktop notifications are not available in this browser.",
+  blocked: "Notifications are blocked for this site. Allow them in the browser's site settings and switch this on again.",
+  refused: "The browser rejected the request for notification permission.",
+  revoked: "Notification permission has since been revoked in the browser, so nothing will appear until it is allowed again.",
+} as const;
+
 /**
- * Settings → Tab badge / Desktop notifications. Per browser (localStorage),
- * saved on click — not part of the server settings the dialog's Save writes.
- * Both count what the Overview exceptions strip lists.
+ * Settings rows for the tab badge and desktop notifications. These live in
+ * this browser's localStorage and save on click, separately from the server
+ * settings saved by the dialog. Both follow the Overview exceptions strip.
  */
 export function BrowserAlertsSettings() {
   const [prefs, setPrefs] = useBrowserAlertPrefs();
+  const [requesting, setRequesting] = useState(false);
+  const [clickNote, setClickNote] = useState<string | null>(null);
   const support = notificationSupport();
-  const [note, setNote] = useState<string | null>(null);
-  const [asking, setAsking] = useState(false);
-  const permission = support === "ok" ? Notification.permission : null;
 
-  const toggleDesktop = async () => {
-    if (prefs.desktop) {
-      setPrefs({ ...prefs, desktop: false });
-      setNote(null);
-      return;
-    }
+  const enableDesktop = async () => {
     if (support !== "ok") return;
-    setAsking(true);
+    setRequesting(true);
     try {
-      // Only ever asked from this click: browsers ignore (or punish) a
-      // permission prompt that is not tied to a user gesture.
-      const result = Notification.permission === "default" ? await Notification.requestPermission() : Notification.permission;
-      if (result === "granted") {
+      // Request permission only here, inside the click: prompts without a user
+      // gesture are ignored or penalised by browsers.
+      let permission = Notification.permission;
+      if (permission === "default") permission = await Notification.requestPermission();
+      if (permission === "granted") {
         setPrefs({ ...prefs, desktop: true });
-        setNote(null);
+        setClickNote(null);
       } else {
-        setNote("Notifications are blocked for this site. Allow them in the browser's site settings, then turn this on again.");
+        setClickNote(NOTES.blocked);
       }
     } catch {
-      setNote("This browser refused the notification permission request.");
+      setClickNote(NOTES.refused);
     } finally {
-      setAsking(false);
+      setRequesting(false);
     }
   };
 
-  let desktopNote: string | null = note;
-  if (!desktopNote && support === "insecure") {
-    desktopNote = "Browsers only allow notifications on HTTPS or localhost, and this page is plain HTTP. Use an SSH tunnel, Tailscale Serve or an HTTPS proxy — or an ntfy channel under Alert notifications.";
-  } else if (!desktopNote && support === "unsupported") {
-    desktopNote = "This browser does not support desktop notifications.";
-  } else if (!desktopNote && support === "ok" && prefs.desktop && permission === "denied") {
-    desktopNote = "Permission was withdrawn in the browser; nothing is shown until it is allowed again.";
+  const onDesktop = () => {
+    if (!prefs.desktop) {
+      void enableDesktop();
+      return;
+    }
+    setPrefs({ ...prefs, desktop: false });
+    setClickNote(null);
+  };
+
+  let note: string | null = clickNote;
+  if (note === null) {
+    if (support === "insecure") note = NOTES.insecure;
+    else if (support === "unsupported") note = NOTES.unsupported;
+    else if (prefs.desktop && Notification.permission === "denied") note = NOTES.revoked;
   }
 
   return (
     <>
       <ToggleRow
         title="Tab badge"
-        help="The tab title shows how many exceptions the Overview strip lists — “(2) sparkDash” — and the icon gets a red (critical) or amber dot. This browser only; saved immediately."
+        help="Shows the number of Overview exceptions in the tab title, e.g. “(2) sparkDash”, and puts a red (critical) or amber dot on the tab icon. Stored in this browser and applied at once."
         checked={prefs.tabBadge}
-        onChange={(v) => setPrefs({ ...prefs, tabBadge: v })}
+        onChange={(next) => setPrefs({ ...prefs, tabBadge: next })}
       />
       <ToggleRow
         title="Desktop notifications"
         help={
           <>
-            A notification when an exception becomes active, while this page is open. This browser only; saved immediately.
-            {desktopNote && (
-              <span className="set-row__note" role="note">
-                {desktopNote}
+            Pops up a system notification when an exception starts while this page is open. Stored in this browser and applied at once.
+            {note ? (
+              <span role="note" className="set-row__note">
+                {note}
               </span>
-            )}
+            ) : null}
           </>
         }
-        checked={prefs.desktop && support === "ok"}
-        disabled={support !== "ok" || asking}
-        onChange={() => void toggleDesktop()}
+        checked={support === "ok" && prefs.desktop}
+        disabled={requesting || support !== "ok"}
+        onChange={onDesktop}
       />
     </>
   );

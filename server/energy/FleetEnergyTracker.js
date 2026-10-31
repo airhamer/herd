@@ -213,33 +213,37 @@ export function estimateNodeWatts(snapshot) {
 }
 
 /**
- * Plausibility gate for a bucket read back from a file whose node set is NOT this
- * tracker's scope (used by the monthly roll-up of an out-of-scope file): per-node
- * Wh within 4 Wh/min, 28.2–240 W bounds, coverage within a minute, token counts
- * as safe integers. Returns a clean bucket for `nodeIds`, or null when anything
- * is implausible. Ported from upstream 2fd74e6 restoreBucket.
+ * Validate one bucket read back from a 31-day file against `nodeIds` (the node
+ * set that file was written for). Returns a clean bucket, or null when any
+ * figure is outside what real hardware could have produced. Shared by the
+ * normal load and the monthly roll-up of a file from an earlier fleet scope.
  */
-function restoreBucket(candidate, minuteStartMs, nodeIds) {
-  const nodeIdSet = new Set(nodeIds);
+function plausibleStoredBucket(stored, minuteStartMs, ids, idSet = new Set(ids)) {
   if (
-    !hasExactNodeKeys(candidate?.nodeWh, nodeIds, nodeIdSet) ||
-    !hasExactNodeKeys(candidate?.nodeCoverageMs, nodeIds, nodeIdSet)
+    !hasExactNodeKeys(stored?.nodeWh, ids, idSet) ||
+    !hasExactNodeKeys(stored?.nodeCoverageMs, ids, idSet)
   ) {
     return null;
   }
-  const maximumFleetWatts = 240 * nodeIds.length;
-  const minimumFleetWatts = MIN_NODE_WATTS * nodeIds.length;
-  const bucket = emptyBucket(minuteStartMs, nodeIds);
-  for (const id of nodeIds) {
-    const nodeWh = candidate.nodeWh[id];
-    const nodeCoverageMs = candidate.nodeCoverageMs[id];
+  const fleetFloorWatts = MIN_NODE_WATTS * ids.length;
+  const fleetCeilingWatts = 240 * ids.length;
+  const bucket = emptyBucket(minuteStartMs, ids);
+  for (const id of ids) {
+    const nodeWh = stored?.nodeWh?.[id];
+    const nodeCoverageMs = stored?.nodeCoverageMs?.[id];
     if (
       !validNonnegative(nodeWh) ||
       nodeWh > MAX_NODE_WH_PER_MINUTE ||
       !validNonnegative(nodeCoverageMs) ||
       nodeCoverageMs > MINUTE_MS ||
-      exceedsWithFloatingTolerance(nodeWh, (240 * nodeCoverageMs) / 3_600_000) ||
-      fallsBelowWithFloatingTolerance(nodeWh, (MIN_NODE_WATTS * nodeCoverageMs) / 3_600_000)
+      exceedsWithFloatingTolerance(
+        nodeWh,
+        (240 * nodeCoverageMs) / 3_600_000
+      ) ||
+      fallsBelowWithFloatingTolerance(
+        nodeWh,
+        (MIN_NODE_WATTS * nodeCoverageMs) / 3_600_000
+      )
     ) {
       return null;
     }
@@ -247,26 +251,39 @@ function restoreBucket(candidate, minuteStartMs, nodeIds) {
     bucket.nodeCoverageMs[id] = nodeCoverageMs;
   }
   if (
-    !validNonnegative(candidate.fleetWattMs) ||
-    candidate.fleetWattMs > maximumFleetWatts * MINUTE_MS ||
-    !validNonnegative(candidate.fleetCoverageMs) ||
-    candidate.fleetCoverageMs > MINUTE_MS ||
-    exceedsWithFloatingTolerance(candidate.fleetWattMs, maximumFleetWatts * candidate.fleetCoverageMs) ||
-    fallsBelowWithFloatingTolerance(candidate.fleetWattMs, minimumFleetWatts * candidate.fleetCoverageMs) ||
+    !validNonnegative(stored.fleetWattMs) ||
+    stored.fleetWattMs > fleetCeilingWatts * MINUTE_MS ||
+    !validNonnegative(stored.fleetCoverageMs) ||
+    stored.fleetCoverageMs > MINUTE_MS ||
     exceedsWithFloatingTolerance(
-      candidate.fleetWattMs,
-      Object.values(bucket.nodeWh).reduce((sum, nodeWh) => sum + nodeWh, 0) * 3_600_000
+      stored.fleetWattMs,
+      fleetCeilingWatts * stored.fleetCoverageMs
     ) ||
-    nodeIds.some((id) => exceedsWithFloatingTolerance(candidate.fleetCoverageMs, bucket.nodeCoverageMs[id])) ||
-    !validNonnegativeSafeInteger(candidate.outputTokens) ||
-    (candidate.coveredOutputTokens != null && !validNonnegativeSafeInteger(candidate.coveredOutputTokens))
+    fallsBelowWithFloatingTolerance(
+      stored.fleetWattMs,
+      fleetFloorWatts * stored.fleetCoverageMs
+    ) ||
+    exceedsWithFloatingTolerance(
+      stored.fleetWattMs,
+      Object.values(bucket.nodeWh).reduce((sum, nodeWh) => sum + nodeWh, 0) *
+        3_600_000
+    ) ||
+    ids.some((id) =>
+      exceedsWithFloatingTolerance(
+        stored.fleetCoverageMs,
+        bucket.nodeCoverageMs[id]
+      )
+    ) ||
+    !validNonnegativeSafeInteger(stored.outputTokens) ||
+    (stored.coveredOutputTokens != null &&
+      !validNonnegativeSafeInteger(stored.coveredOutputTokens))
   ) {
     return null;
   }
-  bucket.fleetWattMs = candidate.fleetWattMs;
-  bucket.fleetCoverageMs = candidate.fleetCoverageMs;
-  bucket.outputTokens = candidate.outputTokens;
-  bucket.coveredOutputTokens = candidate.coveredOutputTokens ?? 0;
+  bucket.fleetWattMs = stored.fleetWattMs;
+  bucket.fleetCoverageMs = stored.fleetCoverageMs;
+  bucket.outputTokens = stored.outputTokens;
+  bucket.coveredOutputTokens = stored.coveredOutputTokens ?? 0;
   return bucket;
 }
 
@@ -308,19 +325,18 @@ export class FleetEnergyTracker {
     this._membershipChanged = false;
     this._currentNodeIds = [...this.nodeIds];
     this._dirty = false;
-    /** Minute from which output tokens were counted (monthly Wh/token pairing). */
-    this._tokensTrackedSinceMs = null;
-    this._lastFoldBoundary = null;
+    // First minute in which output tokens were observed; persisted so the monthly
+    // history pairs tokens only with energy from the period they were counted in.
+    this._tokenEpochMs = null;
+    this._archivedUpToMinute = null;
     this._flushTimer = null;
 
-    // Permanent monthly roll-up; in memory only unless monthlyFilePath is set.
-    this.monthly =
-      monthly ?? new MonthlyEnergyArchive({ filePath: monthlyFilePath, now: this._now, fileSystem });
+    // Long-run history (docs/specs/monthly-energy.md); memory-only without a path.
+    this.monthly = monthly || new MonthlyEnergyArchive({ filePath: monthlyFilePath, now: this._now, fileSystem });
 
-    if (load) {
-      this._load();
-      this._foldClosedMinutes(this._now());
-    }
+    if (load) this._load();
+    // Back-fill from whatever the window already holds (first start after an upgrade).
+    this._archiveFinishedMinutes(this._now());
 
     const requestedFlushMs = Number.isFinite(flushIntervalMs) && flushIntervalMs > 0
       ? flushIntervalMs
@@ -418,9 +434,7 @@ export class FleetEnergyTracker {
   _recordTokens(snapshots, atMs, hasFullFleetInterval) {
     const observation = tokenObservation(snapshots, atMs, this._nodeIdSet);
     if (!observation) return;
-    if (this._tokensTrackedSinceMs === null) {
-      this._tokensTrackedSinceMs = Math.floor(atMs / MINUTE_MS) * MINUTE_MS;
-    }
+    this._tokenEpochMs ??= atMs - (atMs % MINUTE_MS);
 
     const previous = this._tokenCounter;
     const gapMs = previous ? atMs - previous.observedAtMs : null;
@@ -570,29 +584,33 @@ export class FleetEnergyTracker {
     this._latestRecordAt = timestamp;
     this._dirty = true;
     this._prune(timestamp);
-    this._foldClosedMinutes(timestamp);
+    this._archiveFinishedMinutes(timestamp);
     return true;
   }
 
-  /** Move finished minutes into the monthly archive (cheap unless a minute just closed). */
-  _foldClosedMinutes(atMs) {
-    const boundary = MonthlyEnergyArchive.closedBefore(atMs);
-    if (boundary === this._lastFoldBoundary) return;
-    this._lastFoldBoundary = boundary;
-    this.monthly.foldBuckets(this._buckets.values(), {
-      nowMs: atMs,
-      trackedSinceMs: this._tokensTrackedSinceMs,
-    });
+  /**
+   * Hand finished minutes to the monthly history. The archive itself decides
+   * what is final and what it already has; this only avoids re-offering the
+   * whole window more than once per wall-clock minute.
+   */
+  _archiveFinishedMinutes(atMs) {
+    if (!this.monthly || !Number.isFinite(atMs)) return;
+    // Minutes become final 10 s after they end, so key the check on that edge.
+    const minute = Math.floor((atMs - 10_000) / MINUTE_MS);
+    if (minute === this._archivedUpToMinute) return;
+    this._archivedUpToMinute = minute;
+    this.monthly.foldBuckets(this._buckets.values(), { nowMs: atMs, trackedSinceMs: this._tokenEpochMs });
   }
 
-  /** Permanent per-month totals. A fold here only dirties the archive; the next tracker flush persists it. */
+  /** GET /api/fleet-energy/monthly. Writing happens on the regular flush. */
   monthlySnapshot(atMs = undefined) {
-    const timestamp = this._time(atMs);
-    if (Number.isFinite(timestamp)) this._foldClosedMinutes(timestamp);
-    return this.monthly.snapshot(Number.isFinite(timestamp) ? timestamp : 0);
+    const at = this._time(atMs);
+    const valid = Number.isFinite(at);
+    if (valid) this._archiveFinishedMinutes(at);
+    return this.monthly.snapshot(valid ? at : 0);
   }
 
-  /** Explicit, separate from any window reset: delete archived months (`month` or `all`). */
+  /** Delete archived months: `{ month: "YYYY-MM" }` or `{ all: true }`. Never touches the 31-day window. */
   clearMonthly(options) {
     return this.monthly.clear(options);
   }
@@ -710,9 +728,8 @@ export class FleetEnergyTracker {
           raw.nodeIds.length !== this.nodeIds.length ||
           raw.nodeIds.some((id) => !this._nodeIdSet.has(id)));
       if (outOfScope) {
-        // Fleet membership changed: keep the old scope's minutes in the monthly
-        // archive, then park the file beside the live one (upstream 2fd74e6).
-        this._rollUpOutOfRangeFile(raw);
+        // A different fleet wrote this file: archive what it holds, then move it aside.
+        this._retireForeignScopeFile(raw);
         return;
       }
 
@@ -732,74 +749,11 @@ export class FleetEnergyTracker {
           continue;
         }
         seenMinuteStarts.add(minuteStartMs);
-        if (
-          !hasExactNodeKeys(candidate.nodeWh, this.nodeIds, this._nodeIdSet) ||
-          !hasExactNodeKeys(candidate.nodeCoverageMs, this.nodeIds, this._nodeIdSet)
-        ) {
+        const bucket = plausibleStoredBucket(candidate, minuteStartMs, this.nodeIds, this._nodeIdSet);
+        if (!bucket) {
           rejectedBucket = true;
           continue;
         }
-        const bucket = emptyBucket(minuteStartMs, this.nodeIds);
-        let valid = true;
-        for (const id of this.nodeIds) {
-          const nodeWh = candidate?.nodeWh?.[id];
-          const nodeCoverageMs = candidate?.nodeCoverageMs?.[id];
-          if (
-            !validNonnegative(nodeWh) ||
-            nodeWh > MAX_NODE_WH_PER_MINUTE ||
-            !validNonnegative(nodeCoverageMs) ||
-            nodeCoverageMs > MINUTE_MS ||
-            exceedsWithFloatingTolerance(
-              nodeWh,
-              (240 * nodeCoverageMs) / 3_600_000
-            ) ||
-            fallsBelowWithFloatingTolerance(
-              nodeWh,
-              (MIN_NODE_WATTS * nodeCoverageMs) / 3_600_000
-            )
-          ) {
-            valid = false;
-            break;
-          }
-          bucket.nodeWh[id] = nodeWh;
-          bucket.nodeCoverageMs[id] = nodeCoverageMs;
-        }
-        if (
-          !valid ||
-          !validNonnegative(candidate.fleetWattMs) ||
-          candidate.fleetWattMs > this._maximumFleetWatts * MINUTE_MS ||
-          !validNonnegative(candidate.fleetCoverageMs) ||
-          candidate.fleetCoverageMs > MINUTE_MS ||
-          exceedsWithFloatingTolerance(
-            candidate.fleetWattMs,
-            this._maximumFleetWatts * candidate.fleetCoverageMs
-          ) ||
-          fallsBelowWithFloatingTolerance(
-            candidate.fleetWattMs,
-            this._minimumFleetWatts * candidate.fleetCoverageMs
-          ) ||
-          exceedsWithFloatingTolerance(
-            candidate.fleetWattMs,
-            Object.values(bucket.nodeWh).reduce((sum, nodeWh) => sum + nodeWh, 0) *
-              3_600_000
-          ) ||
-          this.nodeIds.some((id) =>
-            exceedsWithFloatingTolerance(
-              candidate.fleetCoverageMs,
-              bucket.nodeCoverageMs[id]
-            )
-          ) ||
-          !validNonnegativeSafeInteger(candidate.outputTokens) ||
-          (candidate.coveredOutputTokens != null &&
-            !validNonnegativeSafeInteger(candidate.coveredOutputTokens))
-        ) {
-          rejectedBucket = true;
-          continue;
-        }
-        bucket.fleetWattMs = candidate.fleetWattMs;
-        bucket.fleetCoverageMs = candidate.fleetCoverageMs;
-        bucket.outputTokens = candidate.outputTokens;
-        bucket.coveredOutputTokens = candidate.coveredOutputTokens ?? 0;
         this._buckets.set(minuteStartMs, bucket);
       }
       this._bucketsOrdered = true;
@@ -858,9 +812,7 @@ export class FleetEnergyTracker {
         };
         this._tokenNeedsRebase = true;
       }
-      if (validNonnegativeSafeInteger(raw.tokensTrackedSinceMs)) {
-        this._tokensTrackedSinceMs = raw.tokensTrackedSinceMs;
-      }
+      if (validNonnegativeSafeInteger(raw.tokensTrackedSinceMs)) this._tokenEpochMs = raw.tokensTrackedSinceMs;
       this._dirty = legacyNodeIds || rejectedBucket || repairedHighWater;
       const now = this._now();
       if (Number.isFinite(now)) this._prune(now);
@@ -871,58 +823,49 @@ export class FleetEnergyTracker {
   }
 
   /**
-   * A 31-day file whose node set no longer matches (membership change): fold its
-   * plausible minutes into the monthly archive using the file's OWN node set,
-   * then park it as a `.scope-` archive so it never re-enters the live window.
-   * Ported from upstream 2fd74e6.
+   * The 31-day file on disk was written for another node set. Its minutes are
+   * checked against that file's own node list (same rules as a normal load),
+   * the believable ones go into the monthly history, and the file is renamed
+   * to `<name>.scope-<savedAt><ext>` so it never re-enters this window.
    */
-  _rollUpOutOfRangeFile(raw) {
-    if (!this.monthly || !this.filePath) return;
-    const stamp = validNonnegativeSafeInteger(raw?.savedAt) ? raw.savedAt : Math.floor(this._now());
-    const parsed = path.parse(this.filePath);
-    const archivePath = path.join(parsed.dir, `${parsed.name}.scope-${stamp}${parsed.ext}`);
-    try {
-      const oldNodeIds = normalizeNodeIds(raw?.nodeIds);
-      const seen = new Set();
-      const plausible = [];
-      for (const candidate of Array.isArray(raw?.buckets) ? raw.buckets : []) {
-        const minuteStartMs = candidate?.minuteStartMs;
-        if (
-          !validNonnegativeSafeInteger(minuteStartMs) ||
-          minuteStartMs % MINUTE_MS !== 0 ||
-          seen.has(minuteStartMs)
-        ) {
-          continue;
-        }
-        seen.add(minuteStartMs);
-        const bucket =
-          oldNodeIds.length > 0 ? restoreBucket(candidate, minuteStartMs, oldNodeIds) : null;
-        if (bucket) plausible.push(bucket);
+  _retireForeignScopeFile(raw) {
+    if (!this.filePath) return;
+    const fileNodeIds = normalizeNodeIds(raw?.nodeIds);
+    const fileNodeSet = new Set(fileNodeIds);
+    const accepted = new Map();
+    if (fileNodeIds.length > 0 && Array.isArray(raw?.buckets)) {
+      for (const candidate of raw.buckets) {
+        const start = candidate?.minuteStartMs;
+        if (!validNonnegativeSafeInteger(start) || start % MINUTE_MS !== 0 || accepted.has(start)) continue;
+        const clean = plausibleStoredBucket(candidate, start, fileNodeIds, fileNodeSet);
+        // The first copy of a minute decides, believable or not.
+        accepted.set(start, clean);
       }
-      this.monthly.foldBuckets(plausible, {
-        nowMs: this._now(),
-        trackedSinceMs: validNonnegativeSafeInteger(raw?.tokensTrackedSinceMs)
-          ? raw.tokensTrackedSinceMs
-          : null,
-      });
-      this.monthly.flush();
-    } catch (error) {
-      console.warn(`[FleetEnergyTracker] unable to roll up ${this.filePath}: ${error.message}`);
     }
     try {
-      if (this._fs.existsSync(archivePath)) return;
-      this._fs.renameSync(this.filePath, archivePath);
+      const believable = [...accepted.values()].filter(Boolean);
+      const epoch = validNonnegativeSafeInteger(raw?.tokensTrackedSinceMs) ? raw.tokensTrackedSinceMs : null;
+      this.monthly?.foldBuckets(believable, { nowMs: this._now(), trackedSinceMs: epoch });
+      this.monthly?.flush();
     } catch (error) {
-      console.warn(`[FleetEnergyTracker] unable to archive ${this.filePath}: ${error.message}`);
+      console.warn(`[FleetEnergyTracker] monthly roll-up of ${this.filePath} failed: ${error.message}`);
+    }
+    const { dir, name, ext } = path.parse(this.filePath);
+    const savedAt = validNonnegativeSafeInteger(raw?.savedAt) ? raw.savedAt : Math.floor(this._now());
+    const retiredPath = path.join(dir, `${name}.scope-${savedAt}${ext}`);
+    try {
+      if (!this._fs.existsSync(retiredPath)) this._fs.renameSync(this.filePath, retiredPath);
+    } catch (error) {
+      console.warn(`[FleetEnergyTracker] could not move ${this.filePath} aside: ${error.message}`);
     }
   }
 
   flush() {
     try {
-      this._foldClosedMinutes(this._now());
-      this.monthly.flush();
+      this._archiveFinishedMinutes(this._now());
+      this.monthly?.flush();
     } catch (error) {
-      console.error(`[FleetEnergyTracker] monthly persist error: ${error.message}`);
+      console.error(`[FleetEnergyTracker] monthly history not saved: ${error.message}`);
     }
     if (!this.filePath || !this._dirty) return false;
     const now = this._now();
@@ -938,7 +881,7 @@ export class FleetEnergyTracker {
         this._integrationHighWaterMs === null
           ? null
           : Math.ceil(this._integrationHighWaterMs),
-      tokensTrackedSinceMs: this._tokensTrackedSinceMs,
+      tokensTrackedSinceMs: this._tokenEpochMs,
       tokenCounter: this._tokenCounter,
       buckets,
     };

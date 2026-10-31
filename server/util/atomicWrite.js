@@ -125,21 +125,23 @@ export async function atomicWriteAsync(filePath, contents, mode = 0o600, { shoul
 }
 
 /**
- * A state file failed to parse: move it aside as <name>.corrupt-<ts> so the next
- * save does not destroy it, and log once. Never throws.
+ * Keep an unparseable state file for inspection: rename it to
+ * `<file>.corrupt-<epoch ms>` so the next save starts fresh without
+ * overwriting it. Logs one line; never throws (LIC1 clean-room rewrite).
  * @param {string} filePath
- * @param {string} label Log prefix.
- * @param {Error} [err]
- * @returns {string|null} the quarantine path, or null when the rename failed.
+ * @param {string} label Log prefix, e.g. "EventLog".
+ * @param {Error} [err] Why the file could not be read.
+ * @returns {string|null} Where the file went, or null if it could not be moved.
  */
 export function quarantineCorrupt(filePath, label, err) {
+  const why = err?.message || "parse error";
+  const aside = `${filePath}.corrupt-${Date.now()}`;
   try {
-    const dest = `${filePath}.corrupt-${Date.now()}`;
-    fs.renameSync(filePath, dest);
-    console.error(`[${label}] ${filePath} is unreadable (${err?.message ?? "parse error"}); moved to ${dest}`);
-    return dest;
-  } catch (e) {
-    console.error(`[${label}] ${filePath} is unreadable and could not be quarantined: ${e?.message}`);
+    fs.renameSync(filePath, aside);
+  } catch (moveErr) {
+    console.error(`[${label}] cannot read ${filePath} (${why}) and could not move it aside: ${moveErr?.message}`);
     return null;
   }
+  console.error(`[${label}] cannot read ${filePath} (${why}); kept it as ${aside}`);
+  return aside;
 }

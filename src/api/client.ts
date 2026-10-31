@@ -86,7 +86,7 @@ export function fetchFleetEnergy(): Promise<FleetEnergy> {
   return apiFetch("/api/fleet-energy");
 }
 
-/** Permanent monthly energy roll-up (monthly folds hourly; fetched once, no polling). */
+/** Long-run per-month energy history; the card loads it once when it opens. */
 export function fetchMonthlyEnergy(): Promise<MonthlyEnergy> {
   return apiFetch("/api/fleet-energy/monthly");
 }
@@ -481,32 +481,24 @@ export function updateSettings(patch: Partial<Settings>): Promise<Settings> {
   });
 }
 
-// ─── Alert notifications ─────────────────────────────
-export function fetchAlerts(): Promise<AlertsResponse> {
-  return apiFetch("/api/alerts");
-}
+// ─── Alerts (/api/alerts*) ──────────────────────────────
+const ALERTS = "/api/alerts";
 
-export function fetchAlertsConfig(): Promise<AlertsConfig> {
-  return apiFetch("/api/alerts/config");
-}
+/** Live alert state: firing, pending and the recent transitions. */
+export const fetchAlerts = (): Promise<AlertsResponse> => apiFetch(ALERTS);
 
-export function updateAlertsConfig(update: AlertsConfigUpdate): Promise<AlertsConfig> {
-  return apiFetch("/api/alerts/config", {
-    method: "PUT",
-    body: JSON.stringify(update),
-  });
-}
+export const fetchAlertsConfig = (): Promise<AlertsConfig> => apiFetch(`${ALERTS}/config`);
+
+/** Partial update; omitted sections stay as stored. Returns the new config. */
+export const updateAlertsConfig = (update: AlertsConfigUpdate): Promise<AlertsConfig> =>
+  apiFetch(`${ALERTS}/config`, { method: "PUT", body: JSON.stringify(update) });
 
 /**
- * Send one test message. With `channel`, the unsaved draft is tested (a masked
- * URL resolves against `channelId` on the server).
+ * Fire a test notification. Pass the dialog's draft as `channel` to try
+ * unsaved edits; a masked URL in it is looked up by `channelId`.
  */
-export function testAlertChannel(channelId: string | undefined, channel?: AlertChannel): Promise<AlertTestResult> {
-  return apiFetch("/api/alerts/test", {
-    method: "POST",
-    body: JSON.stringify({ channelId, channel }),
-  });
-}
+export const testAlertChannel = (channelId: string | undefined, channel?: AlertChannel): Promise<AlertTestResult> =>
+  apiFetch(`${ALERTS}/test`, { method: "POST", body: JSON.stringify({ channelId, channel }) });
 
 // ─── Fleet (node-agent) ─────────────────────────────────
 /** Aggregated fleet snapshot: nodes + topology + requests + memory. */

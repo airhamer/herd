@@ -1,7 +1,6 @@
-/* Ported subset of upstream styles/dialogs.css (2c2a1af): the rules the
-   Alert notifications dialog (AlertsDialog, SettingRows, BrowserAlertsSettings)
-   needs that this fork' index.css does not already define (index.css keeps
-   .modal-overlay / .modal-sheet base styles). */
+/* Dialog styles beyond the .modal-overlay / .modal-sheet basics in index.css.
+   The shared modal and setting-row rules come from the MIT-licensed sparkDash
+   1.x base; the Alerts dialog section at the end is herd's own (LIC1). */
 
 .modal-sheet--wide {
   max-width: 42rem;
@@ -155,116 +154,109 @@
   flex-shrink: 1;
   gap: 4px;
 }
-.alerts-fieldset {
-  min-width: 0;
+.set-row__note {
+  display: block;
+  margin-top: 0.3rem;
+  color: var(--color-warning);
+}
+
+/* ─── Alerts dialog ─────────────────────────────────── */
+.al-locked {
   margin: 0;
   padding: 0;
   border: 0;
+  min-width: 0;
 }
-.alerts-fieldset:disabled {
-  opacity: 0.55;
+.al-locked:disabled {
+  opacity: 0.5;
+  pointer-events: none;
 }
-.alerts-off-note {
-  margin: 0.25rem 0 0.5rem;
+.al-hint {
+  margin: 0.4rem 0;
 }
-.alerts-section {
-  margin-top: 1.1rem;
+.al-group {
+  padding-top: 1rem;
 }
-.alerts-section__head {
+.al-group > header {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: 0.75rem;
 }
-.alerts-section__title {
+.al-group h3 {
   margin: 0;
   font-size: 0.7rem;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--color-muted-strong);
+  color: var(--color-muted-strong, var(--color-muted));
 }
-.alerts-section__help {
-  margin: 0.3rem 0 0.4rem;
-  font-size: 0.7rem;
+.al-group__note {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.72rem;
   line-height: 1.45;
   color: var(--color-muted);
 }
-.alerts-wait {
+.al-wait {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
-  margin-right: 0.75rem;
-  font-size: 0.7rem;
+  gap: 0.3rem;
+  margin-right: 0.6rem;
+  font-size: 0.72rem;
   color: var(--color-muted);
 }
-.modal-sheet .alerts-wait input[type="number"] {
-  width: 4.75rem;
-  min-height: 2rem;
-  padding: 0.3rem 0.5rem;
+.modal-sheet .al-wait input {
+  width: 4.5rem;
+  min-height: 1.9rem;
+  padding: 0.25rem 0.45rem;
   text-align: right;
 }
-.alerts-channel {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin-top: 0.6rem;
-  padding: 0.75rem;
+.al-channel {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.5rem;
+  padding: 0.7rem 0.8rem;
   border: 1px solid var(--color-border);
-  border-radius: 12px;
+  border-radius: 10px;
 }
-.alerts-channel__row {
+.al-channel__line {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.45rem;
 }
-.modal-sheet .alerts-channel__row > select {
-  width: auto;
-  flex: 0 0 auto;
-}
-.modal-sheet .alerts-channel__row > .alerts-channel__name {
-  flex: 1 1 8rem;
-  width: auto;
+.al-channel__line > .al-grow {
+  flex: 1 1 9rem;
   min-width: 0;
 }
-.alerts-channel__actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-}
-.alerts-list {
-  margin: 0.35rem 0 0;
+.al-feed {
+  max-height: 15rem;
+  margin: 0.3rem 0 0;
   padding: 0;
-  list-style: none;
-  max-height: 14rem;
   overflow-y: auto;
-}
-.alerts-list > li {
-  padding: 0.4rem 0 0.4rem 0.6rem;
-  border-left: 2px solid var(--color-border-strong);
+  list-style: none;
   font-size: 0.75rem;
-  line-height: 1.4;
-  color: var(--color-text);
 }
-.alerts-list > li + li {
-  margin-top: 0.25rem;
+.al-feed li {
+  padding: 0.35rem 0 0.35rem 0.65rem;
+  border-left: 3px solid var(--color-border-strong, var(--color-border));
 }
-.alerts-list > li small {
+.al-feed li + li {
+  margin-top: 0.2rem;
+}
+.al-feed li small {
   display: block;
   color: var(--color-muted);
-  overflow-wrap: anywhere;
 }
-.alerts-list > li.is-critical {
+.al-feed li[data-tone="critical"] {
   border-left-color: var(--color-danger);
 }
-.alerts-list > li.is-warning {
+.al-feed li[data-tone="warning"] {
   border-left-color: var(--color-warning);
 }
-.alerts-list > li.is-ok {
+.al-feed li[data-tone="ok"] {
   border-left-color: var(--color-success);
 }
-.alerts-error {
-  margin: 0 1.35rem 0.75rem;
+.al-error {
+  margin: 0 1.25rem 0.75rem;
 }

@@ -248,8 +248,8 @@ function DashboardApp() {
     setSettings(s);
   }, []);
 
-  // Tab badge + desktop notifications (both opt-in, per browser): the strip's own
-  // list. Live snapshots only — placeholders from the REST fallback are all "offline".
+  // Per-browser tab badge and desktop notifications, fed by the same rows as the
+  // Overview strip. Only live snapshots count (REST placeholders look offline).
   const fleetAlerts = useFleetAlerts({
     sparks,
     alertsEnabled: settings?.alertsEnabled ?? false,

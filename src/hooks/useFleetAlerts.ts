@@ -2,35 +2,32 @@ import { useMemo } from "react";
 import type { AlertInstance, SparkSnapshot } from "../api/types";
 import { stripAlerts, type FleetAlert } from "../components/OverviewPage/FleetAlertStrip";
 
-/**
- * The fleet's active alerts exactly as the Overview strip lists them — the
- * server's firing set while alert notifications are on, otherwise the strip's
- * own `deriveAlerts`, with the same `showExceptions` and `temperatureUnit` — so
- * the strip, the tab badge and desktop notifications can never disagree.
- *
- * `ready` is false until there is something real to judge (no live snapshot
- * yet, or notifications on but the server's set not received), so a page that
- * is still connecting does not report every unit as unreachable.
- */
-export function useFleetAlerts({
-  sparks,
-  alertsEnabled,
-  serverAlerts,
-  showExceptions,
-  temperatureUnit,
-}: {
+export interface FleetAlertsInput {
   sparks: SparkSnapshot[];
   alertsEnabled: boolean;
   serverAlerts: AlertInstance[] | null;
   showExceptions: boolean;
   temperatureUnit: "celsius" | "fahrenheit";
-}): { rows: FleetAlert[]; ready: boolean; source: "server" | "browser" } {
-  return useMemo(() => {
-    const server = alertsEnabled && serverAlerts !== null;
-    return {
-      rows: stripAlerts({ sparks, alertsEnabled, serverAlerts, showExceptions, temperatureUnit }),
-      ready: server || (!alertsEnabled && sparks.length > 0),
-      source: server ? "server" : "browser",
-    };
+}
+
+export interface FleetAlertsView {
+  /** Same rows the Overview strip renders, computed by the same function. */
+  rows: FleetAlert[];
+  /**
+   * Whether `rows` reflect real data: with server alerts on, once the server's
+   * set has arrived; otherwise once a live snapshot with units exists. Before
+   * that every unit would look unreachable.
+   */
+  ready: boolean;
+  source: "server" | "browser";
+}
+
+/** The fleet's active alerts for the tab badge and desktop notifications. */
+export function useFleetAlerts(input: FleetAlertsInput): FleetAlertsView {
+  const { sparks, alertsEnabled, serverAlerts, showExceptions, temperatureUnit } = input;
+  return useMemo((): FleetAlertsView => {
+    const rows = stripAlerts({ sparks, alertsEnabled, serverAlerts, showExceptions, temperatureUnit });
+    if (alertsEnabled && serverAlerts !== null) return { rows, ready: true, source: "server" };
+    return { rows, ready: !alertsEnabled && sparks.length > 0, source: "browser" };
   }, [sparks, alertsEnabled, serverAlerts, showExceptions, temperatureUnit]);
 }

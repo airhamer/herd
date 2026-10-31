@@ -76,25 +76,43 @@ export function createFleetEnergyHandler(tracker) {
   return (_req, res) => res.json(tracker.snapshot());
 }
 
-/** Register the read-only fleet-energy endpoints (plus explicit monthly-history maintenance). */
+const WIPE_CONFIRMATION = "delete-all-history";
+
+/**
+ * Decide what a DELETE on the monthly history asks for. Exactly one form is
+ * accepted: `month=YYYY-MM`, or `all=true` with `confirm=delete-all-history`.
+ * Returns `{ target }` or `{ problem }` (a 400 message).
+ */
+function monthlyDeleteRequest(query = {}) {
+  const { month, all, confirm } = query;
+  const wantsAll = all !== undefined;
+  const wantsMonth = month !== undefined;
+  if (wantsAll && !wantsMonth && all === "true") {
+    return confirm === WIPE_CONFIRMATION
+      ? { target: { all: true } }
+      : { problem: `wiping the whole monthly history requires confirm=${WIPE_CONFIRMATION}` };
+  }
+  if (wantsMonth && !wantsAll && typeof month === "string" && monthRange(month) !== null) {
+    return { target: { month } };
+  }
+  return { problem: `give month=YYYY-MM, or all=true&confirm=${WIPE_CONFIRMATION}` };
+}
+
+/**
+ * Fleet-energy HTTP surface: the 31-day window is read-only; the monthly
+ * history (docs/specs/monthly-energy.md) can be read and, explicitly, pruned.
+ */
 export function registerFleetEnergyRoute(app, tracker) {
-  // Permanent monthly roll-up. Survives window resets; clearing it is a separate, explicit call.
-  app.get("/api/fleet-energy/monthly", (_req, res) => res.json(tracker.monthlySnapshot()));
-  // Query: month=YYYY-MM (one month) or all=true&confirm=delete-all-history (everything). One is required.
+  app.get("/api/fleet-energy/monthly", (_req, res) => {
+    res.json(tracker.monthlySnapshot());
+  });
   app.delete("/api/fleet-energy/monthly", (req, res) => {
-    const { month, all, confirm } = req.query ?? {};
-    if (all === "true" && month == null) {
-      if (confirm !== "delete-all-history") {
-        return res
-          .status(400)
-          .json({ error: "deleting all permanent history needs confirm=delete-all-history" });
-      }
-      return res.json({ removed: tracker.clearMonthly({ all: true }) });
+    const { target, problem } = monthlyDeleteRequest(req.query ?? {});
+    if (problem) {
+      res.status(400).json({ error: problem });
+      return;
     }
-    if (typeof month === "string" && monthRange(month) && all == null) {
-      return res.json({ removed: tracker.clearMonthly({ month }) });
-    }
-    return res.status(400).json({ error: "pass month=YYYY-MM, or all=true&confirm=delete-all-history" });
+    res.json({ removed: tracker.clearMonthly(target) });
   });
   return app.get("/api/fleet-energy", createFleetEnergyHandler(tracker));
 }
