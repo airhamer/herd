@@ -1,226 +1,225 @@
-/**
- * AlertEngine over HealthEvaluator findings and the strip's exceptions:
- * pending → firing after `for`, no flapping, resolve only after the condition
- * stays clear, grouping, severity changes, restore.
- */
-import { test } from "node:test";
+// AlertEngine (docs/specs/alerts.md §4): pending → firing → resolved, holds,
+// grouping, escalation, reminders and restart. LIC1 clean-room rewrite.
+import { describe, test } from "node:test";
 import { strict as assert } from "node:assert";
 import { AlertEngine, MIN_CLEAR_MS, STATE_MAX_AGE_MS } from "../engine.js";
 import { RULES } from "../conditions.js";
-import { clock, hotUnit, quietLog, unit } from "./fixtures.js";
+import { makeUnit, manualClock, offlineUnit, silentLog, unitAt } from "./helpers.js";
 
-/** Only the given rules on; everything else off. */
-function onlyRules(ruleOverrides) {
-  const rules = {};
-  for (const r of RULES) rules[r.id] = { enabled: false };
-  for (const [id, o] of Object.entries(ruleOverrides)) rules[id] = { enabled: true, ...o };
-  return rules;
+/** An engine where only `enabledRules` (id → overrides) are switched on. */
+function harness(enabledRules, { repeatIntervalMin = 0, start } = {}) {
+  const rules = Object.fromEntries(RULES.map((r) => [r.id, { enabled: false }]));
+  for (const [id, extra] of Object.entries(enabledRules)) rules[id] = { enabled: true, ...extra };
+  const config = { repeatIntervalMin, rules, channels: [{ id: "ch", enabled: true }] };
+  const groups = [];
+  const saves = [];
+  const now = manualClock(start);
+  const engine = new AlertEngine({
+    now,
+    log: silentLog,
+    getConfig: () => config,
+    notifier: { dispatch: async (_channels, group) => void groups.push(group) },
+    persistState: (state) => saves.push(state),
+  });
+  const run = (...units) => engine.evaluate(units);
+  return { engine, config, groups, saves, now, run };
 }
 
-function setup(rules, extra = {}) {
-  const now = clock();
-  const sent = [];
-  const notifier = { dispatch: (_channels, group) => (sent.push(group), Promise.resolve([])) };
-  const persisted = [];
-  const config = { repeatIntervalMin: 0, rules: onlyRules(rules), channels: [{ id: "c", enabled: true }], ...extra };
-  const engine = new AlertEngine({ now, getConfig: () => config, notifier, persistState: (s) => persisted.push(s), log: quietLog });
-  return { now, sent, persisted, engine, config };
-}
+describe("firing", () => {
+  test("pending for the rule's wait, then firing with one notification", () => {
+    const h = harness({ thermal: { forSec: 120 } });
+    const began = h.now();
+    h.run(unitAt(86));
+    assert.deepEqual(h.engine.pending().map((a) => a.key), ["spark-1:thermal"]);
+    h.now.tick(119_000);
+    h.run(unitAt(86));
+    assert.equal(h.engine.active().length, 0);
+    h.now.tick(1_000);
+    h.run(unitAt(86));
+    const [a] = h.engine.active();
+    assert.equal(a.severity, "warning");
+    assert.equal(a.label, "GPU is running hot");
+    assert.equal(a.startsAt, began);
+    assert.equal(h.groups.length, 1);
+    h.now.tick(600_000);
+    h.run(unitAt(86));
+    assert.equal(h.groups.length, 1, "no repeats without reminders");
+  });
 
-test("a HealthEvaluator thermal finding: pending until `for`, then firing exactly once", () => {
-  const { now, sent, engine } = setup({ thermal: { forSec: 60 } });
-  engine.evaluate([hotUnit(87)]);
-  assert.equal(engine.active().length, 0);
-  assert.equal(engine.pending().length, 1);
+  test("a condition that clears while pending is forgotten quietly", () => {
+    const h = harness({ disk: { forSec: 300 } });
+    const full = makeUnit({ metrics: { storage: [{ device: "/d", total: 1, percentage: 97 }] } });
+    h.run(full);
+    h.now.tick(100_000);
+    h.run(makeUnit());
+    h.now.tick(400_000);
+    h.run(makeUnit());
+    assert.equal(h.engine.pending().length, 0);
+    assert.equal(h.groups.length, 0);
+    assert.deepEqual(h.engine.recent(), []);
+  });
 
-  now.advance(59_000);
-  engine.evaluate([hotUnit(87)]);
-  assert.equal(engine.active().length, 0, "not firing before 60 s");
-  assert.equal(sent.length, 0);
-
-  now.advance(1_000);
-  engine.evaluate([hotUnit(87)]);
-  const [a] = engine.active();
-  assert.equal(a.key, "spark-1:thermal");
-  assert.equal(a.ruleId, "thermal");
-  assert.equal(a.severity, "warning");
-  assert.equal(a.label, "GPU is running hot");
-  assert.equal(a.startsAt, 1_000_000, "startsAt is when the condition began");
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].firing.length, 1);
-
-  now.advance(10_000);
-  engine.evaluate([hotUnit(87)]);
-  assert.equal(sent.length, 1, "no repeat while still firing (reminders off)");
+  test("everything that fires in one pass goes out as one group", () => {
+    const h = harness({ offline: { forSec: 30 }, llm: { forSec: 30 } });
+    const a = offlineUnit("x", { id: "alpha", name: "alpha" });
+    const b = makeUnit({ id: "beta", name: "beta", metrics: { llm: [{ available: false }] } });
+    h.run(a, b);
+    h.now.tick(30_000);
+    h.run(a, b);
+    assert.equal(h.groups.length, 1);
+    assert.deepEqual(h.groups[0].firing.map((x) => x.key).sort(), ["alpha:offline", "beta:llm"]);
+  });
 });
 
-test("a pending alert whose condition clears is dropped without a notification", () => {
-  const { now, sent, engine } = setup({ thermal: { forSec: 60 } });
-  engine.evaluate([hotUnit(87)]);
-  now.advance(30_000);
-  engine.evaluate([hotUnit(70)]);
-  assert.equal(engine.pending().length, 0);
-  now.advance(60_000);
-  engine.evaluate([hotUnit(70)]);
-  assert.equal(sent.length, 0);
-  assert.equal(engine.recent().length, 0);
+describe("resolving", () => {
+  test("short recoveries never resolve; a full wait of clear does, dated when it cleared", () => {
+    const h = harness({ offline: { forSec: 90 } });
+    h.run(offlineUnit());
+    h.now.tick(90_000);
+    h.run(offlineUnit());
+    for (let i = 0; i < 4; i++) {
+      h.now.tick(45_000);
+      h.run(makeUnit());
+      h.now.tick(45_000);
+      h.run(offlineUnit());
+    }
+    assert.equal(h.groups.length, 1);
+    h.now.tick(1_000);
+    h.run(makeUnit());
+    const clearedAt = h.now();
+    h.now.tick(89_000);
+    h.run(makeUnit());
+    assert.equal(h.engine.active().length, 1);
+    h.now.tick(1_000);
+    h.run(makeUnit());
+    assert.equal(h.engine.active().length, 0);
+    const last = h.groups.at(-1);
+    assert.equal(last.resolved[0].endsAt, clearedAt);
+    assert.deepEqual(h.engine.recent().map((e) => e.status), ["resolved", "firing"]);
+  });
+
+  test("a zero wait still needs MIN_CLEAR_MS clear", () => {
+    const h = harness({ xid: { forSec: 0 } });
+    const bad = makeUnit({ health: [{ id: "xid", severity: "critical", title: "NVIDIA Xid error", detail: "d", hint: "" }] });
+    h.run(bad);
+    assert.equal(h.groups.length, 1);
+    h.now.tick(1_000);
+    h.run(makeUnit());
+    h.now.tick(MIN_CLEAR_MS - 1);
+    h.run(makeUnit());
+    assert.equal(h.groups.length, 1);
+    h.now.tick(1);
+    h.run(makeUnit());
+    assert.equal(h.groups.length, 2);
+    assert.equal(h.groups[1].resolved[0].ruleId, "xid");
+  });
+
+  test("going offline holds the unit's other alerts", () => {
+    const h = harness({ thermal: { forSec: 0 }, offline: { forSec: 0 } });
+    h.run(unitAt(95));
+    for (let i = 0; i < 3; i++) {
+      h.now.tick(240_000);
+      h.run(unitAt(95, { online: false, offlineReason: "timeout" }));
+    }
+    assert.deepEqual(h.engine.active().map((a) => a.ruleId).sort(), ["offline", "thermal"]);
+    assert.equal(h.groups.some((g) => g.resolved.length > 0), false);
+  });
+
+  test("switching a rule off or removing a unit ends its alerts with a reason", () => {
+    const h = harness({ thermal: { forSec: 0 }, offline: { forSec: 0 } });
+    const other = offlineUnit("x", { id: "other", name: "other" });
+    h.run(unitAt(95), other);
+    h.config.rules.thermal = { enabled: false };
+    h.now.tick(5_000);
+    h.run(unitAt(95), other);
+    assert.deepEqual(h.engine.active().map((a) => a.key), ["other:offline"]);
+    assert.match(h.groups.at(-1).resolved[0].summary, /rule turned off/);
+    h.now.tick(5_000);
+    h.run(unitAt(95));
+    assert.deepEqual(h.engine.active(), []);
+    assert.match(h.groups.at(-1).resolved[0].summary, /unit removed/);
+  });
 });
 
-test("firing does not flap: brief recoveries do not resolve, a full `for` of clear does", () => {
-  const { now, sent, engine } = setup({ offline: { forSec: 60 } });
-  const down = unit({ online: false, offlineReason: "timeout" });
-  const up = unit();
-  engine.evaluate([down]);
-  now.advance(60_000);
-  engine.evaluate([down]);
-  assert.equal(sent.length, 1);
-
-  for (let i = 0; i < 5; i++) {
-    now.advance(30_000);
-    engine.evaluate([up]);
-    now.advance(30_000);
-    engine.evaluate([down]);
-  }
-  assert.equal(engine.active().length, 1, "still one firing alert");
-  assert.equal(sent.length, 1, "no resolved/firing churn");
-
-  now.advance(1_000);
-  engine.evaluate([up]);
-  const clearAt = now();
-  now.advance(59_000);
-  engine.evaluate([up]);
-  assert.equal(engine.active().length, 1, "59 s clear is not enough");
-  now.advance(1_000);
-  engine.evaluate([up]);
-  assert.equal(engine.active().length, 0);
-  assert.equal(sent.length, 2);
-  assert.equal(sent[1].resolved.length, 1);
-  assert.equal(sent[1].resolved[0].endsAt, clearAt, "endsAt is when it actually cleared");
-  const [resolved, fired] = engine.recent();
-  assert.equal(resolved.status, "resolved");
-  assert.equal(fired.status, "firing");
+describe("severity", () => {
+  test("escalation must hold for the wait and notifies once; stepping down is silent", () => {
+    const h = harness({ thermal: { forSec: 40 } });
+    h.run(unitAt(86));
+    h.now.tick(40_000);
+    h.run(unitAt(86));
+    assert.equal(h.groups[0].firing[0].severity, "warning");
+    h.now.tick(1_000);
+    h.run(unitAt(95));
+    h.now.tick(20_000);
+    h.run(unitAt(95));
+    assert.equal(h.groups.length, 1);
+    h.now.tick(20_000);
+    h.run(unitAt(95));
+    assert.equal(h.groups.length, 2);
+    assert.equal(h.groups[1].firing[0].severity, "critical");
+    h.now.tick(50_000);
+    h.run(unitAt(86));
+    h.now.tick(50_000);
+    h.run(unitAt(86));
+    assert.equal(h.groups.length, 2);
+    const [a] = h.engine.active();
+    assert.deepEqual([a.severity, a.peakSeverity], ["warning", "critical"]);
+  });
 });
 
-test("a rule with `for` 0 still needs MIN_CLEAR_MS of clear before it resolves", () => {
-  const { now, sent, engine } = setup({ "low-power": { forSec: 0 } });
-  const stuck = unit({ health: [{ id: "low-power", severity: "warn", title: "GPU looks stuck in a low-power state", detail: "d", hint: "" }] });
-  engine.evaluate([stuck]);
-  assert.equal(sent.length, 1, "fires at once");
-  for (let i = 0; i < 4; i++) {
-    now.advance(5_000);
-    engine.evaluate([unit()]);
-    now.advance(5_000);
-    engine.evaluate([stuck]);
-  }
-  assert.equal(sent.length, 1, "flapping every 5 s neither resolves nor re-fires");
-  now.advance(5_000);
-  engine.evaluate([unit()]);
-  now.advance(MIN_CLEAR_MS);
-  engine.evaluate([unit()]);
-  assert.equal(sent.length, 2);
-  assert.equal(sent[1].resolved.length, 1);
+describe("reminders", () => {
+  test("repeat at the interval and say they are reminders", () => {
+    const h = harness({ offline: { forSec: 0 } }, { repeatIntervalMin: 30 });
+    h.run(offlineUnit());
+    h.now.tick(29 * 60_000);
+    h.run(offlineUnit());
+    assert.equal(h.groups.length, 1);
+    h.now.tick(60_000);
+    h.run(offlineUnit());
+    assert.equal(h.groups.length, 2);
+    assert.equal(h.groups[1].reminder, true);
+    assert.equal(h.groups[1].firing.length, 1);
+  });
 });
 
-test("alerts that fire in the same evaluation are grouped into one dispatch", () => {
-  const { now, sent, engine } = setup({ offline: { forSec: 60 }, disk: { forSec: 60 } });
-  const a = unit({ id: "a", name: "A", online: false, offlineReason: "x" });
-  const b = unit({ id: "b", name: "B", metrics: { storage: [{ device: "/d", total: 1, percentage: 95 }] } });
-  engine.evaluate([a, b]);
-  now.advance(60_000);
-  engine.evaluate([a, b]);
-  assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0].firing.map((x) => x.key).sort(), ["a:offline", "b:disk"]);
+describe("restart", () => {
+  test("a recent saved firing set is adopted without notifying again", () => {
+    const before = harness({ thermal: { forSec: 0 } });
+    before.run(unitAt(95));
+    const saved = before.saves.at(-1);
+    assert.equal(saved.firing.length, 1);
+
+    const after = harness({ thermal: { forSec: 0 } }, { start: before.now() + 30_000 });
+    assert.equal(after.engine.restore(saved), 1);
+    after.run(unitAt(95));
+    assert.equal(after.groups.length, 0);
+    assert.equal(after.engine.active()[0].startsAt, before.now());
+  });
+
+  test("an old or future-dated save is ignored", () => {
+    const before = harness({ thermal: { forSec: 0 } });
+    before.run(unitAt(95));
+    const saved = before.saves.at(-1);
+    const late = harness({}, { start: saved.savedAt + STATE_MAX_AGE_MS + 1 });
+    assert.equal(late.engine.restore(saved), 0);
+    const early = harness({}, { start: saved.savedAt - 1 });
+    assert.equal(early.engine.restore(saved), 0);
+    assert.equal(early.engine.restore(null), 0);
+  });
+
+  test("reset forgets live alerts but keeps history", () => {
+    const h = harness({ offline: { forSec: 0 } });
+    h.run(offlineUnit());
+    h.engine.reset();
+    assert.deepEqual(h.engine.active(), []);
+    assert.equal(h.engine.recent().length, 1);
+  });
 });
 
-test("a severity escalation must hold for `for`, then notifies once; a de-escalation does not", () => {
-  const { now, sent, engine } = setup({ thermal: { forSec: 60 } });
-  engine.evaluate([hotUnit(86)]);
-  now.advance(60_000);
-  engine.evaluate([hotUnit(86)]);
-  assert.equal(sent.length, 1);
-  assert.equal(sent[0].firing[0].severity, "warning");
-
-  now.advance(1_000);
-  engine.evaluate([hotUnit(92)]);
-  now.advance(30_000);
-  engine.evaluate([hotUnit(92)]);
-  assert.equal(sent.length, 1, "escalation not held long enough yet");
-  now.advance(30_000);
-  engine.evaluate([hotUnit(92)]);
-  assert.equal(sent.length, 2);
-  assert.equal(sent[1].firing[0].severity, "critical");
-
-  now.advance(61_000);
-  engine.evaluate([hotUnit(86)]);
-  now.advance(61_000);
-  engine.evaluate([hotUnit(86)]);
-  assert.equal(sent.length, 2, "dropping back to warning is not news");
-  assert.equal(engine.active()[0].severity, "warning");
-  assert.equal(engine.active()[0].peakSeverity, "critical");
-});
-
-test("an offline unit does not resolve its thermal alert", () => {
-  const { now, sent, engine } = setup({ thermal: { forSec: 0 }, offline: { forSec: 0 } });
-  engine.evaluate([hotUnit(91)]);
-  assert.equal(engine.active().length, 1);
-  now.advance(5 * 60_000);
-  engine.evaluate([hotUnit(91, { online: false, offlineReason: "timeout" })]);
-  now.advance(5 * 60_000);
-  engine.evaluate([hotUnit(91, { online: false, offlineReason: "timeout" })]);
-  assert.deepEqual(engine.active().map((a) => a.ruleId).sort(), ["offline", "thermal"]);
-  assert.equal(sent.flatMap((g) => g.resolved).length, 0);
-});
-
-test("turning a rule off ends its alerts; removing a unit ends its alerts", () => {
-  const { now, sent, engine, config } = setup({ thermal: { forSec: 0 }, offline: { forSec: 0 } });
-  engine.evaluate([hotUnit(91), unit({ id: "b", name: "B", online: false, offlineReason: "x" })]);
-  assert.equal(engine.active().length, 2);
-  config.rules.thermal = { enabled: false };
-  now.advance(1_000);
-  engine.evaluate([hotUnit(91), unit({ id: "b", name: "B", online: false, offlineReason: "x" })]);
-  assert.deepEqual(engine.active().map((a) => a.key), ["b:offline"]);
-  assert.match(sent.at(-1).resolved[0].summary, /rule turned off/);
-  now.advance(1_000);
-  engine.evaluate([hotUnit(91)]);
-  assert.equal(engine.active().length, 0);
-  assert.match(sent.at(-1).resolved[0].summary, /unit removed/);
-});
-
-test("reminders repeat while firing at the configured interval", () => {
-  const { now, sent, engine } = setup({ offline: { forSec: 0 } }, { repeatIntervalMin: 60 });
-  const down = unit({ online: false, offlineReason: "x" });
-  engine.evaluate([down]);
-  now.advance(59 * 60_000);
-  engine.evaluate([down]);
-  assert.equal(sent.length, 1);
-  now.advance(60_000);
-  engine.evaluate([down]);
-  assert.equal(sent.length, 2);
-  assert.equal(sent[1].reminder, true);
-});
-
-test("the firing set survives a restart: no new notification, startsAt kept", () => {
-  const first = setup({ thermal: { forSec: 0 } });
-  first.engine.evaluate([hotUnit(91)]);
-  const saved = first.persisted.at(-1);
-  assert.equal(saved.firing.length, 1);
-
-  const second = setup({ thermal: { forSec: 0 } });
-  second.now.set(first.now() + 60_000);
-  assert.equal(second.engine.restore(saved), 1);
-  second.engine.evaluate([hotUnit(91)]);
-  assert.equal(second.sent.length, 0, "already notified before the restart");
-  assert.equal(second.engine.active()[0].startsAt, 1_000_000);
-
-  const stale = setup({ thermal: { forSec: 0 } });
-  stale.now.set(saved.savedAt + STATE_MAX_AGE_MS + 1);
-  assert.equal(stale.engine.restore(saved), 0, "too old to trust");
-});
-
-test("unit names and summaries in alerts are capped", () => {
-  const { engine } = setup({ offline: { forSec: 0 } });
-  engine.evaluate([unit({ name: "n".repeat(300), online: false, offlineReason: "r".repeat(300) })]);
-  const [a] = engine.active();
+test("names and summaries are capped", () => {
+  const h = harness({ offline: { forSec: 0 } });
+  h.run(offlineUnit("q".repeat(400), { name: "w".repeat(400) }));
+  const [a] = h.engine.active();
   assert.ok([...a.unitName].length <= 60);
   assert.ok([...a.summary].length <= 120);
 });

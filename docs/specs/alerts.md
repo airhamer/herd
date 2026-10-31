@@ -199,6 +199,13 @@ updateConfig, test }`.
 - `test({ channelId, channel })` (409 when off): sends a one-line test to a
   saved channel or a draft (a masked draft URL resolves against
   `channelId`); unknown channel → 404 `{ ok: false, error: "Unknown channel" }`.
+- Test sends use the group `{ test: true }`: title "sparkDash test
+  notification", one line "If you can read this, the channel works. Sent from
+  the sparkDash Alerts dialog." (ntfy priority 3, tag `test_tube`; Discord
+  embed colour 0x6366F1; webhook `status: "test"`, `severity: null`,
+  `alerts: []`). A second test to the same channel within 5 s returns
+  `{ ok: false, error: "Wait a moment before sending another test",
+  rateLimited: true }` (HTTP 429). Test results update the channel status.
 - `notificationEvent({ channel, group, ok, status, reason, test })` →
   `{ type: alert.notify.sent|alert.notify.failed, severity: info|error,
   sparkId, sparkName, message, data: { channelId, channelType, test,
@@ -214,12 +221,18 @@ updateConfig, test }`.
 
 ## 9. Event log (`server/events/EventLog.js`)
 
-`new EventLog({ file?, max = 500, now })`. `record({ type, severity =
-"info", sparkId, sparkName, message, data })` → stored event
-`{ id, ts, type, severity, sparkId, sparkName, message, data }` (ids
-ascending), or `null` without a `message`. `list({ limit })` newest first.
-`clear()`, `oldestId()`, `subscribe(fn)`, `flush()`. Persisted (debounced,
-atomic, 0600) when `file` is set; an unreadable file is quarantined.
+`new EventLog({ file?, max = 200, now })` (max: floor, at least 1; 0/NaN →
+200). `record({ type, severity = "info", sparkId, sparkName, message, data })`
+→ stored event `{ id, ts, type, severity, sparkId, sparkName, message, data? }`
+(ids ascending, never reused; unknown severity → "info"), or `null` without a
+string `type`/`message`, or when it repeats the same unit's latest event
+(same type + message) within 5 s. Subscriber errors are swallowed; `record`
+never throws. `list({ limit = 50, sparkId, sinceId, beforeId })` newest first,
+limit clamped to 1…max. `clear({ olderThanMs? })` → removed count.
+`oldestId()`, `subscribe(fn)` → unsubscribe, `flush()`. File
+`{ nextId, events }`, written debounced (1.5 s), atomic, 0644 (events carry no
+secrets) when `file` is set; malformed entries are skipped on load and an
+unparseable file is quarantined (`<file>.corrupt-<ts>`).
 (`server/events/eventFormat.js`, an unused helper ported with the log, is removed.)
 
 ## 10. UI

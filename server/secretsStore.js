@@ -11,12 +11,13 @@
  *     version: 2,
  *     secrets: { [sparkId]: "<encrypted ssh password>" },
  *     llmApiKeys: { [sparkId]: "<encrypted JSON { \"8000\": \"sk-…\" }>" },
- *     alertChannels: { [channelId]: "<encrypted alert channel URL>" }   (optional)
+ *     alertChannels: { [channelId]: "<encrypted channel URL>" }   (only when there are any)
  *   }
  *
- * Alert channel URLs (an ntfy topic, a Discord or Slack webhook) are the
- * channel's credential, so they live here too, written by their own save
- * function; each save keeps the other's sections exactly as they are on disk.
+ * An alert channel's URL (ntfy topic, Discord/Slack/webhook address) works as
+ * its credential, so it is kept here rather than in alerts.json. saveSecrets()
+ * and saveAlertChannelUrls() each rewrite only their own sections and copy the
+ * others through unchanged (still encrypted).
  *
  * v1 files (secrets only) still load; rewritten as v2 on next save.
  *
@@ -214,7 +215,6 @@ export function loadSecrets() {
  * @param {Map<string, Record<string, string>>} [llmApiKeys]
  */
 export function saveSecrets(passwords, llmApiKeys = new Map()) {
-  const alertChannels = readRawSection("alertChannels");
   const hasPasswords = passwords && passwords.size > 0;
   let hasKeys = false;
   if (llmApiKeys) {
@@ -226,8 +226,9 @@ export function saveSecrets(passwords, llmApiKeys = new Map()) {
     }
   }
 
-  if (!hasPasswords && !hasKeys && Object.keys(alertChannels).length === 0) {
-    clearSecretsFile();
+  const alertChannels = storedSection("alertChannels");
+  if (!hasPasswords && !hasKeys && isEmpty(alertChannels)) {
+    removeSecretsFile();
     return;
   }
 
@@ -253,7 +254,7 @@ export function saveSecrets(passwords, llmApiKeys = new Map()) {
     }
   }
 
-  writeSecretsFile({ secrets, llmApiKeys: llmOut, alertChannels });
+  writeSections(secrets, llmOut, alertChannels);
   const keyCount = Object.keys(llmOut).length;
   console.log(
     `[secretsStore] Saved ${Object.keys(secrets).length} SSH password(s)` +
@@ -261,22 +262,28 @@ export function saveSecrets(passwords, llmApiKeys = new Map()) {
   );
 }
 
-// ─── File sections ───────────────────────────────────────
+// ─── Sections shared by several writers ───────────────────
+// (alert channel URLs: LIC1 clean-room rewrite, docs/specs/alerts.md §6)
 
-/** One section of the file as stored (still encrypted), or {} when absent or unreadable. */
-function readRawSection(name) {
+const isEmpty = (obj) => Object.keys(obj).length === 0;
+
+/** A section exactly as stored (ciphertext strings by id); {} if missing or unreadable. */
+function storedSection(name) {
+  let doc;
   try {
-    if (!fs.existsSync(SPARKS_SECRETS_PATH)) return {};
-    const data = JSON.parse(fs.readFileSync(SPARKS_SECRETS_PATH, "utf8"));
-    const section = data?.[name];
-    if (!section || typeof section !== "object" || Array.isArray(section)) return {};
-    return Object.fromEntries(Object.entries(section).filter(([id, blob]) => id && typeof blob === "string"));
+    doc = JSON.parse(fs.readFileSync(SPARKS_SECRETS_PATH, "utf8"));
   } catch {
     return {};
   }
+  const raw = doc?.[name];
+  const out = {};
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const [id, blob] of Object.entries(raw)) if (id && typeof blob === "string") out[id] = blob;
+  }
+  return out;
 }
 
-function clearSecretsFile() {
+function removeSecretsFile() {
   if (!fs.existsSync(SPARKS_SECRETS_PATH)) return;
   try {
     fs.accessSync(SPARKS_SECRETS_PATH, fs.constants.W_OK);
@@ -289,64 +296,62 @@ function clearSecretsFile() {
   }
 }
 
-/** Write every section; an empty alertChannels section is left out of the file. */
-function writeSecretsFile({ secrets, llmApiKeys, alertChannels }) {
-  const body = { version: 2, secrets, llmApiKeys };
-  if (alertChannels && Object.keys(alertChannels).length > 0) body.alertChannels = alertChannels;
-  atomicWrite(SPARKS_SECRETS_PATH, JSON.stringify(body, null, 2) + "\n", 0o644);
+function writeSections(secrets, llmApiKeys, alertChannels) {
+  const doc = { version: 2, secrets, llmApiKeys };
+  if (!isEmpty(alertChannels)) doc.alertChannels = alertChannels;
+  atomicWrite(SPARKS_SECRETS_PATH, JSON.stringify(doc, null, 2) + "\n", 0o644);
 }
 
-// ─── Alert channel URLs ──────────────────────────────────
-
 /**
- * Decrypted alert channel URLs, channel id → URL. A URL that cannot be
- * decrypted is left out (and logged); never throws.
+ * Alert channel URLs by channel id. Entries that fail to decrypt are skipped
+ * with one warning; never throws.
  * @returns {Map<string, string>}
  */
 export function loadAlertChannelUrls() {
+  const stored = storedSection("alertChannels");
   /** @type {Map<string, string>} */
   const urls = new Map();
-  const section = readRawSection("alertChannels");
-  if (Object.keys(section).length === 0) return urls;
-  let failed = 0;
+  if (isEmpty(stored)) return urls;
+  let key;
   try {
-    const key = resolveKey();
-    for (const [id, blob] of Object.entries(section)) {
-      try {
-        const url = decrypt(blob, key);
-        if (url) urls.set(id, url);
-      } catch {
-        failed += 1;
-      }
-    }
+    key = resolveKey();
   } catch (err) {
-    console.error(`[secretsStore] Failed to load alert channel URLs: ${err.message}`);
+    console.error(`[secretsStore] Alert channel URLs unavailable: ${err.message}`);
     return urls;
   }
-  if (failed > 0) {
-    console.warn(`[secretsStore] ${failed} alert channel URL(s) could not be decrypted — enter them again under Settings → Alerts`);
+  let unreadable = 0;
+  for (const [id, blob] of Object.entries(stored)) {
+    try {
+      const url = decrypt(blob, key);
+      if (url) urls.set(id, url);
+    } catch {
+      unreadable += 1;
+    }
+  }
+  if (unreadable > 0) {
+    console.warn(`[secretsStore] ${unreadable} alert channel URL(s) could not be decrypted; set them again in Settings → Alerts`);
   }
   return urls;
 }
 
 /**
- * Replace the stored alert channel URLs (encrypted). SSH passwords and LLM API
- * keys stay exactly as they are on disk. Throws when the file cannot be written.
- * @param {Map<string, string>} urls channel id → URL
+ * Store the complete set of alert channel URLs (ids not in the map are
+ * dropped). Passwords and LLM keys are carried over untouched. Throws if the
+ * file cannot be written.
+ * @param {Map<string, string>} urls
  */
 export function saveAlertChannelUrls(urls) {
-  const secrets = readRawSection("secrets");
-  const llmApiKeys = readRawSection("llmApiKeys");
-  /** @type {Record<string, string>} */
+  const secrets = storedSection("secrets");
+  const llmApiKeys = storedSection("llmApiKeys");
   const alertChannels = {};
-  const entries = urls ? [...urls.entries()].filter(([id, url]) => id && url) : [];
-  if (entries.length > 0) {
+  const pairs = [...(urls ?? new Map())].filter(([id, url]) => id && url);
+  if (pairs.length > 0) {
     const key = resolveKey();
-    for (const [id, url] of entries) alertChannels[id] = encrypt(String(url), key);
+    for (const [id, url] of pairs) alertChannels[id] = encrypt(String(url), key);
   }
-  if (Object.keys(secrets).length === 0 && Object.keys(llmApiKeys).length === 0 && entries.length === 0) {
-    clearSecretsFile();
+  if (isEmpty(secrets) && isEmpty(llmApiKeys) && isEmpty(alertChannels)) {
+    removeSecretsFile();
     return;
   }
-  writeSecretsFile({ secrets, llmApiKeys, alertChannels });
+  writeSections(secrets, llmApiKeys, alertChannels);
 }

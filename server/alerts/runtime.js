@@ -1,308 +1,270 @@
-/**
- * Wires alert notifications into the server: evaluated after each fleet
- * snapshot (the broadcast tick), configured through /api/alerts/*, and gated
- * by the `alertsEnabled` setting.
- *
- * The opt-in gates everything outbound and every change:
- *   - off: tick() does not evaluate, so nothing fires and nothing is sent;
- *   - off: POST /api/alerts/test and PUT /api/alerts/config answer 409. A save
- *     resolves channel hosts (the save-time policy check), so refusing it keeps
- *     "off" meaning no DNS and no HTTP at all; with alerts on and no channel,
- *     nothing is sent either, so there is nothing to configure in advance.
- * Reads (GET) work either way, with URLs masked.
- *
- * Channel URLs live in the encrypted secrets store; alerts.json has the rest.
- * A plaintext URL left in alerts.json by an earlier build is moved into the
- * store when the server starts, whatever the switch says — that is a cleanup
- * of a secret at rest, not an outbound request.
- */
+// Wires alerts into the server: one runtime owning the config, the engine and
+// the notifier, gated by Settings → alertsEnabled, plus the /api/alerts routes.
+// docs/specs/alerts.md §8. Clean-room implementation (LIC1).
+import { loadAlertChannelUrls, saveAlertChannelUrls } from "../secretsStore.js";
 import { AlertEngine } from "./engine.js";
 import { Notifier } from "./notifier.js";
 import { OutboundPolicyError, POLICY_BLOCKED, resolveChannelTarget } from "./outbound.js";
-import {
-  ValidationError,
-  loadAlertsFile,
-  publicConfig,
-  saveAlertsFile,
-  validateChannel,
-  validateConfig,
-} from "./store.js";
+import { loadAlertsFile, publicConfig, saveAlertsFile, validateChannel, validateConfig } from "./store.js";
 import { MAX_NAME_CHARS, capText } from "./text.js";
-import { loadAlertChannelUrls, saveAlertChannelUrls } from "../secretsStore.js";
 
-const TEST_COOLDOWN_MS = 2_000;
 export const ALERTS_OFF_MESSAGE = "Alerts are off. Turn them on in Settings → Alerts first.";
 
-/**
- * The Activity event for one channel send. Names the channel and what was in
- * it; never the URL, never anything the server answered.
- */
-export function notificationEvent({ channel, group, ok, status, reason }) {
-  const firing = group.firing || [];
-  const resolved = group.resolved || [];
-  const items = [...firing, ...resolved];
-  const units = new Set(items.map((a) => a.unitId));
-  const what = group.test ? "Test notification" : group.reminder ? "Alert reminder" : "Alert notification";
-  let contents = "";
-  if (items.length === 1) {
-    const a = items[0];
-    contents = `: ${firing.length ? a.severity : "resolved"} · ${a.unitName} ${a.label || a.ruleName}`;
-  } else if (items.length > 1) {
-    contents = `: ${[firing.length ? `${firing.length} firing` : "", resolved.length ? `${resolved.length} resolved` : ""].filter(Boolean).join(", ")}`;
+/** Seconds between two test sends to the same channel. */
+const TEST_SPACING_MS = 5_000;
+
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
   }
-  const target = `"${capText(channel.name, MAX_NAME_CHARS)}" (${channel.type})`;
-  const message = ok ? `${what} sent to ${target}${contents}` : `${what} to ${target} failed: ${reason}${contents}`;
-  const only = units.size === 1 ? items[0] : null;
-  return {
-    type: ok ? "alert.notify.sent" : "alert.notify.failed",
-    severity: ok ? "info" : "error",
-    sparkId: only ? only.unitId : null,
-    sparkName: only ? only.unitName : null,
-    message: capText(message, 240),
-    data: {
-      channelId: channel.id,
-      channelType: channel.type,
-      test: Boolean(group.test),
-      reminder: Boolean(group.reminder),
-      firing: firing.length,
-      resolved: resolved.length,
-      ...(ok ? { status } : { reason }),
-    },
-  };
+}
+
+function countText(firing, resolved) {
+  const parts = [];
+  if (firing > 0) parts.push(`${firing} firing`);
+  if (resolved > 0) parts.push(`${resolved} resolved`);
+  return parts.join(", ");
 }
 
 /**
- * @param {{
- *   filePath: string,
- *   isEnabled: () => boolean,
- *   now?: () => number,
- *   fetchImpl?: (url: string, init: object) => Promise<Response>,
- *   lookup?: Function,
- *   log?: Pick<Console, "error" | "warn" | "log">,
- *   timeoutMs?: number,
- *   secrets?: { load: () => Map<string, string>, save: (urls: Map<string, string>) => void },
- *   recordEvent?: (event: object) => unknown,
- * }} opts
+ * The Activity event for one delivery attempt. It names the channel and the
+ * alerts, never a URL or anything the receiver answered.
  */
-export function createAlertsRuntime(opts) {
-  const now = opts.now || Date.now;
-  const log = opts.log || console;
-  const secrets = opts.secrets || { load: loadAlertChannelUrls, save: saveAlertChannelUrls };
-  const lookupOpts = opts.lookup ? { lookup: opts.lookup } : undefined;
-  const loaded = loadAlertsFile(opts.filePath, log);
-  let config = loaded.config;
-  let savedState = loaded.state;
-  let started = false;
-  let restored = false;
-  let wasEnabled = false;
+export function notificationEvent({ channel, group, ok, status, reason, test = false }) {
+  const firing = group?.firing ?? [];
+  const resolved = group?.resolved ?? [];
+  const isTest = Boolean(test || group?.test);
+  const reminder = Boolean(group?.reminder);
+  const all = [...firing, ...resolved];
+  const units = new Set(all.map((a) => a.unitId));
+  const unit = units.size === 1 ? all[0] : null;
+
+  const who = `"${capText(channel?.name ?? "", MAX_NAME_CHARS)}" (${channel?.type})`;
+  let message;
+  if (isTest) {
+    message = ok ? `Test notification sent to ${who}` : `Test notification to ${who} failed: ${reason}`;
+  } else {
+    const kind = reminder ? "Alert reminder" : "Alert notification";
+    let what;
+    if (all.length === 1) {
+      const sev = firing.length === 1 ? firing[0].severity : "resolved";
+      what = `${sev} · ${all[0].unitName} ${all[0].label}`;
+    } else {
+      what = countText(firing.length, resolved.length);
+    }
+    message = ok ? `${kind} sent to ${who}: ${what}` : `${kind} to ${who} failed: ${reason}: ${what}`;
+  }
+
+  const data = {
+    channelId: channel?.id,
+    channelType: channel?.type,
+    test: isTest,
+    reminder,
+    firing: firing.length,
+    resolved: resolved.length,
+  };
+  if (ok) {
+    if (status !== undefined) data.status = status;
+  } else {
+    data.reason = reason;
+  }
+  return {
+    type: ok ? "alert.notify.sent" : "alert.notify.failed",
+    severity: ok ? "info" : "error",
+    sparkId: unit ? unit.unitId : null,
+    sparkName: unit ? unit.unitName : null,
+    message,
+    data,
+  };
+}
+
+const noSecrets = { load: loadAlertChannelUrls, save: saveAlertChannelUrls };
+
+export function createAlertsRuntime({
+  filePath,
+  isEnabled = () => false,
+  now = () => Date.now(),
+  fetchImpl = null,
+  lookup = null,
+  log = console,
+  secrets = noSecrets,
+  recordEvent = () => {},
+} = {}) {
+  const enabled = () => Boolean(isEnabled());
+  const lookupOpts = lookup ? { lookup } : {};
   const lastTestAt = new Map();
 
-  // ─── Channel URLs from the secrets store (+ migration) ──
-  let urls = new Map();
-  try {
-    urls = secrets.load() || new Map();
-  } catch (err) {
-    log.error?.(`[alerts] could not read channel URLs from the secrets store: ${err?.message}`);
-  }
-  let migrated = 0;
-  for (const [id, url] of loaded.legacyUrls) {
-    if (!urls.has(id)) {
-      urls.set(id, url);
-      migrated += 1;
-    }
-  }
-  config = { ...config, channels: config.channels.map((c) => ({ ...c, url: urls.get(c.id) || "" })) };
-  if (loaded.legacyUrls.size > 0) {
+  // Load the file, then put each channel's URL back from the secrets store,
+  // moving any plaintext URL an earlier build left in alerts.json.
+  const loaded = loadAlertsFile(filePath, log);
+  let config = loaded.config;
+  const urls = (() => {
     try {
-      secrets.save(new Map(config.channels.filter((c) => c.url).map((c) => [c.id, c.url])));
-      saveAlertsFile(opts.filePath, config, savedState);
-      log.log?.(`[alerts] moved ${loaded.legacyUrls.size} channel URL(s) from ${opts.filePath} into the encrypted secrets store${migrated < loaded.legacyUrls.size ? " (the store already had some of them)" : ""}`);
+      return secrets.load() ?? new Map();
     } catch (err) {
-      log.error?.(`[alerts] could not move channel URLs into the secrets store (${err?.message}); they stay in ${opts.filePath} until the next save`);
+      log?.error?.(`[alerts] could not read channel URLs: ${err?.message ?? err}`);
+      return new Map();
+    }
+  })();
+  if (loaded.legacyUrls.size > 0) {
+    for (const [id, url] of loaded.legacyUrls) if (!urls.has(id)) urls.set(id, url);
+    try {
+      secrets.save(urls);
+      saveAlertsFile(filePath, config, loaded.state);
+      log?.log?.(`[alerts] moved ${loaded.legacyUrls.size} channel URL(s) into the encrypted secrets store`);
+    } catch (err) {
+      log?.error?.(`[alerts] could not migrate channel URLs: ${err?.message ?? err}`);
     }
   }
-  for (const c of config.channels) {
-    if (!c.url) log.warn?.(`[alerts] channel "${c.name}" has no stored URL; enter it again under Settings → Alerts`);
-  }
+  config = { ...config, channels: config.channels.map((c) => ({ ...c, url: urls.get(c.id) ?? "" })) };
 
-  const recordEvent = (event) => {
-    if (!opts.recordEvent) return;
+  const report = (event) => {
     try {
-      opts.recordEvent(event);
+      recordEvent(event);
     } catch {
-      /* the Activity log never breaks a send */
+      // Activity is best effort
     }
   };
 
   const notifier = new Notifier({
-    fetchImpl: opts.fetchImpl,
-    lookup: opts.lookup,
-    now,
+    fetchImpl,
+    lookup: lookup ?? undefined,
     log,
-    timeoutMs: opts.timeoutMs,
-    onResult: (result) => recordEvent(notificationEvent(result)),
+    now,
+    onResult: ({ channel, group, ok, status, reason }) => report(notificationEvent({ channel, group, ok, status, reason })),
   });
+
+  // The firing set saved by the last process; adopted once, the first time alerts are on.
+  let pendingState = loaded.state;
   const engine = new AlertEngine({
     now,
-    getConfig: () => config,
-    notifier,
     log,
-    persistState: (state) => {
-      saveAlertsFile(opts.filePath, config, state);
-      savedState = state;
-    },
+    notifier,
+    getConfig: () => config,
+    persistState: (state) => saveAlertsFile(filePath, config, state),
   });
 
-  const enabled = () => {
-    try {
-      return Boolean(opts.isEnabled());
-    } catch {
-      return false;
+  let wasOn = false;
+  function syncOnOff() {
+    const on = enabled();
+    if (on && !wasOn && pendingState) {
+      engine.restore(pendingState);
+      pendingState = null;
     }
-  };
+    if (!on && wasOn) engine.reset();
+    wasOn = on;
+    return on;
+  }
 
-  /** Save-time DNS check: a host that resolves to a forbidden address is refused now. */
-  async function assertResolvesAllowed(channel) {
+  function requireOn() {
+    if (!enabled()) throw new HttpError(409, ALERTS_OFF_MESSAGE);
+  }
+
+  /** Refuse a channel whose host currently resolves somewhere the policy forbids. */
+  async function checkResolvedHost(channel) {
     try {
-      await resolveChannelTarget(new URL(channel.url), lookupOpts);
+      await resolveChannelTarget(channel.url, lookupOpts);
     } catch (err) {
-      // Not resolvable right now is allowed: the check runs again on every send.
-      if (err instanceof OutboundPolicyError && err.message === POLICY_BLOCKED) {
-        throw new ValidationError(`${channel.name}: ${POLICY_BLOCKED}`);
+      if (err instanceof OutboundPolicyError && err.reason === POLICY_BLOCKED) {
+        throw new HttpError(400, `${channel.name}: ${POLICY_BLOCKED}`);
       }
+      // Unresolvable now is fine; every send resolves again.
     }
   }
-
-  async function applyUpdate(body) {
-    if (!enabled()) throw new ValidationError(ALERTS_OFF_MESSAGE, 409);
-    const next = validateConfig(body, config);
-    const before = new Map(config.channels.map((c) => [c.id, c.url]));
-    for (const c of next.channels) {
-      if (c.url && c.url !== before.get(c.id)) await assertResolvesAllowed(c);
-    }
-    secrets.save(new Map(next.channels.filter((c) => c.url).map((c) => [c.id, c.url])));
-    saveAlertsFile(opts.filePath, next, savedState);
-    config = next;
-    const ids = new Set(next.channels.map((c) => c.id));
-    for (const id of [...notifier.status.keys()]) if (!ids.has(id)) notifier.status.delete(id);
-  }
-
-  let updating = Promise.resolve();
 
   return {
     engine,
     notifier,
 
-    /** Monitors are running: snapshots now describe the real fleet. */
     start() {
-      started = true;
+      syncOnOff();
     },
 
-    /** One evaluation over the fleet snapshot. Never throws. */
-    tick(snapshots) {
-      if (!started) return;
-      if (!enabled()) {
-        if (wasEnabled) engine.reset();
-        wasEnabled = false;
-        return;
-      }
-      wasEnabled = true;
-      try {
-        if (!restored) {
-          restored = true;
-          const n = engine.restore(savedState);
-          if (n > 0) log.log?.(`[alerts] resumed ${n} firing alert(s) from ${opts.filePath}`);
-        }
-        engine.evaluate(snapshots);
-      } catch (err) {
-        log.error?.(`[alerts] evaluation failed: ${err?.message}`);
-      }
+    tick(units) {
+      if (!syncOnOff()) return;
+      engine.evaluate(Array.isArray(units) ? units : []);
     },
 
-    /** `alerts` block for the WebSocket snapshot, or null when off. */
     snapshotBlock() {
-      if (!enabled()) return null;
-      return { active: engine.active() };
+      return enabled() ? { active: engine.active() } : null;
     },
 
     status() {
       const on = enabled();
-      return {
-        enabled: on,
-        active: on ? engine.active() : [],
-        pending: on ? engine.pending() : [],
-        recent: engine.recent(),
-      };
+      return { enabled: on, active: on ? engine.active() : [], pending: on ? engine.pending() : [], recent: engine.recent() };
     },
 
     publicConfig() {
       return { enabled: enabled(), ...publicConfig(config, notifier.status) };
     },
 
-    /** Validate + persist a PUT body. Throws ValidationError (400, or 409 while off). */
-    async updateConfig(body) {
-      const run = updating.then(() => applyUpdate(body));
-      updating = run.catch(() => {});
-      await run;
+    async updateConfig(update) {
+      requireOn();
+      const next = validateConfig(update, config);
+      for (const channel of next.channels) await checkResolvedHost(channel);
+      secrets.save(new Map(next.channels.filter((c) => c.url).map((c) => [c.id, c.url])));
+      config = next;
+      saveAlertsFile(filePath, config, engine.stateForSave());
+      for (const id of [...notifier.status.keys()]) {
+        if (!config.channels.some((c) => c.id === id)) notifier.status.delete(id);
+      }
       return this.publicConfig();
     },
 
-    /**
-     * Send one test message. `channel` (optional) is an unsaved draft; its URL
-     * may be the masked one, which resolves against the stored channel
-     * `channelId`. The result carries a status code or a fixed reason only.
-     */
+    /** Send a one-line test to a saved channel or to a draft from the dialog. */
     async test(body) {
-      if (!enabled()) throw new ValidationError(ALERTS_OFF_MESSAGE, 409);
-      const id = typeof body?.channelId === "string" ? body.channelId : null;
-      const stored = id ? config.channels.find((c) => c.id === id) : null;
+      requireOn();
+      const channelId = typeof body?.channelId === "string" ? body.channelId : null;
+      const saved = channelId ? config.channels.find((c) => c.id === channelId) : null;
       let channel;
-      if (body?.channel) {
-        channel = validateChannel({ ...body.channel, id: stored?.id }, stored || undefined);
-        channel.id = stored?.id || "draft";
+      if (body?.channel && typeof body.channel === "object") {
+        const draft = validateChannel({ ...body.channel, id: saved?.id }, saved);
+        channel = { ...draft, id: saved ? saved.id : "draft" };
+      } else if (saved) {
+        channel = saved;
       } else {
-        if (!stored) throw new ValidationError("Unknown channel", 404);
-        channel = stored;
+        throw new HttpError(404, "Unknown channel");
       }
+      if (!channel.url) throw new HttpError(404, "Unknown channel");
+
       const at = now();
-      if (at - (lastTestAt.get(channel.id) || 0) < TEST_COOLDOWN_MS) {
+      const previous = lastTestAt.get(channel.id);
+      if (previous !== undefined && at - previous < TEST_SPACING_MS) {
         return { ok: false, error: "Wait a moment before sending another test", rateLimited: true };
       }
       lastTestAt.set(channel.id, at);
-      const result = await notifier.send(channel, { test: true, firing: [], resolved: [] });
+
+      const result = await notifier.send(channel, { test: true, firing: [], resolved: [], reminder: false });
       return result.ok ? { ok: true, status: result.status } : { ok: false, error: result.error };
     },
   };
 }
 
-/** Register /api/alerts routes (behind the app's auth middleware). */
+/** GET /api/alerts, GET|PUT /api/alerts/config, POST /api/alerts/test. */
 export function registerAlertRoutes(app, runtime) {
-  app.get("/api/alerts", (_req, res) => {
-    res.json(runtime.status());
-  });
+  const failWith = (res, err, fallback, extra = {}) => {
+    const status = Number.isInteger(err?.status) ? err.status : 500;
+    res.status(status).json({ ...extra, error: status === 500 ? fallback : err.message });
+  };
 
-  app.get("/api/alerts/config", (_req, res) => {
-    res.json(runtime.publicConfig());
-  });
+  app.get("/api/alerts", (_req, res) => res.json(runtime.status()));
+  app.get("/api/alerts/config", (_req, res) => res.json(runtime.publicConfig()));
 
   app.put("/api/alerts/config", async (req, res) => {
     try {
       res.json(await runtime.updateConfig(req.body));
     } catch (err) {
-      const known = err instanceof ValidationError;
-      if (!known) console.error("[alerts] saving the alert settings failed:", err?.message);
-      res.status(known ? err.status : 500).json({ error: known ? err.message : "Could not save the alert settings" });
+      failWith(res, err, "Could not save the alert settings");
     }
   });
 
   app.post("/api/alerts/test", async (req, res) => {
     try {
       const result = await runtime.test(req.body);
-      if (result.rateLimited) return res.status(429).json(result);
-      res.json(result);
+      res.status(result.rateLimited ? 429 : 200).json(result);
     } catch (err) {
-      const known = err instanceof ValidationError;
-      res.status(known ? err.status : 500).json({ ok: false, error: known ? err.message : "Test failed" });
+      failWith(res, err, "Test failed", { ok: false });
     }
   });
 }
