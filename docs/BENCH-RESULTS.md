@@ -45,6 +45,8 @@ Names are append-only (`owner.what.vN`). Only definitions in the same
 | Aggregate, concurrent window | `herd.decode.agg_window.v1`, `sparkdash.agg_window.v1`, `aeon.wave_peak_concurrent_window.v1` |
 | Aggregate, sum of stream rates | `herd.decode.agg_sum.v1`, `aeon.agg_saturated_est.v1`, `mia.agg_sum_per_request.v1` |
 | Single-stream greedy median | `hasso.single_stream_greedy_median.v1` |
+| Hasso per-probe median | `hasso.bench_probe_median.v1` (one bench.sh probe; math at temp 0.6, prose worst case) |
+| Single-stream two-call delta | `hasso.matrix_two_call_delta.v1` (decode net of prefill, 80 vs 680 tokens; refused samples stored with `valid: false`) |
 | Per-stream mean | `herd.decode.stream_mean.v1` (DecodeBench), `aeon.decode_tps_mean.v1` (AEON ladder); Showcase has its own estimated variant |
 | Prefill | `herd.prefill.single_request.v1` (cold, salted); `herd.decode.prefill_window.v1` (concurrent); `aeon.prefill_tps_mean.v1` (per-request mean) |
 | Latency | `herd.ttft.client_first_token.v1` (p50), `…_p95.v1`, `herd.tpot.client_stream.v1`; AEON ladder p95s `aeon.ttft_p95_linear.v1`, `aeon.tpot_p95_linear.v1` |
@@ -55,6 +57,12 @@ Names are append-only (`owner.what.vN`). Only definitions in the same
 The AEON ladder (DecodeBench `protocol: "aeon-perf-v1"`) stores one record per
 cell, `perf.direct.<category>.c<n>` and `perf.direct.overall.c<n>`, with suite
 `aeon-perf-v1`. See [AEON-LADDER.md](./AEON-LADDER.md).
+
+The Hasso battery (DecodeBench `protocol: "hasso-battery-v1"`) stores
+`hasso.bench.greedy_median`, one `hasso.bench.<probe>` per bench.sh probe and
+one `hasso.matrix.<workload>` per battery workload, with suite
+`hasso-battery-v1` and `suite_version "1"` (`settings.battery_version 1`). See
+[HASSO-BATTERY.md](./HASSO-BATTERY.md).
 
 ## Compare
 

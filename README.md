@@ -76,6 +76,7 @@ Full history: [CHANGELOG.md](./CHANGELOG.md)
 | **Decode benchmark** | Multi-concurrency streaming decode tok/s; type picker (Structured / Prose / Code / JSON). Code is a different Python task per stream. Lab protocol (temp 0, thinking off); persisted last run. Remote units: LAN HTTP, or SSH tunnel to loopback. **Remote** button for an on-demand HTTPS/host:port target |
 | **Prefill benchmark** | Context-size sweep (1k–300k) of prefill tok/s and TTFT; unique prefix per size; persisted last run. Same remote targeting as decode |
 | **AEON ladder** | AEON `aeon-perf-v1` concurrency ladder: c1/4/8/16/32 × 5 categories (4 prompts each, one ~1,500 tokens), 256 max tokens, temperature 0 — 320 requests. Reports AEON's peak-wave window aggregate and its Σ (decode × c) estimate in separate columns and stores both in the bench results store as `perf.direct.<cat>.c<n>`. On Spark LLM panels (local or Remote) and on agent-node lanes. See [docs/AEON-LADDER.md](docs/AEON-LADDER.md) |
+| **Hasso battery** | Hasso battery v1 (`hasso5703/dgx-spark-qwen38`): `bench.sh` single-stream decode — code + reasoning greedy, math at temperature 0.6, prose as a worst case, 2 runs each; headline = greedy median — and `bench-matrix.sh` engine-vs-engine decode net of prefill — frozen 8 workloads × EN/FR/DE, two-call delta at 80 vs 680 max tokens, unreliable samples (Δtok < 50 or Δt < 2 s) refused. 25 requests, stored as `hasso.bench.*` / `hasso.matrix.*` with suite `hasso-battery-v1` v1. On Spark LLM panels (local or Remote) and on agent-node lanes. See [docs/HASSO-BATTERY.md](docs/HASSO-BATTERY.md) |
 | **Quality benchmark** | Accuracy over fixed item sets: QA 150, Reasoning 40, Arithmetic chain 40, State tracking 40, GSM8K 200, MMLU 285 (755 requests), opt-in Instruction following 40 and Long-context recall 20. Greedy, fixed seed, thinking off; overall = mean of category %. Exact McNemar p against any earlier run (p ≥ 0.05 = within noise). Runs and per-item vectors live in the bench results store. See [docs/QUALITY-BENCH.md](docs/QUALITY-BENCH.md) |
 | **Prompt Showcase** | Full-page multi-terminal LLM streaming demo (up to 32 prompts) with live tok/s and copy-out |
 | **LLM inference health** | KV cache %, run/wait queue, TTFT/E2E/ITL p95, preemptions, prefix cache, MTP accept from Prometheus `/metrics` (vLLM and q27; q27 FIFO-queues so the Requests tile reads “N run” without a wait gauge) |
@@ -384,8 +385,8 @@ sparkDash/
 | DELETE | `/api/sparks/:id/llm-ports/:port` | Remove an LLM port (hot) |
 | PUT | `/api/sparks/:id/llm-port` | LLM port — backward-compat (hot) |
 | GET | `/api/sparks/:id/llm/daily` | Daily busy decode/prefill tok/s (`port`, `days`) |
-| POST | `/api/sparks/:id/llm/bench` | Start decode benchmark (202); `protocol: "aeon-perf-v1"` runs the AEON ladder; poll/cancel/clear on the same path |
-| POST | `/api/fleet/nodes/:id/llm/bench` | Decode benchmark / AEON ladder against a running lane on an agent node (`port`); poll/cancel/clear on the same path |
+| POST | `/api/sparks/:id/llm/bench` | Start decode benchmark (202); `protocol: "aeon-perf-v1"` runs the AEON ladder, `protocol: "hasso-battery-v1"` (+ `parts`) the Hasso battery; poll/cancel/clear on the same path |
+| POST | `/api/fleet/nodes/:id/llm/bench` | Decode benchmark / AEON ladder / Hasso battery against a running lane on an agent node (`port`); poll/cancel/clear on the same path |
 | POST | `/api/sparks/:id/llm/prefill-bench` | Start prefill + TTFT context sweep (202); poll/cancel/clear on the same path |
 | GET | `/api/settings` | Global settings |
 | PUT | `/api/settings` | Update global settings |

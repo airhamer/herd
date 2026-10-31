@@ -51,9 +51,29 @@ import {
   aggregateLevel,
   normalizeAeonLadder,
 } from "./aeonPerf.js";
+import {
+  HASSO_BATTERY_VERSION,
+  HASSO_BENCH_PROBES,
+  HASSO_MATRIX_LONG,
+  HASSO_MATRIX_PROBES,
+  HASSO_MATRIX_SHORT,
+  HASSO_MIN_DELTA_S,
+  HASSO_MIN_DELTA_TOKENS,
+  HASSO_PARTS,
+  HASSO_PROTOCOL,
+  HASSO_RUNS_PER_PROBE,
+  HASSO_SUITE_VERSION,
+  hassoRequestCount,
+  hassoTokenBudget,
+  normalizeHassoParts,
+  runHassoBattery,
+} from "./hassoBattery.js";
 
-/** Decode bench protocols: Herd's own (default) and AEON's aeon-perf-v1 ladder. */
-export const DECODE_PROTOCOLS = Object.freeze(["herd", AEON_SUITE_ID]);
+/**
+ * Decode bench protocols: Herd's own (default), AEON's aeon-perf-v1 ladder
+ * (BENCH3) and Hasso's battery v1 (BENCH4, bench.sh + bench-matrix.sh).
+ */
+export const DECODE_PROTOCOLS = Object.freeze(["herd", AEON_SUITE_ID, HASSO_PROTOCOL]);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -587,6 +607,8 @@ export class DecodeBenchManager {
     this.historyBySpark = new Map();
     this.historyPath = historyPath;
     this.activePath = activePath;
+    /** Hasso battery overrides for tests: { streamImpl?, callImpl?, modelsImpl? }. */
+    this.hassoImpl = null;
     /** Stream request override for tests (AEON protocol); null = runStreamingRequest. */
     this.requestImpl = null;
     this._loadHistory();
@@ -863,6 +885,7 @@ export class DecodeBenchManager {
       protocol: rawProtocol = "herd",
       nodeId = null,
       nonce = null,
+      parts: rawParts = null,
     } = opts;
 
     const protocol = rawProtocol == null || rawProtocol === "" ? "herd" : String(rawProtocol);
@@ -872,6 +895,7 @@ export class DecodeBenchManager {
       throw err;
     }
     const aeon = protocol === AEON_SUITE_ID;
+    const hasso = protocol === HASSO_PROTOCOL;
 
     if (this.activeBySpark.has(sparkId)) {
       const err = new Error("A benchmark is already running for this Spark");
@@ -879,7 +903,19 @@ export class DecodeBenchManager {
       throw err;
     }
 
-    const concurrencies = aeon ? normalizeAeonLadder(rawConc) : normalizeConcurrencies(rawConc);
+    const parts = hasso ? normalizeHassoParts(rawParts) : null;
+    if (hasso && !parts.length) {
+      const err = new Error(`Select at least one Hasso battery part (${HASSO_PARTS.join(", ")})`);
+      err.status = 400;
+      throw err;
+    }
+    if (hasso && rawMax != null) {
+      const err = new Error("The Hasso battery uses its own max tokens per probe");
+      err.status = 400;
+      throw err;
+    }
+    // The battery is single-stream throughout.
+    const concurrencies = hasso ? [1] : aeon ? normalizeAeonLadder(rawConc) : normalizeConcurrencies(rawConc);
     if (!concurrencies.length) {
       const err = new Error(
         aeon
@@ -890,7 +926,13 @@ export class DecodeBenchManager {
       throw err;
     }
 
-    let maxTokens = aeon ? AEON_MAX_TOKENS : Number(rawMax);
+    let maxTokens = aeon
+      ? AEON_MAX_TOKENS
+      : hasso
+        ? parts.includes("bench")
+          ? Math.max(...HASSO_BENCH_PROBES.map((p) => p.maxTokens))
+          : HASSO_MATRIX_LONG
+        : Number(rawMax);
     if (!Number.isFinite(maxTokens)) maxTokens = DEFAULT_MAX_TOKENS;
     maxTokens = Math.round(maxTokens);
     if (aeon && rawMax != null && Number(rawMax) !== AEON_MAX_TOKENS) {
@@ -911,8 +953,8 @@ export class DecodeBenchManager {
       throw err;
     }
 
-    const promptType = aeon ? null : normalizeDecodeBenchType(rawType);
-    const debugOn = Boolean(debug) && !aeon;
+    const promptType = aeon || hasso ? null : normalizeDecodeBenchType(rawType);
+    const debugOn = Boolean(debug) && !aeon && !hasso;
     const benchId = randomUUID();
     const abort = new AbortController();
     const job = {
@@ -937,6 +979,15 @@ export class DecodeBenchManager {
               requests: aeonRequestCount(concurrencies),
             }
           : {}),
+        ...(hasso
+          ? {
+              protocol: HASSO_PROTOCOL,
+              suiteVersion: HASSO_SUITE_VERSION,
+              batteryVersion: HASSO_BATTERY_VERSION,
+              parts,
+              requests: hassoRequestCount(parts),
+            }
+          : {}),
         ...(debugOn ? { debug: true } : {}),
         ...(rawHost
           ? { host: String(rawHost).trim(), tls: Boolean(rawTls) }
@@ -945,12 +996,25 @@ export class DecodeBenchManager {
       progress: {
         currentConcurrency: null,
         completedLevels: 0,
-        totalLevels: concurrencies.length,
+        totalLevels: hasso ? parts.length : concurrencies.length,
         message: "Starting…",
         ...(aeon ? { currentCategory: null, requestsDone: 0, requestsTotal: aeonRequestCount(concurrencies) } : {}),
+        ...(hasso ? { currentPart: null, requestsDone: 0, requestsTotal: hassoRequestCount(parts) } : {}),
       },
       results: [],
       ...(aeon ? { aeon: { suite: AEON_SUITE_ID, nonce: nonce || randomUUID().replace(/-/g, "").slice(0, 6), levels: [] } } : {}),
+      ...(hasso
+        ? {
+            hasso: {
+              suite: HASSO_PROTOCOL,
+              batteryVersion: HASSO_BATTERY_VERSION,
+              parts,
+              model: null,
+              bench: null,
+              matrix: null,
+            },
+          }
+        : {}),
       error: null,
       _abort: abort,
       _debug: debugOn,
@@ -1010,7 +1074,9 @@ export class DecodeBenchManager {
       }
       const baseUrl = formatLlmBaseUrl({ host, port, tls });
       const aeon = job.config.protocol === AEON_SUITE_ID;
-      if (!job._abort.signal.aborted && !aeon) {
+      const hasso = job.config.protocol === HASSO_PROTOCOL;
+      if (hasso) await this._runHasso(job, baseUrl);
+      if (!job._abort.signal.aborted && !aeon && !hasso) {
         if (!String(job.progress.message || "").startsWith("Warming up")) {
           job.progress.message = "Warming up…";
         }
@@ -1024,7 +1090,7 @@ export class DecodeBenchManager {
           promptType: job.config.promptType,
         });
       }
-      for (const c of job.config.concurrencies) {
+      for (const c of hasso ? [] : job.config.concurrencies) {
         if (job._abort.signal.aborted) {
           if (job.status === "running") {
             job.status = "cancelled";
@@ -1139,6 +1205,43 @@ export class DecodeBenchManager {
     }
   }
 
+  /**
+   * Hasso battery v1: bench.sh then bench-matrix.sh, single-stream. Request
+   * errors throw (the job fails, as the scripts exit); a cancel throws an
+   * AbortError. `job.hasso` keeps whatever was measured either way.
+   */
+  async _runHasso(job, baseUrl) {
+    const impl = this.hassoImpl || {};
+    const parts = job.config.parts || [];
+    let lastPart = null;
+    await runHassoBattery({
+      baseUrl,
+      modelId: job.config.modelId,
+      parts,
+      apiKey: job._apiKey,
+      signal: job._abort.signal,
+      state: job.hasso,
+      ...(impl.streamImpl ? { streamImpl: impl.streamImpl } : {}),
+      ...(impl.callImpl ? { callImpl: impl.callImpl } : {}),
+      ...(impl.modelsImpl ? { modelsImpl: impl.modelsImpl } : {}),
+      onStep: (part, label) => {
+        if (lastPart && part !== lastPart) job.progress.completedLevels += 1;
+        lastPart = part;
+        job.progress.currentPart = part;
+        job.progress.message = `${part === "bench" ? "bench.sh" : "bench-matrix.sh"} · ${label}`;
+        this._checkpointActive();
+      },
+      onRequestDone: () => {
+        job.progress.requestsDone += 1;
+      },
+    });
+    if (job.hasso.model && !job.config.modelId) job.config.modelId = job.hasso.model;
+    if (!job._abort.signal.aborted) {
+      job.progress.completedLevels = parts.length;
+      job.progress.currentPart = null;
+    }
+  }
+
   _pushHistory(job) {
     const list = this.historyBySpark.get(job.sparkId) || [];
     const pub = publicJob(job);
@@ -1168,11 +1271,16 @@ export class DecodeBenchManager {
 /**
  * Arguments for validateDecodeBudget for a start request body: herd counts
  * one stream per concurrency level; the AEON ladder counts every request
- * (5 categories × max(4, c) per rung) at 256 tokens.
+ * (5 categories × max(4, c) per rung) at 256 tokens; the Hasso battery
+ * counts the sum of its requests' max_tokens as one stream.
  * @param {any} body
  * @returns {[number[], number]}
  */
 export function decodeBudgetArgs(body) {
+  if (body?.protocol === HASSO_PROTOCOL) {
+    // Every request's max_tokens, single stream.
+    return [[hassoTokenBudget(normalizeHassoParts(body?.parts))], 1];
+  }
   if (body?.protocol === AEON_SUITE_ID) {
     return [normalizeAeonLadder(body?.concurrencies).map((c) => aeonRequestCount([c])), AEON_MAX_TOKENS];
   }
@@ -1204,6 +1312,7 @@ function publicJob(job) {
     progress: { ...job.progress },
     results: job.results,
     ...(job.aeon ? { aeon: job.aeon } : {}),
+    ...(job.hasso ? { hasso: job.hasso } : {}),
     ...(job.nodeId ? { nodeId: job.nodeId } : {}),
     error: job.error,
     durationMs:
@@ -1233,5 +1342,24 @@ export const DECODE_BENCH_DEFAULTS = {
     categories: [...AEON_CATEGORIES],
     promptsPerCategory: 4,
     requests: aeonRequestCount([...AEON_LADDER]),
+  },
+  hasso: {
+    suite: HASSO_PROTOCOL,
+    suiteVersion: HASSO_SUITE_VERSION,
+    batteryVersion: HASSO_BATTERY_VERSION,
+    parts: [...HASSO_PARTS],
+    runsPerProbe: HASSO_RUNS_PER_PROBE,
+    benchProbes: HASSO_BENCH_PROBES.map(({ key, name, temperature, maxTokens, inMedian }) => ({
+      key,
+      name,
+      temperature,
+      maxTokens,
+      inMedian,
+    })),
+    matrixProbes: HASSO_MATRIX_PROBES.map(({ key, name, lang }) => ({ key, name, lang })),
+    matrixMaxTokens: [HASSO_MATRIX_SHORT, HASSO_MATRIX_LONG],
+    minDeltaTokens: HASSO_MIN_DELTA_TOKENS,
+    minDeltaS: HASSO_MIN_DELTA_S,
+    requests: hassoRequestCount([...HASSO_PARTS]),
   },
 };
