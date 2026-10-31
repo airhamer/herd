@@ -86,6 +86,15 @@ export const ENGINE_COUNTER_NAMES = Object.freeze([
   "idleSeconds",
 ]);
 
+/**
+ * STAT3 (#36): further raw counters node agents 0.4+ export. No metric reads
+ * them yet; they only take part in counter-reset detection.
+ */
+export const EXTRA_COUNTER_NAMES = Object.freeze(["e2eSum", "e2eCount", "requestsFinished", "preemptions", "specDraftTokens"]);
+
+/** Every counter whose decrease starts a window again. */
+const RESET_COUNTER_NAMES = Object.freeze([...ENGINE_COUNTER_NAMES, ...EXTRA_COUNTER_NAMES]);
+
 export const NORMALIZED_FIELDS = Object.freeze([
   "decode_tps",
   "prefill_tps",
@@ -222,7 +231,7 @@ export class EngineWindow {
       reset = true;
     }
     this.samples.push(s);
-    for (const name of ENGINE_COUNTER_NAMES) {
+    for (const name of RESET_COUNTER_NAMES) {
       const v = fin(s.counters?.[name]);
       if (v != null) this._lastKnown[name] = v;
     }
@@ -235,7 +244,7 @@ export class EngineWindow {
   /** @param {EngineSample["counters"]} counters */
   _wentBack(counters) {
     if (!counters) return false;
-    for (const name of ENGINE_COUNTER_NAMES) {
+    for (const name of RESET_COUNTER_NAMES) {
       const v = fin(counters[name]);
       const p = this._lastKnown[name];
       if (v != null && p != null && v < p) return true;

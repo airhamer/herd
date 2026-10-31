@@ -38,7 +38,7 @@ import { readTextFile, parseUptimeSeconds } from "./collectors/util.js";
 /** Runtime recipes file (agent/config/recipes.json), same default as main.js. */
 const DEFAULT_RECIPES_PATH = "agent/config/recipes.json";
 
-export const AGENT_VERSION = "0.3.0";
+export const AGENT_VERSION = "0.4.0";
 
 /**
  * Derive quantization from a model id/path reference.
