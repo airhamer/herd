@@ -200,7 +200,7 @@ export function FleetCard(props: FleetCardProps) {
   const activeServices = services.filter((s) => s.active).length;
   const runningServices = services.filter((s) => s.status === "running").length;
 
-  /** Models on this node: one LLM service = one lane; several may coexist. */
+  /** Models on this node: one LLM service = one Component (internal: lane); several may coexist. */
   const llmServices = services
     .filter((s) => s.kind === "llm")
     .slice()
@@ -323,7 +323,7 @@ export function FleetCard(props: FleetCardProps) {
             <MetricBar label="Usage" value={usage} max={100} color={usageBarColor} caption={`${usage}%`} />
           </div>
 
-          {/* Models — one row per LLM service (coexisting lanes), live ones first */}
+          {/* Models — one row per LLM service (coexisting Components), live ones first */}
           <div className="mt-4 border-t border-border pt-3.5">
             <div className="mb-1.5 text-[10px] uppercase tracking-wide text-muted">Models</div>
             {llmServices.length === 0 ? (

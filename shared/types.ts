@@ -407,6 +407,9 @@ export interface TailscaleMetrics {
 }
 
 // ─── Lanes (S3.1) ─────────────────────────────────────────────────────────
+// SC1 terminology: the UI/docs term for a lane is **Component** (see the Stacks
+// section below). "Lane" stays the internal/wire name (recipe `.lane` slot,
+// NodeAgentSnapshot.lanes, GET /lanes) for compatibility.
 
 /**
  * Lane slot attribute on an "llm" recipe (shared/recipe.schema.json → Recipe.lane).
@@ -474,13 +477,23 @@ export interface NodeLanes {
 }
 
 // ─── Stacks (groups of Components) ─────────────────────────────────────────
-// NOTE (2026-10-29): New terminology for UI/docs:
-// - "Component" = a loadable serving unit (internally still often called a lane/recipe).
+// NOTE (2026-10-29, SC1-aligned 2026-10-31): Terminology for UI/docs:
+// - "Component" = a loadable serving unit (the lane slot on an llm recipe).
+//   "Lane" stays the internal/wire name — Recipe.lane, NodeAgentSnapshot.lanes,
+//   GET /lanes — kept for compatibility (see the Lanes section above).
 // - "Subcomponent" = individual library artifacts (checkpoint, drafter, image, ...).
 // - "Stack" = user-defined group of Components that are intended to share the pool.
 // Stacks are selected in the browser UI and assigned one of four categories.
 
 export type StackCategory = 'proven' | 'calculated' | 'not_recommended' | 'blocked';
+
+/** UI labels for the four Stack categories (SC1 terminology alignment). */
+export const STACK_CATEGORY_LABELS: Record<StackCategory, string> = {
+  proven: 'Proven',
+  calculated: 'Calculated',
+  not_recommended: 'Not recommended',
+  blocked: 'Blocked',
+};
 
 /**
  * A Stack definition (group of Components).

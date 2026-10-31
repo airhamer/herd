@@ -7,6 +7,11 @@ dashboard**, fold into elephant-ai, and treat everything previously classified
 "not applicable" as in scope. This brief records the licensing ruling that makes
 that safe and the staged shape of the work.
 
+> **Terminology note (SC1, 2026-10-30 alignment):** "Lane" below is the former
+> term for **Component** (a loadable serving unit). UI and current docs say
+> Component/Subcomponent/Stack; internal code, the recipe schema, and this
+> historical brief keep "lane" for compatibility.
+
 ## 1. Licensing ruling (verified live 2026-10-16)
 
 | Source | License | Obligation when integrated |
@@ -43,21 +48,24 @@ The pivot promotes inference itself to first-class:
 1. **Unit** — any OS host: DGX Spark, Linux (Narthex!), macOS, Windows.
    Registry gains `os`; collectors fan out per-OS (upstream 2.x code supplies
    mac/win/linux paths; our agent stays the privileged Spark path).
-2. **Lane** — hasso5703's idea, promoted to schema: one complete inference
+2. **Component** (hasso5703's idea, promoted to schema; term "Lane" until the
+   2026-10-30 terminology alignment — internal code and the schema slot keep
+   "lane" for compatibility): one complete inference
    setup = docker container + engine (vLLM/SGLang/LightLLM/llama.cpp/ollama) +
-   model + optional guard-proxy + resource budget. Lanes coexist when
-   resources allow → coexistence check = Lane budgets vs. live SparkMonitor
+   model + optional guard-proxy + resource budget. Components coexist when
+   resources allow → coexistence check = Component budgets vs. live SparkMonitor
    headroom, which the agent already collects.
-3. **Guard** — per-lane keepalive/abort proxy (hasso5703 pattern: keepalives,
+3. **Guard** — per-component keepalive/abort proxy (hasso5703 pattern: keepalives,
    aborts, start guard, requests held through a restart, crash timeline).
-   Dashboard shows guard health + crash timeline per lane, not just engine up/down.
+   Dashboard shows guard health + crash timeline per component, not just engine up/down.
 4. **Memory** — elephant-ai fact store + Qdrant + embedder as monitored
    services, plus the payoff view: **context saved** — tokens a request would
    have carried vs. tokens actually sent after memory recall, including
    frontier-API usage. That's the "frontier users reduce context" feature.
 
 The existing LLM prompt dashboard (Showcase page, live streamed prompts)
-survives the pivot as the Lane/prompt board — it's the demo surface for lanes.
+survives the pivot as the Component/prompt board — it's the demo surface for
+components (internal: lanes).
 
 ## 3. Stages
 
@@ -70,12 +78,13 @@ survives the pivot as the Lane/prompt board — it's the demo surface for lanes.
   Prometheus `/metrics` (1 hunk), RoCE panel (`fdd023f`), health findings
   (`c4558d0`), alert notifications (`2c2a1af`,`51ced72`), clock caps,
   history/Temps tiers, monthly energy.
-- **S3 Lanes + LightLLM** — Lane schema in the agent catalog (container
-  inventory already finds candidates), lane lifecycle actions via the existing
+- **S3 Components (Lanes) + LightLLM** — Lane schema in the agent catalog
+  (kept internally; UI term = Component; container
+  inventory already finds candidates), component lifecycle actions via the existing
   agent action layer, LightLLM as engine kind (config integration only),
   coexistence/budget view.
-- **S4 Guard proxy** — vendor hasso5703 proxy (MIT) as lane-optional
-  sidecar; guard status + held-requests + crash timeline on the lane page.
+- **S4 Guard proxy** — vendor hasso5703 proxy (MIT) as component-optional
+  sidecar; guard status + held-requests + crash timeline on the component page.
 - **S5 elephant-ai memory** — memory/embedder health panels + context-saved
   accounting (local *and* frontier), fed by the guard proxy's token accounting
   (it already sees every request).
@@ -99,7 +108,7 @@ ours-only work, no upstream clock pressure.
    (owner pick, 2026-10-17). The consolidation point for control and
    monitoring of all the pieces and parts needed by Elephant-AI.
 4. **Fleet-tab per-member models shipped** — Batch 11 (`e9a0e60`): one Models
-   row per LLM service per fleet card; multi-model lanes visible side by side.
-   This is the first Lane primitive UI.
+   row per LLM service per fleet card; multi-model components visible side by
+   side. This is the first Component (Lane) primitive UI.
 5. Frontier context accounting (S5) still open — integration point chosen at
    S5 design (guard-proxy token accounting vs. OpenClaw/elephant hook).
