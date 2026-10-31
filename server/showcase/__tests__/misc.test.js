@@ -78,6 +78,9 @@ test("fromFleetShowcaseSession: one Showcase row per run lane, provenance per la
   assert.equal(m.decode_tps_stream.value, 46);
   assert.equal(m.decode_tps_stream.approximate, false);
   assert.equal(m.agg_window_tps.value, 90);
+  assert.equal(m.agg_window_tps.definition, "herd.showcase.agg_window.v1", "usage-only lanes share DecodeBench's comparable");
+  assert.equal(m.agg_window_tps.approximate, false);
+  assert.equal(r.settings.tokens_estimated, false);
   assert.equal(m.server_generation_tps.value, 88.5);
   assert.equal(m.prefill_tps.value, 850);
   assert.equal(m.ttft_p50.value, 110);

@@ -9,6 +9,7 @@ import {
   startShowcase,
 } from "../../api/client";
 import type {
+  ShowcaseAggregate,
   ShowcaseHistorySummary,
   ShowcaseSessionState,
   SparkConfig,
@@ -83,8 +84,14 @@ interface LocalStream {
   decodeTps: number;
   liveTokPerSec: number;
   peakTokPerSec: number;
+  /** Token count is a ~4 chars/token estimate (live, or the engine sent no usage). */
+  estimated?: boolean;
   error: string | null;
 }
+
+const EST_TITLE_STREAM = "Token count estimated at ~4 chars/token (live, or the engine sent no usage)";
+const EST_TITLE_AGG =
+  "Some token counts are estimated at ~4 chars/token (live counts, or an engine that sent no usage)";
 
 function readPortQuery(fallback: number): number {
   try {
@@ -205,6 +212,8 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
   const [serverTps, setServerTps] = useState<number | null>(null);
   const [serverTpsMax, setServerTpsMax] = useState<number | null>(null);
   const [aggregatePeakTps, setAggregatePeakTps] = useState(0);
+  /** Server concurrent-window aggregate (SHOW2); null for runs archived before it. */
+  const [serverAggregate, setServerAggregate] = useState<ShowcaseAggregate | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [history, setHistory] = useState<ShowcaseHistorySummary[]>([]);
@@ -231,7 +240,7 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
     !spark!.workerNode &&
     !controlsLocked;
 
-  const displayStreams = useMemo(() => {
+  const displayStreams = useMemo<LocalStream[]>(() => {
     // Keep finished-run results only while the stream count still matches selection.
     if (streams.length > 0 && streams.length === prompts.length) {
       return streams;
@@ -252,8 +261,15 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
     }));
   }, [streams, prompts]);
 
-  /** Sum of per-stream live (or final decode) tok/s — concurrent aggregate throughput. */
-  const aggregateTps = useMemo(() => {
+  // Server aggregate applies only while the terminals show that session's streams.
+  const activeAggregate = displayStreams === streams ? serverAggregate : null;
+
+  /**
+   * Concurrent-window aggregate from the server: Σ decode tokens / (last
+   * token − first token) across all terminals. Runs archived before SHOW2
+   * fall back to the old sum of per-stream rates.
+   */
+  const legacySumTps = useMemo(() => {
     return displayStreams.reduce((sum, s) => {
       const rate =
         s.liveTokPerSec > 0
@@ -264,6 +280,10 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
       return sum + rate;
     }, 0);
   }, [displayStreams]);
+  const aggregateTps = activeAggregate ? activeAggregate.tps ?? 0 : legacySumTps;
+  const aggregateEstimated = activeAggregate
+    ? activeAggregate.estimated
+    : displayStreams.some((s) => s.estimated);
 
   const totalTokens = useMemo(
     () => displayStreams.reduce((sum, s) => sum + (s.tokenCount || 0), 0),
@@ -289,9 +309,12 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
     sessionStatus !== "pending";
 
   useEffect(() => {
-    if (aggregateTps <= 0) return;
-    setAggregatePeakTps((prev) => (aggregateTps > prev ? aggregateTps : prev));
-  }, [aggregateTps]);
+    if (activeAggregate || legacySumTps <= 0) return;
+    setAggregatePeakTps((prev) => (legacySumTps > prev ? legacySumTps : prev));
+  }, [activeAggregate, legacySumTps]);
+  const displayPeakTps = activeAggregate ? activeAggregate.peakTps ?? 0 : aggregatePeakTps;
+  // Legacy peaks were sums of live (estimated) rates.
+  const peakEstimated = activeAggregate ? Boolean(activeAggregate.peakEstimated) : aggregateEstimated;
 
   useEffect(() => {
     let cancelled = false;
@@ -432,6 +455,7 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
     }
     if (data.serverGenerationTps != null) setServerTps(data.serverGenerationTps);
     if (data.serverGenerationTpsMax != null) setServerTpsMax(data.serverGenerationTpsMax);
+    setServerAggregate(data.aggregate ?? null);
     setStreams((prev) => {
       const byId = new Map(prev.map((s) => [s.streamId, s]));
       return data.streams.map((s) => {
@@ -467,6 +491,7 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
           decodeTps: s.decodeTps,
           liveTokPerSec: live,
           peakTokPerSec: peak,
+          estimated: Boolean(s.estimated),
           error: s.error,
         };
       });
@@ -558,6 +583,7 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
     setServerTps(null);
     setServerTpsMax(null);
     setAggregatePeakTps(0);
+    setServerAggregate(null);
     try {
       const trimmed = prompts.map((p) => p.trim()).filter(Boolean);
       if (trimmed.length < MIN_TERMINALS || trimmed.length > MAX_TERMINALS) {
@@ -793,9 +819,12 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
               Show controls
             </button>
             {(aggregateTps > 0 || totalTokens > 0) && (
-              <div className="showcase-config-peek__tps" title="Aggregate tokens per second across all terminals">
+              <div
+                className="showcase-config-peek__tps"
+                title={`Aggregate tokens per second across all terminals${aggregateEstimated ? ` · ${EST_TITLE_AGG}` : ""}`}
+              >
                 <span className="showcase-config-peek__tps-value font-tabular">
-                  {aggregateTps > 0 ? `${aggregateTps.toFixed(0)}` : "—"}
+                  {aggregateTps > 0 ? `${aggregateEstimated ? "≈" : ""}${aggregateTps.toFixed(0)}` : "—"}
                 </span>
                 <span className="showcase-config-peek__tps-unit">tok/s</span>
                 {totalTokens > 0 && (
@@ -1068,9 +1097,24 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
                           {row.promptType ? (
                             <span>· {row.promptType}</span>
                           ) : null}
-                          {row.meanDecodeTps > 0 && (
+                          {row.aggregateTps != null && row.aggregateTps > 0 ? (
+                            <span
+                              data-testid="showcase-history-agg"
+                              title={
+                                row.aggregateEstimated
+                                  ? `Concurrent-window aggregate · ${EST_TITLE_AGG}`
+                                  : "Concurrent-window aggregate (usage token counts)"
+                              }
+                            >
+                              · {row.aggregateEstimated ? "≈ " : ""}
+                              {row.aggregateTps.toFixed(0)} tok/s agg
+                              {row.aggregatePeakTps != null && row.aggregatePeakTps > row.aggregateTps
+                                ? ` (peak ${row.aggregatePeakEstimated ? "≈" : ""}${row.aggregatePeakTps.toFixed(0)})`
+                                : ""}
+                            </span>
+                          ) : row.meanDecodeTps > 0 ? (
                             <span>· avg {row.meanDecodeTps.toFixed(0)} tok/s</span>
-                          )}
+                          ) : null}
                           {row.totalTokens > 0 && (
                             <span>· {formatToks(row.totalTokens)} tok</span>
                           )}
@@ -1136,15 +1180,39 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
 
       {showMetricsStrip && (
         <div className="showcase-metrics" aria-live="polite">
-          <div className="showcase-metrics__hero" title="Sum of live decode tok/s across all terminals">
-            <span className="showcase-metrics__label">Aggregate</span>
+          <div
+            className="showcase-metrics__hero"
+            data-testid="showcase-aggregate"
+            title={
+              activeAggregate
+                ? "Concurrent window: Σ decode tokens / (last token − first token) across all terminals (DecodeBench definition)"
+                : "Sum of per-terminal decode tok/s (run recorded before the concurrent-window aggregate)"
+            }
+          >
+            <span className="showcase-metrics__label">
+              Aggregate
+              {aggregateEstimated && aggregateTps > 0 ? (
+                <span className="showcase-metrics__est" data-testid="showcase-aggregate-estimated" title={EST_TITLE_AGG}>
+                  ≈ est.
+                </span>
+              ) : null}
+            </span>
             <span className="showcase-metrics__hero-value font-tabular">
               {aggregateTps > 0 ? aggregateTps.toFixed(0) : "—"}
               <span className="showcase-metrics__hero-unit">tok/s</span>
             </span>
-            {aggregatePeakTps > 0 && (
-                <span className="showcase-metrics__sub">
-                  peak {aggregatePeakTps.toFixed(0)}
+            {displayPeakTps > 0 && (
+                <span
+                  className="showcase-metrics__sub"
+                  data-testid="showcase-aggregate-peak"
+                  title={
+                    peakEstimated
+                      ? "Highest aggregate during the run, from live token counts estimated at ~4 chars/token"
+                      : "Highest aggregate during the run"
+                  }
+                >
+                  peak {peakEstimated ? "≈" : ""}
+                  {displayPeakTps.toFixed(0)}
                 </span>
               )}
           </div>
@@ -1226,6 +1294,8 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
             content={s.content}
             reasoning={s.reasoning}
             error={s.error}
+            badge={s.estimated && s.tokenCount > 0 ? "est." : null}
+            badgeTitle={EST_TITLE_STREAM}
             onCopy={
               s.content || s.reasoning || s.error
                 ? () => void handleCopyOne(s)

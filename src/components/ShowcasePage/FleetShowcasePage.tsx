@@ -73,8 +73,16 @@ function groupTargets(targets: FleetShowcaseTarget[]) {
   return [...groups.values()];
 }
 
-function fleetTps(lanes: FleetShowcaseLaneState[]) {
+/** Runs archived before SHOW2 have no server aggregates: fall back to the sum of lanes. */
+function legacyFleetTps(lanes: FleetShowcaseLaneState[]) {
   return lanes.reduce((n, l) => n + (l.clientTps && l.clientTps > 0 ? l.clientTps : 0), 0);
+}
+
+const EST_TITLE =
+  "Some token counts are estimated at ~4 chars/token (live counts, or an engine that sent no usage)";
+
+function fmtAgg(v: number | null | undefined) {
+  return typeof v === "number" && v > 0 ? v.toFixed(0) : "—";
 }
 
 export function FleetShowcasePage() {
@@ -241,7 +249,10 @@ export function FleetShowcasePage() {
   };
 
   const lanes = session?.lanes || [];
-  const totalTps = fleetTps(lanes);
+  const fleetAgg = session?.aggregates?.fleet ?? null;
+  const engineAggs = session?.aggregates?.engines ?? [];
+  const totalTps = fleetAgg ? fleetAgg.tps ?? 0 : legacyFleetTps(lanes);
+  const fleetEstimated = fleetAgg ? fleetAgg.estimated : lanes.some((l) => l.estimated || l.tokenSource === "estimate" || l.tokenSource === "mixed");
 
   return (
     <div className="showcase-page fleet-showcase-page">
@@ -418,10 +429,19 @@ export function FleetShowcasePage() {
                         <span>· {row.laneCount} lanes</span>
                         <span>· {row.streamsPerLane} term/lane</span>
                         {row.promptType ? <span>· {row.promptType}</span> : null}
+                        {row.fleetTps != null && row.fleetTps > 0 ? (
+                          <span data-testid="fleet-history-agg" title={row.fleetEstimated ? EST_TITLE : "Fleet concurrent-window aggregate"}>
+                            · fleet {row.fleetEstimated ? "≈ " : ""}
+                            {row.fleetTps.toFixed(0)} tok/s
+                          </span>
+                        ) : null}
                       </span>
                       <span className="showcase-history__model">
                         {row.lanes
-                          .map((l) => `${l.nodeName}:${l.port} ${l.clientTps ? `${l.clientTps.toFixed(0)} tok/s` : "—"}`)
+                          .map(
+                            (l) =>
+                              `${l.nodeName}:${l.port} ${l.clientTps ? `${l.estimated ? "≈" : ""}${l.clientTps.toFixed(0)} tok/s` : "—"}`
+                          )
                           .join(" · ")}
                       </span>
                     </button>
@@ -438,13 +458,63 @@ export function FleetShowcasePage() {
       <div className="fleet-showcase-body">
         {lanes.length > 0 && (
           <div className="showcase-metrics" aria-live="polite">
-            <div className="showcase-metrics__hero" title="Sum of lane client tok/s">
-              <span className="showcase-metrics__label">Fleet</span>
+            <div
+              className="showcase-metrics__hero"
+              data-testid="fleet-aggregate"
+              title={
+                fleetAgg
+                  ? "Fleet concurrent window: Σ decode tokens of every lane / (last token − first token) (DecodeBench definition)"
+                  : "Sum of lane client tok/s (run recorded before the concurrent-window aggregate)"
+              }
+            >
+              <span className="showcase-metrics__label">
+                Fleet
+                {fleetEstimated && totalTps > 0 ? (
+                  <span className="showcase-metrics__est" data-testid="fleet-aggregate-estimated" title={EST_TITLE}>
+                    ≈ est.
+                  </span>
+                ) : null}
+              </span>
               <span className="showcase-metrics__hero-value font-tabular">
                 {totalTps > 0 ? totalTps.toFixed(0) : "—"}
                 <span className="showcase-metrics__hero-unit">tok/s</span>
               </span>
+              {fleetAgg?.peakTps != null && fleetAgg.peakTps > 0 ? (
+                <span
+                  className="showcase-metrics__sub"
+                  data-testid="fleet-aggregate-peak"
+                  title={fleetAgg.peakEstimated ? "Peak from live token counts estimated at ~4 chars/token" : "Highest fleet aggregate during the run"}
+                >
+                  peak {fleetAgg.peakEstimated ? "≈" : ""}
+                  {fleetAgg.peakTps.toFixed(0)}
+                </span>
+              ) : null}
             </div>
+            {engineAggs.length > 1
+              ? engineAggs.map((e) => (
+                  <div
+                    key={e.engine}
+                    className="showcase-metrics__item"
+                    data-testid={`fleet-engine-agg-${e.engine}`}
+                    title={`${e.engine}: concurrent window over ${e.laneIds.length} lane${e.laneIds.length === 1 ? "" : "s"}${e.estimated ? ` · ${EST_TITLE}` : ""}`}
+                  >
+                    <span className="showcase-metrics__label">
+                      {e.engine}
+                      {e.estimated && e.tps ? <span className="showcase-metrics__est">≈ est.</span> : null}
+                    </span>
+                    <span className="showcase-metrics__value font-tabular">
+                      {fmtAgg(e.tps)}
+                      <span className="showcase-metrics__unit"> tok/s</span>
+                    </span>
+                    {e.peakTps != null && e.peakTps > 0 ? (
+                      <span className="showcase-metrics__sub">
+                        peak {e.peakEstimated ? "≈" : ""}
+                        {e.peakTps.toFixed(0)}
+                      </span>
+                    ) : null}
+                  </div>
+                ))
+              : null}
             <span className="showcase-metrics__sep" aria-hidden>
               ·
             </span>
@@ -491,8 +561,8 @@ export function FleetShowcasePage() {
                   reasoning={s.reasoning ?? ""}
                   error={s.error}
                   meta={s.ttftMs ? `TTFT ${Math.round(s.ttftMs)} ms` : null}
-                  badge={s.tokenSource === "estimate" ? "est." : null}
-                  badgeTitle="Tokens estimated at ~4 chars/token (engine sent no usage)"
+                  badge={(s.estimated ?? s.tokenSource === "estimate") && s.tokenCount > 0 ? "est." : null}
+                  badgeTitle="Token count estimated at ~4 chars/token (live, or the engine sent no usage)"
                 />
               ))}
             </div>
