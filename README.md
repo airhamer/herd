@@ -248,6 +248,21 @@ New UI views (reachable from the header tabs): `/fleet` (fleet overview), `/topo
 
 The node agent is installed on each Spark with `deploy/install-node-agent.sh` (Docker: `deploy/Dockerfile.node-agent`). The actions build (agent ≥0.2.0) ships `POST /actions` + `GET /audit`, and joins `services`/`memory`/`requests` into the telemetry snapshot; it needs host access (docker socket, `systemctl`, `nvidia-smi`, GPU devices) — the install script wires the mounts automatically (see `docs/NODE-AGENT.md`). The fleet layer is fully independent of the SSH-based Spark monitors above — both coexist.
 
+**Fleet Prompt Showcase (#39).** `/fleet/showcase` (linked from the Fleet Overview header and the per-Spark showcase) runs the Prompt Showcase on any mix of LLM lanes at once: every SSH Spark LLM port and every agent-node engine, whatever the engine or model. Each selected lane gets the same prompts and N terminals; all lanes stream concurrently. A tile grid above the terminals compares, per lane:
+
+- **client tok/s** (every engine): from the streams themselves. Tokens come from `usage` (`stream_options.include_usage`) or, when the engine sends none, the ~4 chars/token estimate (tile badge `≈ est.`). Per stream decode = (tokens − 1) / (t_last − t_first); lane tok/s = Σ decode tokens / (last token − first token across the lane's streams).
+- **TTFT** (median per lane) and **prefill** = prompt tokens / TTFT.
+- **server tok/s**: Δ generated-token counter / Δt, polled every 400 ms from the engine (`/metrics` for vLLM, SGLang, llama.cpp, ds4/q27/tensorfold/splash; `/health` for EXL3; `/server_info` for SGLang without metrics). The counter is engine-wide, so other traffic on the same engine counts too. Ollama and LM Studio have no counter and show **client only**.
+
+**Concurrent-window aggregate + estimated flag (#40).** Every Showcase aggregate, per-Spark and fleet, uses the same definition as DecodeBench's aggregate (`agg_concurrent_window`): Σ decode tokens (completion tokens − 1 per stream) of the streams that ran together / (max t_last − min t_first). It is computed per lane (the tile hero), per engine (`serverEngine`, else the lane's backend) and fleet-wide (the metrics strip), live while the run streams and final afterwards; errored and cancelled streams do not count. It is not a sum of per-stream rates, so lanes or terminals that start late or finish early pull it down. **Peak** is the highest value of that aggregate seen during the run, sampled at most every 100 ms once the window spans ≥ 1 s (the final value always counts); a peak taken from live samples is shown as `peak ≈N` (`peakEstimated`), because live counts are estimates. When an engine sends no `usage.completion_tokens`, tokens are estimated at ~4 chars/token and flagged `estimated` in the data (per stream, lane, engine, fleet and history row) and in the UI (`≈ est.` on the aggregate, tiles and history, `est.` on terminals); live counts are always estimates until usage arrives. Bench rows use `herd.showcase.agg_window.v1` (comparable with DecodeBench) only when every counted token came from usage; otherwise `herd.showcase.agg_window_estimated.v1` with `approximate: true`. Runs archived before #40 keep the old sum-of-rates figure.
+
+Spark lanes go over the LAN, falling back to an SSH tunnel; agent lanes go over the LAN and, for nodes registered with `protocol: "ssh"`, fall back to an SSH tunnel. Each finished lane writes one bench result (bench `Showcase`, suite `herd.showcase.fleet`, `settings.source: "showcase"`) and the session is kept in a short history (`config/fleet-showcase-history.json`, last 10 runs). One fleet session runs at a time, and it refuses Sparks that are running a decode / prefill bench or a per-Spark showcase (and vice versa).
+
+- `GET /api/fleet/showcase/targets` — selectable lanes (`laneId` = `spark:<id>:<port>` or `node:<id>:<port>`) and limits
+- `POST /api/fleet/showcase` — `{ laneIds, prompts, maxTokens?, temperature?, thinking?, promptType? }` → 202 `{ sessionId }`
+- `GET /api/fleet/showcase/:sessionId?since=<rev>` — live state; with `since`, stream text comes as appends. Poll at least every 5 s or the run is cancelled
+- `DELETE /api/fleet/showcase/:sessionId` — cancel; `GET /api/fleet/showcase` — active run + history; `DELETE /api/fleet/showcase` — clear history
+
 **Tailscale (agent ≥0.3.0).** Each node also reports its own tailnet view as the `tailscale` field on `/telemetry`: hostname, MagicDNS name, Tailscale IP, backend state, and config (socket, state file, conf/env). The install script mounts the tailscale CLI, socket, `/var/lib/tailscale`, and `/etc/tailscale` so the agent can read `tailscale status --json`. Best-effort: a node without tailscaled still boots and reports `tailscale: null` (degraded, not broken).
 
 ---
@@ -372,6 +387,11 @@ sparkDash/
 | PUT | `/api/sparks/order` | Persist tab order |
 | GET | `/api/sparks/:id/metrics` | One-shot metrics snapshot |
 | GET | `/api/fleet-energy` | Estimated fleet watts, rolling energy, coverage, and Wh/output-token |
+| GET | `/api/llm-token-totals` | Fleet LLM token totals (`range=24h\|7d\|30d\|all`): generated / cached / prefill, per model and per endpoint |
+| GET | `/api/llm-token-totals/history` | Hourly (24h) or daily token buckets for a range |
+| DELETE | `/api/llm-token-totals` | Clear the token ledger (`confirm=delete-token-totals`) |
+| GET | `/api/events` | Activity log, newest first (`limit` ≤2000, `sparkId`, `sinceId`, `beforeId`, `type` comma list with `prefix.` matching, `severity`); new events are also pushed over `/ws` as `{ "type": "event", "event": … }` |
+| DELETE | `/api/events` | Clear the activity log (`olderThanMs` keeps anything newer) |
 | POST | `/api/sparks/test` | Ephemeral SSH + LLM (+ Comfy if enabled) test (no persist) |
 | POST | `/api/sparks/:id/test` | Connectivity test (can save password) |
 | POST | `/api/sparks/:id/comfy/cancel` | Cancel ComfyUI job by `promptId` |
@@ -385,20 +405,37 @@ sparkDash/
 | GET | `/api/sparks/:id/llm/daily` | Daily busy decode/prefill tok/s (`port`, `days`) |
 | POST | `/api/sparks/:id/llm/bench` | Start decode benchmark (202); poll/cancel/clear on the same path |
 | POST | `/api/sparks/:id/llm/prefill-bench` | Start prefill + TTFT context sweep (202); poll/cancel/clear on the same path |
+| POST | `/api/fleet/showcase` | Start a fleet-wide Prompt Showcase over Spark and agent lanes (202); targets, poll, cancel, history under `/api/fleet/showcase` |
 | GET | `/api/settings` | Global settings |
 | PUT | `/api/settings` | Update global settings |
 | WS | `/ws` | Real-time metrics stream |
 
 There is no application authentication on the HTTP/WebSocket API. sparkDash therefore binds to loopback and refuses direct LAN binding. Use an SSH tunnel, authenticated TLS reverse proxy, or Tailscale Serve; see [Remote access](./docs/REMOTE-ACCESS.md).
 
-`/api/fleet-energy` samples the configured fleet independently every two seconds. It estimates
-each node as GPU board draw + a CPU utilization model (5.2–65 W) + 23 W of memory/network/base
-overhead, clamped to the DGX Spark power envelope. Current and hourly fleet watts require fresh,
-simultaneous telemetry from every node; coverage fields make gaps explicit. Minute buckets are
-persisted at mode `0600` for rolling 24-hour and 31-day windows. Wh/output-token is reported when
-exactly one configured node has role `head` and exposes a monotonic LLM output-token counter.
-These values are estimates, not wall-meter measurements. Restart sparkDash after changing fleet
-membership so the persisted series has one stable node set.
+`/api/fleet-energy` samples every SSH Spark and every agent node independently every two seconds
+(see [docs/specs/fleet-energy.md](./docs/specs/fleet-energy.md)). GB10 Sparks keep the calibrated
+estimate (GPU board draw + a 5.2–65 W CPU model + 23 W base, clamped to 240 W). Other hosts sum
+measured GPU power (nvidia-smi across every GPU, or AMD hwmon), CPU package power (RAPL, else a
+power sensor, else a TDP model) and a configurable idle baseline. A machine registered both as a
+Spark and as an agent node is counted once. Current and hourly watts sum the hosts that report;
+coverage fields (hosts reporting, share from sensors, 24-hour host-time) make gaps explicit. Minute
+buckets are persisted at mode `0600` for rolling 24-hour and 31-day windows; membership changes
+re-scope live. Wh/output-token is reported when exactly one node has role `head`, exposes a
+monotonic output-token counter and every host reported; otherwise the line is hidden. A cost
+estimate uses the configured electricity price. These values are estimates, not wall-meter
+measurements.
+
+`/api/llm-token-totals` is the fleet token ledger (FLEET3). Every 15 s it reads the cumulative
+generated / prompt / cached token counters of each LLM endpoint (`nodeId:port`): SSH Spark ports
+from the LLM probe, agent nodes from engine counters (agent 0.4+) or, where an engine has none, the
+agent's opt-in usage relay (agent 0.5+, `LLM_PROXY`). Deltas are credited to the model running at
+that moment; prefill = prompt − cached. A counter that goes backwards (engine restart) or changes
+source re-seeds without crediting. Hourly buckets (72 h), daily UTC buckets (35 days) and all-time
+totals per endpoint and model are persisted in `config/llm-token-totals.json` (mode `0600`,
+`LLM_TOKEN_TOTALS_JSON_PATH`), with counter baselines, so tokens produced while the dashboard was
+down (up to 24 h) are still counted once. An agent node on a Spark's LAN IP and port is counted
+under the Spark. When the ledger has tokens, the Fleet energy Wh/output-token figure uses its 24 h
+generated total instead of the single head Spark.
 
 ---
 
@@ -415,6 +452,10 @@ Gear icon in the header, or `GET`/`PUT` `/api/settings`:
 | Auto-hide offline | false | Hide offline Sparks on Overview |
 | Hide worker nodes | false | Hide Worker-role Sparks from Overview and the tab bar |
 | Temperature unit | Celsius | Display GPU temperature in °C or °F |
+| Show Fleet energy | true | Fleet tab energy card (Sparks + agent nodes) |
+| Electricity price | 0.17 /kWh | Cost estimate on the energy card; `0` hides cost (`electricityPricePerKwh`) |
+| Currency | USD | ISO 4217 code for the cost estimate (`electricityCurrency`) |
+| Idle baseline | 40 W | Added to non-GB10 hosts for board/fans/disks (`energyIdleBaselineW`; per host: `energyHostBaselines: { "<id>": W }`) |
 | Benchmark share image | true | Decode/prefill **Copy results** becomes a split button: the label copies the text summary, the caret offers **Copy as text** / **Copy as image** on hover or click. Turn it off to keep the plain button. The image copies where the page has an image clipboard (HTTPS or localhost); over plain http on a LAN IP the card downloads instead |
 
 ### Environment variables
@@ -448,6 +489,8 @@ Copy `.env.example` to `.env` if needed:
 | `SSH_IDENTITY_FILE` | _(unset)_ | Path **inside the process** to a private key (`ssh -i`). Use when the bind-mount is not a default OpenSSH name. |
 | `SSH_CONTROL_PERSIST_SECONDS` | `60` | Reuse authenticated SSH transports for remote collectors. Set to `0` to disable multiplexing. |
 | `FLEET_ENERGY_JSON_PATH` | `config/fleet-energy.json` | Rolling fleet-energy persistence path |
+| `LLM_TOKEN_TOTALS_JSON_PATH` | `config/llm-token-totals.json` | LLM token ledger persistence path |
+| `FLEET_SHOWCASE_HISTORY_PATH` | `config/fleet-showcase-history.json` | Fleet Prompt Showcase history (last 10 runs) |
 
 > The listener and both Compose files default to `127.0.0.1`. Existing Docker users who opened
 > `http://<host-ip>:5555` must migrate to an SSH tunnel, authenticated reverse proxy, Tailscale
@@ -545,6 +588,26 @@ Each configured LLM port gets its own `LlmProbe` instance running in parallel. P
 - **EXL3** (ExLlamaV3 `tools/serve_openai.py`) — `/v1/models` (`owned_by: exl3`) or `/health` `{ok, busy}`; live tok/s from `/health` cumulative counters
 - **q27** (signalnine/q27 engine) — `/v1/models` (`owned_by: q27`) or Prometheus `q27_*` series; live tok/s from `q27_*_processed` counter diffs (completion-based totals as fallback), exact computed-only prefill with the cached/uncached split doubling as the prefix-cache hit rate, TTFT/E2E/ITL p95 histograms, and constant-0 preemptions (FIFO admission, no wait queue)
 - **vLLM / sglang** — `/v1/models`; sglang via `/server_info` (`last_gen_throughput` when metrics off; `/get_server_info` fallback), vLLM via Prometheus `/metrics` counters (scientific notation supported)
+- **TensorFold** — `owned_by: tensorfold`; CUDA `/health` JSON totals or the native build's `tensorfold:*` Prometheus series; decode from finished + running generation, computed-only prefill over a one-minute finished-request window
+- **FreeToken** — `owned_by: FreeToken` or `/v1/stats`; the engine's own 5 s decode/prefill tok/s, token totals and KV pages (p95 is end-to-end, not TTFT)
+- **Strata** — `/health` `service: "strata"` (read before `/slots`); JSON `/metrics` live tok/s, active-slot fallback marked approximate, lifetime totals
+- **Locals** — `owned_by: locals`; `/stats` per-engine counters (a restart re-seeds instead of producing a negative rate)
+- **Splash** — `owned_by: splash` or `splash_*` series; counter deltas (the lifetime `*_tokens_per_second` gauges are ignored)
+- **LM Studio / Ollama** — `/api/v0/models` (checked before the SGLang/vLLM heuristics, since LM Studio answers every path) / `/api/tags` + `/api/ps`; loaded model and context only — passive tok/s is `null`, not 0
+- **TabbyAPI** — `owned_by: tabbyAPI`, label only
+
+Every snapshot also carries `totalPromptTokens` / `totalCachedTokens` (null when the engine does not expose them), engine-native decode/prefill tok/s and mean queue time on vLLM and SGLang (formulas from hasso5703's MIT-licensed dashboard), and `valueSources`: the source tier (`counter` / `native` / `proxy` / `client`), window and approximate flag of each non-null value. Unmeasured values are `null`, never 0.
+
+#### Normalized engine metrics
+
+`normalized` holds one record per rolling window (`"60"` and `"300"` seconds) with the same fields for every engine: `decode_tps`, `prefill_tps`, `ttft_s`, `queue_s`, `running`, `waiting`, `kv_pct`, `cache_reuse`, `acc_len`, `idle_share`, `throughput_tps`. Each value is `{ value, valid, source, windowS, approximate, samples }`:
+
+- **vLLM / SGLang** — differences of the engine's own counters between the oldest and newest read in the window (Hasso's Window(300 s) formulas): decode = decode tokens after the first over decode time, prefill = computed prefill tokens over prefill time, TTFT and queue = mean of requests in the window, cache hit = Δcached / Δprompt, acceptance length, SGLang idle share, throughput = Δgenerated / covered time.
+- **Other engines** — the busy-time-weighted mean of the probe's per-poll rates (idle polls left out), marked `approximate`.
+- **Levels** (`running`, `waiting`, `kv_pct`) are the newest reading (`windowS: 0`) with the window's `peak`.
+- A counter that goes backwards (engine restart) or a different engine/model on the port starts the window again (`resets`). Unmeasured values are `null` with `valid: false`; speeds are `null` while idle, throughput is a measured 0.
+
+Fleet node agents (0.4+) export each engine's raw cumulative counters as `llm[].engineCounters` (vLLM, SGLang, ds4, q27, TensorFold, Splash, llama.cpp, Strata, EXL3, FreeToken, Locals), stamped with the agent's monotonic clock in `llm[].engineCountersMeta`; the dashboard server windows them per node and port and adds `llm[].normalized` to the snapshot. For engines without counters (Ollama, LM Studio, TabbyAPI), set `LLM_PROXY="<listen>:<engine port>"` on the node agent (0.5+) and point clients at the listen port: the agent relays requests unchanged and meters per-request tokens, TTFT and decode time, shown with the `proxy` source tier wherever engine counters have no value. The Spark LLM panel shows the grid with a 1 min / 5 min toggle; Fleet node cards show decode · TTFT · KV under each running model, with the source tier.
 
 Rates are derived from per-probe cumulative counter diffs (or SGLang sticky throughput while it moves). Multiple ports can be added or removed at runtime without restarting the monitor.
 

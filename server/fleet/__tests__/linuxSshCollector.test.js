@@ -334,3 +334,12 @@ test("LINUX_SAMPLE_CMD covers the nonstandard-kernel glob (/sys/cl*ss/) and ends
   assert.ok(LINUX_SAMPLE_CMD.includes("/sys/cl*ss/powercap/intel-rapl:"));
   assert.ok(LINUX_SAMPLE_CMD.includes("echo '===END==='"));
 });
+
+test("cpu.drawSource marks a RAPL delta as measured, and only then (issue #33)", () => {
+  const withRapl = parseLinuxSample(HAPPY, {}, 1000);
+  assert.equal(withRapl.cpu.draw, 25);
+  assert.equal(withRapl.cpu.drawSource, "rapl");
+  const noRapl = parseLinuxSample(HAPPY.replace(/===RAPL===\n100000000\n112500000\n/, "===RAPL===\n"), {}, 1000);
+  assert.equal(noRapl.cpu.draw, 0);
+  assert.equal(noRapl.cpu.drawSource, undefined);
+});

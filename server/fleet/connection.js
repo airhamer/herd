@@ -24,6 +24,8 @@
  * containers, versions, services, memory, requests, topology, polledAt).
  */
 
+import { createFleetEngineWindows } from "./engineWindows.js";
+
 const POLL_INTERVAL_DEFAULT_MS = 2000;
 const TIMEOUT_DEFAULT_MS = 5000;
 
@@ -82,6 +84,8 @@ export function createFleetConnection(nodes, opts = {}) {
 
   /** @type {Map<string, NodeAgentSnapshot>} nodeId -> last good snapshot */
   const snapshots = new Map();
+  /** STAT2 (#35): windowed, normalized engine metrics per node and LLM port. */
+  const engineWindows = createFleetEngineWindows();
   /** @type {Map<string, "online" | "offline">} nodeId -> last known status */
   const status = new Map();
   /** @type {Set<(nodeId: string, snapshot: NodeAgentSnapshot) => void>} */
@@ -171,8 +175,9 @@ export function createFleetConnection(nodes, opts = {}) {
       const node = records[i];
       const r = results[i];
       if (r.status === "fulfilled" && r.value.ok) {
-        snapshots.set(node.id, r.value.snapshot);
-        _emitSnapshot(node.id, r.value.snapshot);
+        const snap = engineWindows.annotate(node.id, r.value.snapshot);
+        snapshots.set(node.id, snap);
+        _emitSnapshot(node.id, snap);
         _setStatus(node.id, "online");
       } else {
         // Graceful degradation: keep the last snapshot, mark offline.

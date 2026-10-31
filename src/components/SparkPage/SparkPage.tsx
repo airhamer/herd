@@ -264,7 +264,7 @@ export function SparkPage({
                   disabledInterfaces={disabledInterfaces}
                   onDisabledChange={setDisabledInterfaces}
                 />
-                {metrics.roce ? <RocePanel roce={metrics.roce} /> : null}
+                <RocePanel roce={metrics.roce} />
                 <StoragePanel
                   storage={metrics.storage}
                   sparkId={spark.id}
@@ -300,7 +300,7 @@ export function SparkPage({
                   disabledInterfaces={disabledInterfaces}
                   onDisabledChange={setDisabledInterfaces}
                 />
-                {metrics.roce ? <RocePanel roce={metrics.roce} /> : null}
+                <RocePanel roce={metrics.roce} />
                 {tailscaleOn && <TailscalePanel tailscale={metrics.tailscale ?? null} />}
               </>
             )}

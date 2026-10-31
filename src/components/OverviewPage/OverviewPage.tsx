@@ -6,10 +6,9 @@ import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { MetricBar } from "../ui/MetricBar";
 import { MemoryPoolBar } from "../ui/MemoryPoolBar";
 import { gpuHolderLabel, memoryPool } from "../../lib/memoryPool";
+import { formatTps, llmBackendLabel } from "../../lib/llmBackend";
 import { HealthChips } from "../ui/HealthFindings";
 import { Tag } from "../ui/Tag";
-import { FleetEnergyCard } from "./FleetEnergyCard";
-import { MonthlyEnergy } from "./MonthlyEnergy";
 import { FleetAlertStrip } from "./FleetAlertStrip";
 import { ActivityIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
 
@@ -17,7 +16,6 @@ interface OverviewPageProps {
   sparks: SparkSnapshot[];
   hideOffline?: boolean;
   hideWorkers?: boolean;
-  showFleetEnergy?: boolean;
   showFleetExceptions?: boolean;
   /** Alert notifications on: the exceptions strip lists `serverAlerts` instead of deriving its own. */
   alertsEnabled?: boolean;
@@ -221,11 +219,9 @@ function SparkCard({
                   : "Comfy · idle"}
           </span>
         ) : null}
-        {online && gpu?.throttle?.clockCapMHz != null ? (
-          <Tag title="GPU clock locked with nvidia-smi -lgc">
-            Cap {(gpu.throttle.clockCapMHz / 1000).toFixed(1)} GHz
-          </Tag>
-        ) : null}
+        {online && typeof gpu?.throttle?.clockCapMHz === "number" && (
+          <Tag title="GPU clock locked with nvidia-smi -lgc">{`Cap ${(gpu.throttle.clockCapMHz / 1000).toFixed(1)} GHz`}</Tag>
+        )}
         <span className="text-[10px] uppercase tracking-wide text-muted">
           {online ? "online" : "offline"}
         </span>
@@ -379,19 +375,7 @@ function SparkCard({
               if (!llm) return null;
               return (
                 <MiniStat
-                  label={
-                    llm.backend === "vllm"
-                      ? "vLLM"
-                      : llm.backend === "ds4"
-                        ? "ds4"
-                        : llm.backend === "sglang"
-                          ? "sgLang"
-                          : llm.backend === "exl3"
-                            ? "EXL3"
-                            : llm.backend === "q27"
-                              ? "q27"
-                              : llm.backend ?? "LLM"
-                  }
+                  label={llmBackendLabel(llm.backend)}
                   value={llm.modelId ?? "unknown"}
                   tone="accent"
                   title={llm.modelId ?? undefined}
@@ -411,13 +395,13 @@ function SparkCard({
               <div className="mt-3.5 grid grid-cols-2 gap-2 border-t border-border pt-3">
                 <div className="text-center">
                   <span className="font-tabular text-[28px] font-bold leading-none text-text-strong">
-                    {llm.generationTps.toFixed(0)}
+                    {formatTps(llm.generationTps, 0)}
                   </span>
                   <span className="text-sm font-normal text-muted"> tok/s</span>
                 </div>
                 <div className="border-l border-border text-center">
                   <span className="font-tabular text-[28px] font-bold leading-none text-text-strong">
-                    {llm.prefillTps.toFixed(0)}
+                    {formatTps(llm.prefillTps, 0)}
                   </span>
                   <span className="text-sm font-normal text-muted"> prefill</span>
                 </div>
@@ -434,7 +418,6 @@ export function OverviewPage({
   sparks,
   hideOffline = false,
   hideWorkers = false,
-  showFleetEnergy = false,
   showFleetExceptions = false,
   alertsEnabled = false,
   serverAlerts = null,
@@ -607,12 +590,6 @@ export function OverviewPage({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-overview-rhythm)" }}>
-      {showFleetEnergy ? (
-        <div>
-          <FleetEnergyCard nodeCount={sparks.length} />
-          <MonthlyEnergy />
-        </div>
-      ) : null}
       <FleetAlertStrip
         sparks={sparks}
         onSelect={onSelectSpark}

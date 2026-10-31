@@ -22,6 +22,7 @@ import {
   stripFillForceFields,
 } from "./LlmStreaming.js";
 import { withFillToMaxInstruction } from "../../src/shared/llmPrompts.js";
+import { AggregatePeak, aggregateView, CHARS_PER_TOKEN, concurrentWindow, sampleDue } from "../showcase/aggregate.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -77,6 +78,34 @@ function isTerminalStreamStatus(status) {
  * @param {object} session
  * @param {{ fromHistory?: boolean }} [opts]
  */
+/**
+ * Token count came from the ~4 chars/token estimate (SHOW2, #40): always
+ * while streaming, and at the end when the engine sent no usage.
+ */
+function streamEstimated(s) {
+  if (typeof s.estimated === "boolean" && !("_tFirst" in s)) return s.estimated; // archived
+  return (s.tokenCount || 0) > 0 && s.tokenSource !== "usage";
+}
+
+/**
+ * Concurrent-window aggregate of a live session's streams, with its peak.
+ * Archived records keep the value settled at archive time.
+ */
+function sessionAggregate(session) {
+  const streams = session.streams || [];
+  if (!streams.some((s) => "_tFirst" in s)) return session.aggregate ?? null;
+  const win = concurrentWindow(
+    streams.map((s) => ({
+      tFirst: s._tFirst,
+      tLast: s._tLast,
+      tokens: s.tokenCount,
+      estimated: streamEstimated(s),
+      status: s.status,
+    }))
+  );
+  return aggregateView(win, session._aggPeak);
+}
+
 function publicSessionRecord(session, opts = {}) {
   const streams = (session.streams || []).map((s) => ({
     streamId: s.streamId,
@@ -88,6 +117,8 @@ function publicSessionRecord(session, opts = {}) {
     contentLength: s.contentLength ?? (s.content || "").length,
     reasoningLength: s.reasoningLength ?? (s.reasoning || "").length,
     tokenCount: s.tokenCount || 0,
+    tokenSource: s.tokenSource ?? null,
+    estimated: streamEstimated(s),
     ttftMs: s.ttftMs ?? null,
     decodeTps: s.decodeTps || 0,
     liveTokPerSec: s.liveTokPerSec || s.decodeTps || 0,
@@ -126,6 +157,7 @@ function publicSessionRecord(session, opts = {}) {
     totalTokens,
     meanDecodeTps,
     peakStreamTps,
+    aggregate: sessionAggregate(session),
     streamCount: streams.length,
     streams,
     error: session.error ?? null,
@@ -152,6 +184,10 @@ function historySummary(record) {
     totalTokens: record.totalTokens ?? 0,
     meanDecodeTps: record.meanDecodeTps ?? 0,
     peakStreamTps: record.peakStreamTps ?? 0,
+    aggregateTps: record.aggregate?.tps ?? null,
+    aggregatePeakTps: record.aggregate?.peakTps ?? null,
+    aggregatePeakEstimated: Boolean(record.aggregate?.peakEstimated),
+    aggregateEstimated: Boolean(record.aggregate?.estimated),
     streamCount: record.streamCount ?? record.streams?.length ?? 0,
     error: record.error ?? null,
   };
@@ -212,8 +248,39 @@ export class ShowcaseManager {
    * Archive a finished live session (idempotent by sessionId).
    * @param {object} session
    */
+  /**
+   * Receive lifecycle notices (issue #32): `fn(session)` with a summary
+   * when a run starts and once when it settles. Pass null to detach.
+   * @param {((session: object) => void) | null} fn
+   */
+  setEventSink(fn) {
+    this._eventSink = typeof fn === "function" ? fn : null;
+  }
+
+  _emitLifecycle(session) {
+    if (!this._eventSink) return;
+    try {
+      this._eventSink({
+        sessionId: session.sessionId,
+        sparkId: session.sparkId,
+        status: session.status,
+        modelId: session.modelId ?? null,
+        port: session.port ?? null,
+        streams: session.streams,
+        error: session.error ?? null,
+      });
+    } catch {
+      /* a sink failure must not affect the run */
+    }
+  }
+
   _archiveSession(session) {
     if (!session || session.status === "running") return;
+    if (!session._settledNotified) {
+      session._settledNotified = true;
+      this._emitLifecycle(session);
+    }
+    this._sampleAggregate(session, true);
     const record = publicSessionRecord(session, { fromHistory: true });
     const list = this.historyBySpark.get(session.sparkId) || [];
     const next = [
@@ -410,6 +477,8 @@ export class ShowcaseManager {
       reasoningLength: 0,
       contentCapped: false,
       tokenCount: 0,
+      /** "usage" | "estimate" once settled (SHOW2) */
+      tokenSource: null,
       ttftMs: null,
       decodeTps: 0,
       liveTokPerSec: 0,
@@ -452,6 +521,7 @@ export class ShowcaseManager {
 
     this.sessions.set(sessionId, session);
     this.activeBySpark.set(sparkId, sessionId);
+    this._emitLifecycle(session);
 
     this._runSession(session).catch(() => {
       /* errors recorded on session */
@@ -514,6 +584,8 @@ export class ShowcaseManager {
         reasoningLength: s.reasoningLength,
         resetContent: Boolean(resetContent),
         tokenCount: s.tokenCount,
+        tokenSource: s.tokenSource ?? null,
+        estimated: streamEstimated(s),
         ttftMs: s.ttftMs,
         decodeTps: s.decodeTps,
         liveTokPerSec: s.liveTokPerSec,
@@ -550,6 +622,7 @@ export class ShowcaseManager {
       serverGenerationTps: session.serverGenerationTps,
       serverGenerationTpsMax: session.serverGenerationTpsMax,
       serverGenerationSamples: session.serverGenerationSamples,
+      aggregate: sessionAggregate(session),
       streams,
       error: session.error,
       fromHistory: false,
@@ -593,6 +666,20 @@ export class ShowcaseManager {
     session.rev += 1;
   }
 
+  /**
+   * Feed the session's aggregate peak (throttled while running); `final`
+   * always counts the settled window.
+   */
+  _sampleAggregate(session, final = false) {
+    if (!final && !sampleDue(session, performance.now())) return;
+    if (!session._aggPeak) session._aggPeak = new AggregatePeak();
+    const view = sessionAggregate(session);
+    if (!view) return;
+    const win = { tps: view.tps, windowMs: view.windowMs, estimated: view.estimated };
+    if (final) session._aggPeak.final(win);
+    else session._aggPeak.observe(win);
+  }
+
   _updateLiveMetrics(stream, info) {
     const now = performance.now();
     if (info?.tFirst != null) stream._tFirst = info.tFirst;
@@ -605,7 +692,7 @@ export class ShowcaseManager {
     const chars =
       (stream.content?.length || 0) + (stream.reasoning?.length || 0);
     if (chars > 0) {
-      const fromChars = Math.max(1, Math.round(chars / 4));
+      const fromChars = Math.max(1, Math.round(chars / CHARS_PER_TOKEN));
       stream.tokenCount = Math.max(stream.tokenCount || 0, fromChars);
     }
 
@@ -734,6 +821,7 @@ export class ShowcaseManager {
             reasoning: info?.reasoning,
           });
           this._updateLiveMetrics(stream, info);
+          this._sampleAggregate(session);
           this._bumpRev(session);
         },
       })
@@ -761,6 +849,7 @@ export class ShowcaseManager {
                     reasoning: info?.reasoning,
                   });
                   this._updateLiveMetrics(stream, info);
+                  this._sampleAggregate(session);
                   this._bumpRev(session);
                 },
               }
@@ -779,6 +868,9 @@ export class ShowcaseManager {
           }
 
           stream.tokenCount = result.completionTokens ?? stream.tokenCount;
+          stream.tokenSource = result.tokenSource ?? (stream.tokenCount > 0 ? "estimate" : null);
+          if (result.tFirst != null) stream._tFirst = result.tFirst;
+          if (result.tLast != null) stream._tLast = result.tLast;
           stream.ttftMs =
             result.ttftMs != null && result.ttftMs > 0
               ? result.ttftMs

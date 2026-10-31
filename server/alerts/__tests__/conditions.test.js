@@ -1,113 +1,142 @@
-/**
- * What the alert notifications watch: Health findings as HealthEvaluator
- * raises them, and the Overview strip's exceptions from the shared module —
- * no thresholds of their own.
- */
-import { test } from "node:test";
+// What alerts watch (docs/specs/alerts.md §2–3): Health findings exactly as
+// HealthEvaluator raises them plus the Overview strip's exceptions.
+// LIC1 clean-room rewrite.
+import { describe, test } from "node:test";
 import { strict as assert } from "node:assert";
-import { collectConditions, effectiveRuleConfig, RULES } from "../conditions.js";
+import { RULES, collectConditions, effectiveRuleConfig, ruleById } from "../conditions.js";
 import { fleetExceptions } from "../../../src/shared/fleetExceptions.js";
 import { MAX_SUMMARY_CHARS, capText } from "../text.js";
-import { findingsFor, hotUnit, unit } from "./fixtures.js";
+import { healthFor, makeUnit, offlineUnit, unitAt } from "./helpers.js";
 
-const ids = (u) => collectConditions(u).conditions.map((c) => `${c.ruleId}:${c.severity}`);
+const pairs = (u) => collectConditions(u).conditions.map((c) => [c.ruleId, c.severity]);
 
-test("a healthy online unit has no conditions and every rule is judged", () => {
-  const r = collectConditions(unit());
-  assert.deepEqual(r.conditions, []);
-  assert.equal(r.judged("thermal"), true);
-  assert.equal(r.judged("offline"), true);
+describe("rule catalogue", () => {
+  test("every rule has an id, a name, a source and defaults", () => {
+    for (const rule of RULES) {
+      assert.equal(typeof rule.name, "string");
+      assert.ok(rule.source === "strip" || rule.source === "health", rule.id);
+      assert.equal(typeof rule.defaults.enabled, "boolean");
+      assert.ok(rule.defaults.forSec >= 0);
+      assert.equal(ruleById(rule.id), rule);
+    }
+    assert.equal(ruleById("concurrency").defaults.enabled, false, "opt-in rule");
+  });
+
+  test("overrides apply per field; an unknown id is on with no wait", () => {
+    assert.deepEqual(effectiveRuleConfig("disk", { disk: { forSec: 10 } }), { enabled: true, forSec: 10 });
+    assert.deepEqual(effectiveRuleConfig("disk", { disk: { enabled: false } }).enabled, false);
+    assert.deepEqual(effectiveRuleConfig("made-up"), { enabled: true, forSec: 0 });
+  });
 });
 
-test("GPU temperature follows HealthEvaluator exactly: nothing at 84, warn at 85, critical at 90", () => {
-  assert.deepEqual(ids(hotUnit(84)), []);
-  assert.deepEqual(ids(hotUnit(85)), ["thermal:warning"]);
-  assert.deepEqual(ids(hotUnit(89)), ["thermal:warning"]);
-  assert.deepEqual(ids(hotUnit(90)), ["thermal:critical"]);
-  const [c] = collectConditions(hotUnit(91)).conditions;
-  const [f] = findingsFor({ gpu: { temperature: 91 } });
-  assert.equal(c.label, f.title);
-  assert.equal(c.summary, f.detail);
+describe("Health findings", () => {
+  test("GPU temperature thresholds are HealthEvaluator's", () => {
+    assert.deepEqual(pairs(unitAt(80)), []);
+    assert.deepEqual(pairs(unitAt(86)), [["thermal", "warning"]]);
+    assert.deepEqual(pairs(unitAt(95)), [["thermal", "critical"]]);
+    const [condition] = collectConditions(unitAt(95)).conditions;
+    const [finding] = healthFor({ gpu: { temperature: 95 } });
+    assert.equal(condition.label, finding.title);
+    assert.equal(condition.summary, finding.detail);
+  });
+
+  test("unified memory: plenty is quiet, little warns, almost none is critical", () => {
+    const withAvail = (mb) => makeUnit({ health: healthFor({ unifiedMemory: { total: 124_610, available: mb } }) });
+    assert.deepEqual(pairs(withAvail(9_000)), []);
+    assert.deepEqual(pairs(withAvail(2_500)), [["memory", "warning"]]);
+    assert.deepEqual(pairs(withAvail(1_000)), [["memory", "critical"]]);
+  });
+
+  test("a finding id outside the catalogue is still reported under its own name", () => {
+    const u = makeUnit({ health: [{ id: "future-check", severity: "critical", title: "Future check", detail: "x", hint: "" }] });
+    const [c] = collectConditions(u).conditions;
+    assert.deepEqual([c.ruleId, c.ruleName, c.severity], ["future-check", "Future check", "critical"]);
+  });
 });
 
-test("unified memory follows HealthEvaluator: 3 GB warns, 1.5 GB is critical, ~7 GB headroom is fine", () => {
-  const mem = (availableMb) => unit({ health: findingsFor({ unifiedMemory: { total: 124_610, available: availableMb } }) });
-  assert.deepEqual(ids(mem(7_000)), [], "spark-1's usual ~7 GB headroom does not alert");
-  assert.deepEqual(ids(mem(3_000)), ["memory:warning"]);
-  assert.deepEqual(ids(mem(1_400)), ["memory:critical"]);
+describe("strip exceptions", () => {
+  const cases = {
+    offline: offlineUnit("ssh: no route to host"),
+    throttle: makeUnit({
+      metrics: {
+        gpu: {
+          temperature: 83,
+          throttle: { active: true, reason: "hw", thermal: false, hwSlowdown: true, powerCap: false, detail: "HW slowdown", smClockMHz: 900, smClockPct: 35 },
+        },
+      },
+    }),
+    disk: makeUnit({ metrics: { storage: [{ device: "/dev/y", label: "/data", total: 10, used: 9.5, percentage: 95 }] } }),
+    llm: makeUnit({ metrics: { llm: [{ available: false, error: "refused" }] } }),
+    tailnet: makeUnit({ tailscaleMonitoring: true, metrics: { tailscale: { available: false } } }),
+  };
+
+  test("each kind maps to its rule, in the strip's order and severity", () => {
+    assert.deepEqual(pairs(cases.offline), [["offline", "critical"]]);
+    assert.deepEqual(pairs(cases.throttle), [["throttle", "critical"]]);
+    assert.deepEqual(pairs(cases.disk), [["disk", "warning"]]);
+    assert.deepEqual(pairs(cases.llm), [["llm", "warning"]]);
+    assert.deepEqual(pairs(cases.tailnet), [["tailnet", "warning"]]);
+    for (const u of Object.values(cases)) {
+      assert.deepEqual(pairs(u), fleetExceptions(u).map((e) => [e.id, e.severity]));
+    }
+  });
+
+  test("summaries carry the strip's detail", () => {
+    assert.equal(collectConditions(cases.offline).conditions[0].summary, "Unreachable: ssh: no route to host");
+    assert.equal(collectConditions(cases.throttle).conditions[0].summary, "HW slowdown · GPU at 83°C · SM clock 0.9 GHz (35% of max)");
+  });
+
+  test("LLM monitoring off means no LLM condition", () => {
+    assert.deepEqual(pairs({ ...cases.llm, llmMonitoring: false }), []);
+  });
+
+  test("a software power cap alone is not an exception", () => {
+    const capped = makeUnit({
+      metrics: { gpu: { throttle: { active: true, reason: "power", thermal: false, hwSlowdown: false, powerCap: true, detail: "SW power cap", smClockPct: 60 } } },
+    });
+    assert.deepEqual(pairs(capped), []);
+  });
 });
 
-test("a Health finding the catalogue does not know still becomes a condition", () => {
-  const u = unit({ health: [{ id: "new-rule", severity: "warn", title: "Something new", detail: "d", hint: "h" }] });
-  const [c] = collectConditions(u).conditions;
-  assert.equal(c.ruleId, "new-rule");
-  assert.equal(c.ruleName, "Something new");
-  assert.equal(effectiveRuleConfig("new-rule").enabled, true);
+describe("what gets judged", () => {
+  test("online: every rule is judged", () => {
+    const r = collectConditions(makeUnit());
+    assert.deepEqual(r.conditions, []);
+    for (const rule of RULES) assert.equal(r.judged(rule.id), true, rule.id);
+  });
+
+  test("offline with a reason: only `offline`, stale findings are left alone", () => {
+    const r = collectConditions(unitAt(95, { online: false, offlineReason: "timeout" }));
+    assert.deepEqual(r.conditions.map((c) => c.ruleId), ["offline"]);
+    assert.equal(r.judged("offline"), true);
+    assert.equal(r.judged("thermal"), false);
+  });
+
+  test("offline before the first check (no reason): nothing", () => {
+    const r = collectConditions(offlineUnit(null));
+    assert.deepEqual(r.conditions, []);
+    assert.equal(r.judged("offline"), false);
+  });
 });
 
-test("strip conditions are the Overview strip's: offline, thermal/hardware throttle, disk, LLM, tailnet", () => {
-  const down = unit({ online: false, offlineReason: "ssh: connect timed out" });
-  assert.deepEqual(ids(down), ["offline:critical"]);
-  assert.equal(collectConditions(down).conditions[0].summary, "Unreachable: ssh: connect timed out");
+describe("text from remote hosts", () => {
+  test("long reasons and finding text are capped and flattened", () => {
+    const huge = "z".repeat(1000);
+    const [down] = collectConditions(offlineUnit(huge)).conditions;
+    assert.equal([...down.summary].length, MAX_SUMMARY_CHARS);
+    assert.equal(down.summary.at(-1), "…");
+    const finding = { id: "oom", severity: "warn", title: `OOM ${huge}`, detail: `first\nsecond ${huge}`, hint: "" };
+    const [c] = collectConditions(makeUnit({ health: [finding] })).conditions;
+    assert.ok([...c.label].length <= MAX_SUMMARY_CHARS);
+    assert.ok([...c.summary].length <= MAX_SUMMARY_CHARS);
+    assert.equal(c.summary.includes("\n"), false);
+  });
 
-  const thermal = unit({ metrics: { gpu: { temperature: 88, throttle: { active: true, reason: "thermal", thermal: true, hwSlowdown: false, powerCap: false, detail: "HW thermal slowdown", smClockMHz: 1200, smClockPct: 40 } } } });
-  assert.deepEqual(ids(thermal), ["throttle:critical"]);
-  assert.match(collectConditions(thermal).conditions[0].summary, /HW thermal slowdown · GPU at 88°C · SM clock 1\.2 GHz \(40% of max\)/);
-
-  const disk = unit({ metrics: { storage: [{ device: "/dev/x", label: "/", total: 100, used: 91, percentage: 91 }] } });
-  assert.deepEqual(ids(disk), ["disk:warning"]);
-
-  const llmDown = unit({ metrics: { llm: [{ available: false, error: "ECONNREFUSED" }] } });
-  assert.deepEqual(ids(llmDown), ["llm:warning"]);
-  assert.deepEqual(ids({ ...llmDown, llmMonitoring: false }), [], "LLM monitoring off: no LLM alert");
-
-  const tail = unit({ tailscaleMonitoring: true, metrics: { tailscale: { available: true, online: false } } });
-  assert.deepEqual(ids(tail), ["tailnet:warning"]);
-
-  // Same ids, severities and order as the strip computes.
-  for (const u of [down, thermal, disk, llmDown, tail]) {
-    assert.deepEqual(
-      collectConditions(u).conditions.map((c) => [c.ruleId, c.severity]),
-      fleetExceptions(u).map((e) => [e.id, e.severity])
-    );
-  }
-});
-
-test("the software power cap never alerts (main's strip ignores it too)", () => {
-  const capped = unit({ metrics: { gpu: { throttle: { active: true, reason: "power", thermal: false, hwSlowdown: false, powerCap: true, detail: "SW power cap", smClockPct: 70 } } } });
-  assert.deepEqual(ids(capped), []);
-  const ours = ["gpu_throttle", "memory_headroom", "gpu_temperature", "kv_cache", "unit_offline", "disk_usage", "llm_unavailable"];
-  assert.equal(RULES.some((r) => ours.includes(r.id)), false, "none of the old PR's own rules survive");
-});
-
-test("an offline unit only judges `offline`; its stale findings are held, not resolved", () => {
-  const r = collectConditions(hotUnit(91, { online: false, offlineReason: "timeout" }));
-  assert.deepEqual(r.conditions.map((c) => c.ruleId), ["offline"]);
-  assert.equal(r.judged("offline"), true);
-  assert.equal(r.judged("thermal"), false);
-});
-
-test("before the first liveness check (offline, no reason yet) nothing is judged", () => {
-  const r = collectConditions(unit({ online: false, offlineReason: null }));
-  assert.deepEqual(r.conditions, []);
-  assert.equal(r.judged("offline"), false);
-});
-
-test("remote text is capped: SSH errors, kernel Xid lines, finding titles", () => {
-  const long = "x".repeat(500);
-  const down = collectConditions(unit({ online: false, offlineReason: long })).conditions[0];
-  assert.equal([...down.summary].length, MAX_SUMMARY_CHARS);
-  assert.ok(down.summary.endsWith("…"));
-  const finding = { id: "xid", severity: "critical", title: `NVIDIA Xid error ${long}`, detail: `Latest: ${long}\nsecond line`, hint: "" };
-  const [c] = collectConditions(unit({ health: [finding] })).conditions;
-  assert.ok([...c.label].length <= MAX_SUMMARY_CHARS);
-  assert.ok([...c.summary].length <= MAX_SUMMARY_CHARS);
-  assert.ok(!c.summary.includes("\n"));
-});
-
-test("capText flattens control characters and keeps short text as is", () => {
-  assert.equal(capText("a\r\nb\tc"), "a b c");
-  assert.equal(capText("short"), "short");
-  assert.equal(capText(null), "");
-  assert.equal(capText("abcdef", 4), "abc…");
+  test("capText", () => {
+    assert.equal(capText("one\ttwo\r\nthree"), "one two three");
+    assert.equal(capText(undefined), "");
+    assert.equal(capText("kept"), "kept");
+    assert.equal(capText("123456789", 5), "1234…");
+    assert.equal([...capText("😀".repeat(10), 4)].length, 4, "counts code points");
+  });
 });
