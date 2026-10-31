@@ -17,7 +17,9 @@ import type {
  * server/bench/upgrade/.
  */
 
-const QUALITY_BENCH = "QualityBench";
+/** Benches whose runs are quality (pass vectors), incl. AEON Bench Pod imports (BENCH7). */
+const QUALITY_BENCHES = new Set(["QualityBench", "AEONPodSuite", "AEONPodAgentic"]);
+const isQuality = (r: BenchUpgradeRun) => QUALITY_BENCHES.has(r.bench);
 
 export const VERDICT_LABEL: Record<BenchUpgradeVerdictCode, string> = {
   worth_it: "Worth it",
@@ -48,17 +50,18 @@ export function runLabel(r: BenchUpgradeRun): string {
   const day = r.started_at.slice(0, 16).replace("T", " ");
   const lane = [r.model_id || "unknown model", r.engine, r.engine_version].filter(Boolean).join(" · ");
   const conc = r.concurrencies.length ? ` · c${r.concurrencies.join("/")}` : "";
-  return `${day} · ${r.suite} · ${lane}${conc}`;
+  const src = r.origin === "aeon-pod" ? " · AEON pod" : "";
+  return `${day} · ${r.suite}${src} · ${lane}${conc}`;
 }
 
 /** Newest throughput run as candidate; the next older one with the same suite and hardware as baseline. */
 export function defaultPicks(runs: BenchUpgradeRun[]) {
-  const tput = runs.filter((r) => r.bench !== QUALITY_BENCH);
-  const qual = runs.filter((r) => r.bench === QUALITY_BENCH);
+  const tput = runs.filter((r) => !isQuality(r));
+  const qual = runs.filter(isQuality);
   const cand = tput[0] ?? null;
   const base = cand ? tput.find((r) => r !== cand && r.suite === cand.suite && r.suite_version === cand.suite_version && r.hw_bucket === cand.hw_bucket) ?? null : null;
   const qc = qual[0] ?? null;
-  const qb = qc ? qual.find((r) => r !== qc && r.suite_version === qc.suite_version && r.hw_bucket === qc.hw_bucket) ?? null : null;
+  const qb = qc ? qual.find((r) => r !== qc && r.suite === qc.suite && r.suite_version === qc.suite_version && r.hw_bucket === qc.hw_bucket) ?? null : null;
   return {
     baseline: base?.run_id ?? "",
     candidate: cand?.run_id ?? "",
@@ -243,8 +246,8 @@ export function UpgradeCompareDialog({
   }, [open, baseIds, candIds]);
 
   if (!mounted) return null;
-  const tput = runs.filter((r) => r.bench !== QUALITY_BENCH);
-  const qual = runs.filter((r) => r.bench === QUALITY_BENCH);
+  const tput = runs.filter((r) => !isQuality(r));
+  const qual = runs.filter(isQuality);
   const set = (k: keyof typeof picks) => (v: string) => setPicks((p) => ({ ...p, [k]: v }));
   const v = result?.verdict;
   const energy = result?.cost.energy;

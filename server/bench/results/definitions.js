@@ -292,6 +292,24 @@ const LIST = [
     url: null,
   },
   {
+    name: "aeon.suite_case_mean_score.v1",
+    metric: "accuracy_pct",
+    owner: "AEON",
+    comparable: "aeon_case_mean_score",
+    formula:
+      "AEON Bench Pod text suite (aeon-suite-v4): 100 × mean case score (0–1, partial credit from the case's deterministic checker; Tier-1 cases only with a frontier judge) over the scored cases of the category, or of the run for `overall`. Unscored cases (needs_frontier_judge, errors) are left out. The per-case vector counts score ≥ 0.5 as a pass.",
+    url: "https://github.com/AEON-7/Aeon-Bench-Pod/blob/main/docs/run-a-benchmark.md",
+  },
+  {
+    name: "aeon.agentic_task_mean_score.v1",
+    metric: "accuracy_pct",
+    owner: "AEON",
+    comparable: "aeon_agentic_task_mean_score",
+    formula:
+      "AEON Bench Pod agentic suite (aeon-agentic-v2.5): 100 × mean task score (0–1, the task's checker run in the harness sandbox) over the scored tasks of one harness run (Hermes, OpenClaw or OpenCode). Harnesses differ, so only runs of the same harness compare. The per-task vector counts score ≥ 0.5 as a pass.",
+    url: "https://github.com/AEON-7/Aeon-Bench-Pod/blob/main/docs/run-a-benchmark.md",
+  },
+  {
     name: "reference.accuracy_published.v1",
     metric: "accuracy_pct",
     owner: "reference",

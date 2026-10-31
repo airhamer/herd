@@ -26,7 +26,15 @@ const RUN_ORIGINS = new Set(["herd", "aeon-pod"]);
 const LANE_KEYS = ["model_id", "engine", "engine_version", "image_digest", "weights_hash", "quant", "recipe_flags", "spec_decode", "kv_dtype", "ctx_len"];
 
 /** Benches whose cells are quality categories (McNemar), not throughput. */
-const QUALITY_BENCHES = new Set(["QualityBench"]);
+// AEON Bench Pod text and agentic runs (BENCH7) carry per-case vectors like QualityBench.
+const QUALITY_BENCHES = new Set(["QualityBench", "AEONPodSuite", "AEONPodAgentic"]);
+
+/**
+ * Bench a run pairs under. AEON Bench Pod perf runs are the same aeon-perf-v1
+ * ladder as DecodeBench's AEON protocol, so they pair with DecodeBench runs
+ * (a herd.decode run on the other side is refused on its suite).
+ */
+const pairBench = (rec) => (rec.run.bench === "AEONPodPerf" ? "DecodeBench" : rec.run.bench);
 
 /** Bench order for picking a side's energy figure. */
 const ENERGY_BENCH_ORDER = ["DecodeBench", "Showcase", "PrefillBench", "QualityBench"];
@@ -92,7 +100,7 @@ function collectSide(all, runIds, side) {
     if (!RUN_ORIGINS.has(records[0].run.origin)) {
       throw httpError(400, `${side}: ${runId} is a published reference, not a run (it is shown beside the verdict instead)`);
     }
-    const bench = records[0].run.bench;
+    const bench = pairBench(records[0]);
     if (byBench.has(bench)) throw httpError(400, `${side}: two ${bench} runs (${byBench.get(bench).runId}, ${runId}); pick one per bench`);
     records.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     byBench.set(bench, { runId, records });
@@ -109,7 +117,7 @@ function collectSide(all, runIds, side) {
 function repeatValues(all, rec, metric, otherRunId) {
   const perRun = new Map();
   for (const r of all) {
-    if (!RUN_ORIGINS.has(r.run.origin) || r.run.bench !== rec.run.bench || r.run.run_id === otherRunId) continue;
+    if (!RUN_ORIGINS.has(r.run.origin) || pairBench(r) !== pairBench(rec) || r.run.run_id === otherRunId) continue;
     if (incomparabilityReasons(rec, r).length || !sameLane(rec, r)) continue;
     if (cellOf(r) !== cellOf(rec)) continue;
     const m = r.metrics.find((x) => x.valid && x.metric === metric.metric && definitionsComparable(x.definition, metric.definition));

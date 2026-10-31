@@ -112,6 +112,14 @@ describe("UpgradeCompareDialog", () => {
     expect(runLabel(RUNS[0])).toBe("2026-10-03 12:00 · herd.decode · qwen3-30b · vllm · 0.11.0 · c1/4");
   });
 
+  it("treats AEON Bench Pod text runs as quality runs and pairs them by suite", () => {
+    const pod = (id: string, day: string, over: Partial<BenchUpgradeRun> = {}) =>
+      run(id, { bench: "AEONPodSuite", origin: "aeon-pod", suite: "aeon-suite-v4", suite_version: "7cfb", started_at: `2026-10-${day}T12:00:00.000Z`, ...over });
+    const runs = [pod("aeon-pod:b", "05"), pod("aeon-pod:x", "04", { suite: "aeon-agentic-v2.5", bench: "AEONPodAgentic" }), pod("aeon-pod:a", "02"), run("decode:new"), run("decode:old")];
+    expect(defaultPicks(runs)).toEqual({ baseline: "decode:old", candidate: "decode:new", baselineQuality: "aeon-pod:a", candidateQuality: "aeon-pod:b" });
+    expect(runLabel(runs[0])).toBe("2026-10-05 12:00 · aeon-suite-v4 · AEON pod · qwen3-30b · vllm · c1/4");
+  });
+
   it("shows the verdict, the nearest reference, throughput, quality and cost", async () => {
     listRuns.mockResolvedValue({ total: RUNS.length, runs: RUNS });
     compare.mockResolvedValue(WIN);
