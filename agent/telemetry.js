@@ -26,6 +26,7 @@ import { collectMem } from "./collectors/mem.js";
 import { collectDisk } from "./collectors/disk.js";
 import { collectNet } from "./collectors/net.js";
 import { collectProxy } from "./collectors/proxy.js";
+import { attachProxyUsage } from "./proxy/usageRelay.js";
 import { collectLibrary } from "./collectors/library.js";
 import { collectDocker } from "./collectors/docker.js";
 import { collectSystemd } from "./collectors/systemd.js";
@@ -34,7 +35,7 @@ import { collectComfy } from "./collectors/comfy.js";
 import { collectTailscale } from "./collectors/tailscale.js";
 import { readTextFile, parseUptimeSeconds } from "./collectors/util.js";
 
-export const AGENT_VERSION = "0.4.0";
+export const AGENT_VERSION = "0.5.0";
 
 /**
  * Derive quantization from a model id/path reference.
@@ -127,6 +128,7 @@ export function assembleSnapshot({
   tailscale = null,
   proxy = null,
   library = null,
+  llmProxy = null,
 }) {
   return {
     nodeId,
@@ -152,6 +154,8 @@ export function assembleSnapshot({
     llm,
     comfy,
     proxy,
+    // STAT4 (#37): opt-in usage relays (agent/proxy/usageRelay.js); null when off.
+    llmProxy,
     library,
     systemd: systemdUnits,
     // Tailscale node info (hostname, IP, config); null when no tailscaled.
@@ -167,7 +171,9 @@ export function assembleSnapshot({
  * @param {string} lanIp
  * @param {number[] | string} ports LLM server ports to probe
  * @param {number | null} comfyPort ComfyUI port (null/0 = skip)
- * @param {{ now?: () => number, readFile?: (path: string) => Promise<string>, inject?: object, llmAuthTokens?: Record<string, string> }} [opts]
+ * @param {{ now?: () => number, readFile?: (path: string) => Promise<string>, inject?: object, llmAuthTokens?: Record<string, string>,
+ *   usageRelay?: { snapshot: () => object[] } }} [opts]
+ *   `usageRelay` (STAT4) is the agent's opt-in relay set (createUsageRelays).
  *   `inject` maps collector names to override fns (test hook):
  *   gpu/cpu/mem/disk/net/docker/systemd/uptime → () => result; llm → (ports) => result; comfy → (port) => result.
  *   `llmAuthTokens` (Record<"port", token>) adds per-port bearer auth to the
@@ -238,6 +244,11 @@ export async function collectTelemetry(nodeId, nodeName, lanIp, ports = [], comf
     }
   }
 
+  // STAT4 (#37): per-request usage metered by the opt-in relays, attached to
+  // the engine each relay forwards to.
+  const relays = opts.usageRelay ? opts.usageRelay.snapshot() : [];
+  const llmWithProxy = attachProxyUsage(llm, relays);
+
   return assembleSnapshot({
     nodeId,
     nodeName,
@@ -251,10 +262,11 @@ export async function collectTelemetry(nodeId, nodeName, lanIp, ports = [], comf
     net,
     containers,
     systemdUnits,
-    llm,
+    llm: llmWithProxy,
     comfy,
     tailscale,
     proxy,
     library,
+    llmProxy: relays.length > 0 ? relays : null,
   });
 }

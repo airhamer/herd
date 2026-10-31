@@ -31,6 +31,10 @@
 #   Any KEY=VALUE lines are exported to the container, e.g.
 #     LLM_AUTH_TOKENS="8080:<sglang-api-key>"
 #     NODE_AGENT_TOKEN="<bearer>"
+#     LLM_PROXY="18434:11434"     (agent ≥0.5.0, opt-in usage relay: clients
+#                                 that call :18434 reach Ollama on :11434 and
+#                                 their token usage / latency is metered)
+#     LLM_PROXY_BIND="0.0.0.0"    (relay bind; default 127.0.0.1)
 #   Secrets stay out of the repo and out of the container's filesystem.
 
 set -euo pipefail
@@ -99,7 +103,7 @@ if [[ -f "${ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${ENV_FILE}"
   set +a
-  for k in LLM_AUTH_TOKENS NODE_AGENT_TOKEN NODE_ID NODE_NAME NODE_LAN_IP LLM_PORTS NODE_COMFY_PORT NODE_AGENT_AUDIT_PATH; do
+  for k in LLM_AUTH_TOKENS NODE_AGENT_TOKEN NODE_ID NODE_NAME NODE_LAN_IP LLM_PORTS NODE_COMFY_PORT NODE_AGENT_AUDIT_PATH LLM_PROXY LLM_PROXY_BIND; do
     if [[ -n "${!k:-}" ]]; then
       ENV_ARGS+=("-e" "${k}=${!k}")
       # Never echo token values back to the log.

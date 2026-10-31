@@ -94,6 +94,16 @@ describe("NormalizedEngineInline", () => {
     expect(t).toContain("KV 20.0% (counter)");
   });
 
+  it("STAT4: an Ollama lane behind the agent relay shows decode and TTFT tagged proxy", () => {
+    const windows: NormalizedEngineWindows = {
+      "300": record(300, { decode_tps: { value: 40, source: "proxy" }, ttft_s: { value: 0.3, source: "proxy" } }),
+    };
+    const { container } = render(<NormalizedEngineInline windows={windows} />);
+    const t = q(container, "fleet-card-model-normalized")!.textContent ?? "";
+    expect(t).toContain("Decode 40.0 tok/s (proxy)");
+    expect(t).toContain("TTFT 300 ms (proxy)");
+  });
+
   it("renders nothing when none of the three is measured", () => {
     const { container } = render(<NormalizedEngineInline windows={{ "300": record(300, {}) }} />);
     expect(container.innerHTML).toBe("");
