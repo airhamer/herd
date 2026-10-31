@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { laneIdOf, listShowcaseTargets, parseLaneId, resolveNodeLaneTarget } from "../fleetTargets.js";
+import { laneIdOf, listShowcaseTargets, parseLaneId, proxyFront, resolveNodeLaneTarget } from "../fleetTargets.js";
 
 test("laneIdOf / parseLaneId round trip", () => {
   assert.equal(laneIdOf("spark", "s1", 8000), "spark:s1:8000");
@@ -89,4 +89,56 @@ test("resolveNodeLaneTarget: unreachable agent-only node explains why", async ()
     ),
     /not reachable over the LAN.*no SSH access/
   );
+});
+
+// ─── SC11 (#20): LLM traffic only through the proxy ──────────────────────
+
+test("proxyFront: running + valid port only", () => {
+  assert.equal(proxyFront({ proxy: { running: true, port: 30001 } }), 30001);
+  assert.equal(proxyFront({ proxy: { running: false, port: 30001 } }), null, "stopped proxy: direct lanes");
+  assert.equal(proxyFront({ proxy: { running: true, port: "nope" } }), null, "malformed port: direct lanes");
+  assert.equal(proxyFront({ proxy: { running: true, port: 70000 } }), null, "out of range: direct lanes");
+  assert.equal(proxyFront({}), null, "no proxy status (old agent): direct lanes");
+  assert.equal(proxyFront(null), null);
+});
+
+test("listShowcaseTargets: proxy-running node publishes at the proxy front, once", () => {
+  const proxyNodes = [
+    {
+      nodeId: "p1", nodeName: "fronted", lanIp: "10.0.0.20", registryLanIp: "10.0.0.20", online: true,
+      proxy: { running: true, port: 30001 },
+      llm: [{ port: 8000, backend: "vllm", modelId: "qwen" }, { port: 8001, backend: "vllm", modelId: "aeon" }],
+    },
+    // Same proxy front on a second record for the same box: no duplicate lane.
+    {
+      nodeId: "p1b", nodeName: "fronted-b", lanIp: "10.0.0.20", online: true,
+      proxy: { running: true, port: 30001 },
+      llm: [{ port: 8000, backend: "vllm", modelId: "qwen" }],
+    },
+  ];
+  const t = listShowcaseTargets({ sparks: [], sparkSnapshot: () => null, nodes: proxyNodes, nodeRecord: () => null });
+  assert.deepEqual(t.map((x) => x.laneId), ["node:p1:30001"]);
+  assert.equal(t[0].port, 30001, "proxy front, not the engine port");
+  assert.equal(t[0].viaProxy, true);
+  assert.equal(t[0].modelId, "qwen");
+});
+
+test("listShowcaseTargets: stopped proxy keeps direct lanes and no viaProxy flag", () => {
+  const t = listShowcaseTargets({
+    sparks: [], sparkSnapshot: () => null,
+    nodes: [{ nodeId: "p2", nodeName: "unfronted", lanIp: "10.0.0.21", online: true, proxy: { running: false, port: 30001 }, llm: [{ port: 8000, backend: "vllm", modelId: "qwen" }] }],
+    nodeRecord: () => null,
+  });
+  assert.deepEqual(t.map((x) => x.laneId), ["node:p2:8000"]);
+  assert.equal(t[0].viaProxy, undefined);
+});
+
+test("listShowcaseTargets: proxy fronted engine already claimed as Spark lane stays deduped", () => {
+  const t = listShowcaseTargets({
+    sparks: [{ id: "s9", name: "s9", lanIp: "10.0.0.30", llmPorts: [8000] }],
+    sparkSnapshot: () => ({ online: true, metrics: { llm: [{ available: true, modelId: "qwen", backend: "vllm" }] } }),
+    nodes: [{ nodeId: "a9", nodeName: "s9-agent", lanIp: "10.0.0.30", online: true, proxy: { running: true, port: 30001 }, llm: [{ port: 8000, backend: "vllm", modelId: "qwen" }] }],
+    nodeRecord: () => null,
+  });
+  assert.deepEqual(t.map((x) => x.laneId), ["spark:s9:8000"]);
 });
