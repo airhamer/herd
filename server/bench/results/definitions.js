@@ -220,6 +220,15 @@ const LIST = [
     url: null,
   },
   {
+    name: "herd.quality.category_mean.v1",
+    metric: "accuracy_pct",
+    owner: "herd",
+    comparable: "quality_category_mean",
+    formula:
+      "Quality bench overall score: unweighted mean of the per-category item pass rates (herd.quality.item_pass_rate.v1) of the run's categories. Errored items are not scored.",
+    url: null,
+  },
+  {
     name: "reference.accuracy_published.v1",
     metric: "accuracy_pct",
     owner: "reference",

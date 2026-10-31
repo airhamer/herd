@@ -12,6 +12,7 @@ import {
 } from "../../hooks/metricsStore";
 import { BenchmarkDialog } from "./BenchmarkDialog";
 import { PrefillBenchDialog } from "./PrefillBenchDialog";
+import { QualityBenchDialog } from "./QualityBenchDialog";
 import { LlmDailyChart } from "./LlmDailyChart";
 import { parseLlmTargetInput } from "../../shared/llmTarget.js";
 import { LlmTrendChart } from "./LlmTrendChart";
@@ -79,6 +80,8 @@ function LlmLaunchers({
   onPrefill,
   onRemoteDecode,
   onRemotePrefill,
+  onQuality,
+  onRemoteQuality,
 }: {
   sparkId: string;
   llmPort: number;
@@ -87,6 +90,8 @@ function LlmLaunchers({
   onPrefill: () => void;
   onRemoteDecode: (target: LlmBenchTarget) => void;
   onRemotePrefill: (target: LlmBenchTarget) => void;
+  onQuality: () => void;
+  onRemoteQuality: (target: LlmBenchTarget) => void;
 }) {
   const [remoteOpen, setRemoteOpen] = useState(false);
   const [hostDraft, setHostDraft] = useState(() => readStoredRemote().host);
@@ -115,7 +120,7 @@ function LlmLaunchers({
     }
   };
 
-  const launchRemote = (kind: "decode" | "prefill") => {
+  const launchRemote = (kind: "decode" | "prefill" | "quality") => {
     try {
       const p = parseLlmTargetInput(hostDraft, portDraft, tls);
       persist(p);
@@ -124,6 +129,7 @@ function LlmLaunchers({
       setTls(p.tls);
       setRemoteError(null);
       if (kind === "decode") onRemoteDecode(p);
+      else if (kind === "quality") onRemoteQuality(p);
       else onRemotePrefill(p);
     } catch (err: unknown) {
       setRemoteError(err instanceof Error ? err.message : String(err));
@@ -184,6 +190,14 @@ function LlmLaunchers({
           Remote
         </button>
       </div>
+      <button
+        type="button"
+        onClick={onQuality}
+        className={`${LAUNCHER_BTN} w-full`}
+        title="Accuracy over fixed item sets (QA, reasoning, arithmetic, state tracking, GSM8K, MMLU). Compare runs with McNemar."
+      >
+        Run quality benchmark
+      </button>
       {remoteOpen && (
         <div className="space-y-2 rounded border border-border bg-surface-elevated p-2">
           <p className="text-[10px] leading-snug text-muted">
@@ -246,6 +260,13 @@ function LlmLaunchers({
               className={`${LAUNCHER_BTN} flex-1`}
             >
               Prefill
+            </button>
+            <button
+              type="button"
+              onClick={() => launchRemote("quality")}
+              className={`${LAUNCHER_BTN} flex-1`}
+            >
+              Quality
             </button>
           </div>
         </div>
@@ -424,6 +445,15 @@ export function LlmPanel({
   const openLocalPrefill = useCallback(() => {
     setRemoteTarget(null);
     setPrefillBenchOpen(true);
+  }, []);
+  const [qualityBenchOpen, setQualityBenchOpen] = useState(false);
+  const openLocalQuality = useCallback(() => {
+    setRemoteTarget(null);
+    setQualityBenchOpen(true);
+  }, []);
+  const openRemoteQuality = useCallback((target: LlmBenchTarget) => {
+    setRemoteTarget(target);
+    setQualityBenchOpen(true);
   }, []);
   /** Which vLLM metric info tip is open (kvCache | requests | ttftP95 | preempts). */
   const [metricInfoId, setMetricInfoId] = useState<string | null>(null);
@@ -670,6 +700,8 @@ export function LlmPanel({
             onPrefill={openLocalPrefill}
             onRemoteDecode={openRemoteDecode}
             onRemotePrefill={openRemotePrefill}
+            onQuality={openLocalQuality}
+            onRemoteQuality={openRemoteQuality}
           />
           <LlmDailyChart sparkId={sparkId} llmPort={llmPort} />
         </div>
@@ -1000,6 +1032,8 @@ export function LlmPanel({
             onPrefill={openLocalPrefill}
             onRemoteDecode={openRemoteDecode}
             onRemotePrefill={openRemotePrefill}
+            onQuality={openLocalQuality}
+            onRemoteQuality={openRemoteQuality}
           />
         </div>
       )}
@@ -1024,6 +1058,14 @@ export function LlmPanel({
         remoteTarget={remoteTarget}
         shareImage={shareImage}
         sparkName={sparkName ?? null}
+      />
+      <QualityBenchDialog
+        open={qualityBenchOpen}
+        onClose={() => setQualityBenchOpen(false)}
+        sparkId={sparkId}
+        llmPort={llmPort}
+        modelId={remoteTarget ? null : llm?.modelId ?? null}
+        remoteTarget={remoteTarget}
       />
     </Panel>
   );

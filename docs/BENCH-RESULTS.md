@@ -50,6 +50,7 @@ Names are append-only (`owner.what.vN`). Only definitions in the same
 | Latency | `herd.ttft.client_first_token.v1` (p50), `…_p95.v1`, `herd.tpot.client_stream.v1` |
 | Engine counter | `herd.engine.generation_tps_counter.v1` |
 | Quality / energy | `herd.quality.item_pass_rate.v1`, `reference.accuracy_published.v1`, `herd.energy.gpu_power_wave.v1` |
+| Quality, mean of categories | `herd.quality.category_mean.v1` (Quality bench overall, see [QUALITY-BENCH.md](./QUALITY-BENCH.md)) |
 
 ## Compare
 
@@ -62,6 +63,9 @@ Names are append-only (`owner.what.vN`). Only definitions in the same
 - For each metric, the definitions must share a group. Otherwise the metric
   appears under `refused`.
 - A refused comparison is `200 { comparable: false, reasons }`.
+- When both records carry a `quality.items` vector, the response adds
+  `quality`: an exact McNemar test on the paired items (`p`,
+  `within_noise` = p ≥ 0.05, discordant counts). Otherwise `quality` is `null`.
 
 ## API
 
@@ -76,7 +80,7 @@ Names are append-only (`owner.what.vN`). Only definitions in the same
 
 ## Writers
 
-- **DecodeBench, PrefillBench and Showcase:**
+- **DecodeBench, PrefillBench, Showcase and QualityBench:**
   - When a run starts, `server/index.js` captures provenance from the live
     snapshot (`provenance.js`).
   - The managers call `resultSink` when the run reaches history

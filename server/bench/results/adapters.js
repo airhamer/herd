@@ -14,12 +14,15 @@ export const BENCH_VERSIONS = Object.freeze({
   DecodeBench: "1",
   PrefillBench: "1",
   Showcase: "1",
+  QualityBench: "1",
 });
 
 export const SUITES = Object.freeze({
   DecodeBench: { suite: "herd.decode", suite_version: "1" },
   PrefillBench: { suite: "herd.prefill", suite_version: "1" },
   Showcase: { suite: "herd.showcase", suite_version: "1" },
+  // suite_version follows QUALITY_SUITE_VERSION (server/collectors/quality/items.js).
+  QualityBench: { suite: "herd.quality", suite_version: "1" },
 });
 
 const STATUS_MAP = {
@@ -550,6 +553,145 @@ export function fromFleetShowcaseSession(session, opts = {}) {
         raw: { session: { sessionId: session.sessionId, status: session.status, prompts: session.prompts ?? null }, lane: rawLane },
       });
     });
+}
+
+// ─── QualityBench ─────────────────────────────────────────────────────
+
+/** Wilson 95% interval for a pass rate, in percent. */
+export function wilsonCi(passed, n) {
+  if (!(n > 0)) return { ci_low: null, ci_high: null };
+  const z = 1.96;
+  const p = passed / n;
+  const denom = 1 + (z * z) / n;
+  const centre = (p + (z * z) / (2 * n)) / denom;
+  const half = (z * Math.sqrt((p * (1 - p)) / n + (z * z) / (4 * n * n))) / denom;
+  return {
+    ci_low: round2(Math.max(0, centre - half) * 100),
+    ci_high: round2(Math.min(1, centre + half) * 100),
+  };
+}
+
+/**
+ * One record per category plus one overall record for a Quality bench run.
+ * Every record carries its per-item pass/fail vector in `quality.items`
+ * (errored items as pass: null); the overall record keeps the per-item
+ * detail (expected, extracted answer, latency) in `raw.items`.
+ * @param {any} job  full job (QualityBenchManager.fullJob)
+ * @param {{ provenance?: Provenance, importedFrom?: object, recordedAt?: string }} [opts]
+ */
+export function fromQualityJob(job, opts = {}) {
+  if (!job || !job.benchId || !Array.isArray(job.items) || !job.summary) return [];
+  const cfg = job.config || {};
+  const base = baseRecord({
+    bench: "QualityBench",
+    runId: `quality:${job.benchId}`,
+    startedAt: job.startedAt,
+    completedAt: job.completedAt,
+    status: job.status,
+    nodeId: job.sparkId,
+    modelId: cfg.modelId ?? null,
+    provenance: opts.provenance,
+    importedFrom: opts.importedFrom,
+  });
+  const summary = job.summary;
+  const run =
+    base.run.status === "completed" && summary.itemsErrored > 0 ? { ...base.run, status: "partial" } : base.run;
+  const jobRaw = { ...job };
+  delete jobRaw.items;
+  const conditions = (promptSet, maxTokens) => ({
+    concurrency: Number.isInteger(cfg.concurrency) && cfg.concurrency > 0 ? cfg.concurrency : null,
+    context_tokens: null,
+    max_tokens: Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : null,
+    temperature: 0,
+    thinking: false,
+    prompt_set: promptSet,
+    client_location: base.clientLocation,
+  });
+  const settings = {
+    top_p: 1,
+    seed: cfg.seed ?? null,
+    port: cfg.port ?? null,
+    categories: cfg.categories ?? null,
+  };
+  const vector = (items) => ({ items: items.map((it) => ({ id: it.id, pass: typeof it.pass === "boolean" ? it.pass : null })) });
+  const attempted = job.items.filter((it) => it && it.attempted !== false);
+
+  const records = [];
+  for (const cat of summary.categories) {
+    const items = attempted.filter((it) => it.category === cat.key);
+    if (items.length === 0) continue;
+    const metric =
+      cat.scored > 0
+        ? {
+            metric: "accuracy_pct",
+            definition: "herd.quality.item_pass_rate.v1",
+            source: "client",
+            value: round2((100 * cat.passed) / cat.scored),
+            n: cat.scored,
+            ...wilsonCi(cat.passed, cat.scored),
+          }
+        : unmeasured("accuracy_pct", "herd.quality.item_pass_rate.v1");
+    records.push(
+      makeResult({
+        id: `${base.run.run_id}:${cat.key}`,
+        recorded_at: opts.recordedAt,
+        run,
+        host: base.host,
+        lane: base.lane,
+        conditions: conditions(`quality/${cat.key}`, cat.maxTokens),
+        settings: { ...settings, category: cat.key, items_total: cat.total, items_scored: cat.scored, items_errored: cat.errored, passed: cat.passed },
+        metrics: [metric],
+        quality: vector(items),
+        raw: { job: jobRaw, category: cat.key },
+      })
+    );
+  }
+  if (records.length === 0) return [];
+
+  const metrics = [];
+  if (typeof summary.overall === "number") {
+    metrics.push({
+      metric: "accuracy_pct",
+      definition: "herd.quality.category_mean.v1",
+      source: "client",
+      value: round2(summary.overall),
+      n: summary.categories.filter((c) => c.scored > 0).length,
+    });
+  } else {
+    metrics.push(unmeasured("accuracy_pct", "herd.quality.category_mean.v1"));
+  }
+  if (summary.itemsScored > 0) {
+    metrics.push({
+      metric: "accuracy_pct",
+      definition: "herd.quality.item_pass_rate.v1",
+      source: "client",
+      value: round2((100 * summary.passed) / summary.itemsScored),
+      n: summary.itemsScored,
+      ...wilsonCi(summary.passed, summary.itemsScored),
+    });
+  }
+  records.push(
+    makeResult({
+      id: base.run.run_id,
+      recorded_at: opts.recordedAt,
+      run,
+      host: base.host,
+      lane: base.lane,
+      conditions: conditions(`quality/overall:${(cfg.categories || []).join("+")}`, null),
+      settings: {
+        ...settings,
+        items_total: summary.itemsTotal ?? null,
+        items_scored: summary.itemsScored,
+        items_errored: summary.itemsErrored,
+        passed: summary.passed,
+        category_summary: summary.categories,
+      },
+      metrics,
+      quality: vector(attempted),
+      raw: { job: jobRaw, items: attempted },
+    })
+  );
+  return records;
 }
 
 // ─── Legacy history import ────────────────────────────────────────────

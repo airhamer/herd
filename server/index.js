@@ -34,6 +34,7 @@ import {
   normalizeContextSizes,
 } from "./collectors/PrefillBench.js";
 import { showcaseManager } from "./collectors/ShowcaseManager.js";
+import { qualityBenchManager, QUALITY_BENCH_DEFAULTS } from "./collectors/QualityBench.js";
 import { BenchResultsStore } from "./bench/results/store.js";
 import { createResultsRecorder } from "./bench/results/recorder.js";
 import { describeProvenance } from "./bench/results/provenance.js";
@@ -259,6 +260,11 @@ const allowGlobalDestructive = createRateLimiter(30, 60_000);
 /** Anti double-submit only; per-Spark mutex + MAX_ACTIVE_BENCH_JOBS cap load. */
 const benchCooldown = createRateLimiter(1, 3_000);
 const MAX_ACTIVE_BENCH_JOBS = 2;
+
+/** Running decode, prefill and quality jobs across all Sparks (global cap). */
+function activeBenchJobCount() {
+  return decodeBenchManager.activeCount() + prefillBenchManager.activeCount() + qualityBenchManager.activeCount();
+}
 
 /** Consume bench-start quota only when every limiter would allow it. */
 function consumeBenchStartQuota(req, res) {
@@ -627,6 +633,8 @@ const benchResultsRecorder = createResultsRecorder({ store: benchResultsStore })
 decodeBenchManager.resultSink = benchResultsRecorder.sinkFor("DecodeBench");
 prefillBenchManager.resultSink = benchResultsRecorder.sinkFor("PrefillBench");
 showcaseManager.resultSink = benchResultsRecorder.sinkFor("Showcase");
+qualityBenchManager.resultSink = benchResultsRecorder.sinkFor("QualityBench");
+qualityBenchManager.store = benchResultsStore;
 try {
   const imported = benchResultsStore.importLegacyHistories({
     decode: decodeBenchManager.historyPath,
@@ -1831,7 +1839,7 @@ app.get("/api/sparks/:id/llm/daily", (req, res) => {
  * Returns immediately with a bench job; poll GET for progress/results.
  */
 app.post("/api/sparks/:id/llm/bench", async (req, res) => {
-  if (decodeBenchManager.activeCount() + prefillBenchManager.activeCount() >= MAX_ACTIVE_BENCH_JOBS) {
+  if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
     return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
   }
   const spark = registry.getSpark(req.params.id);
@@ -1850,6 +1858,9 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
   }
   if (prefillBenchManager.getActive(spark.id)) {
     return res.status(409).json({ error: "A prefill benchmark is already running for this Spark" });
+  }
+  if (qualityBenchManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A quality benchmark is already running for this Spark" });
   }
 
   const monitor = monitors.get(req.params.id);
@@ -2008,7 +2019,7 @@ app.delete("/api/sparks/:id/llm/bench/:benchId", (req, res) => {
  * Returns 202 job; poll GET for progress/results.
  */
 app.post("/api/sparks/:id/llm/prefill-bench", async (req, res) => {
-  if (decodeBenchManager.activeCount() + prefillBenchManager.activeCount() >= MAX_ACTIVE_BENCH_JOBS) {
+  if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
     return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
   }
   const spark = registry.getSpark(req.params.id);
@@ -2027,6 +2038,9 @@ app.post("/api/sparks/:id/llm/prefill-bench", async (req, res) => {
   }
   if (decodeBenchManager.getActive(spark.id)) {
     return res.status(409).json({ error: "A decode benchmark is already running for this Spark" });
+  }
+  if (qualityBenchManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A quality benchmark is already running for this Spark" });
   }
 
   const monitor = monitors.get(req.params.id);
@@ -2139,6 +2153,122 @@ app.delete("/api/sparks/:id/llm/prefill-bench/:benchId", (req, res) => {
 });
 
 /**
+ * LLM quality bench (#42) — accuracy over fixed item sets, McNemar between runs.
+ *
+ * POST body: { port?, host?, tls?, apiKey?, modelId?, categories?: string[], concurrency?: 1|2|4|8 }
+ * Returns 202 job; poll GET /:benchId for progress. Finished runs live in the
+ * bench results store (per-category + overall records with per-item vectors).
+ */
+app.post("/api/sparks/:id/llm/quality-bench", async (req, res) => {
+  if (activeBenchJobCount() >= MAX_ACTIVE_BENCH_JOBS) {
+    return res.status(429).json({ error: "Global active benchmark cap reached; wait for a job to finish" });
+  }
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  if (spark.workerNode) {
+    return res.status(400).json({ error: "Worker nodes do not expose a local LLM API" });
+  }
+  if (spark.llmMonitoring === false) {
+    return res.status(400).json({ error: "LLM monitoring is disabled for this Spark" });
+  }
+  if (showcaseManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A prompt showcase is already running for this Spark" });
+  }
+  if (decodeBenchManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A decode benchmark is already running for this Spark" });
+  }
+  if (prefillBenchManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A prefill benchmark is already running for this Spark" });
+  }
+
+  const monitor = monitors.get(req.params.id);
+  const ports = Array.isArray(spark.llmPorts) && spark.llmPorts.length
+    ? spark.llmPorts
+    : [resolveLlmPort(spark)];
+
+  let target;
+  try {
+    target = await benchHttpTarget(spark, ports, req.body || {});
+  } catch (err) {
+    return res.status(err.status || 400).json({ error: err.message });
+  }
+  const port = target.port;
+
+  let modelId = req.body?.modelId || null;
+  if (!modelId && !target.custom && monitor) {
+    const snap = monitor.snapshot();
+    const llmList = Array.isArray(snap?.metrics?.llm) ? snap.metrics.llm : [];
+    const portIndex = ports.indexOf(port);
+    const llm =
+      (portIndex >= 0 ? llmList[portIndex] : null) ||
+      llmList.find((m) => m?.available) ||
+      llmList[0];
+    modelId = llm?.modelId || null;
+  }
+
+  try {
+    if (!consumeBenchStartQuota(req, res)) return;
+    const job = qualityBenchManager.start({
+      sparkId: spark.id,
+      lanIp: llmProbeHost(spark),
+      port,
+      modelId,
+      categories: req.body?.categories,
+      concurrency: req.body?.concurrency,
+      apiKey: target.apiKey,
+      host: target.host,
+      tls: target.tls,
+      resolveTarget: target.resolveTarget,
+    });
+    benchResultsRecorder.noteStart("QualityBench", job.benchId, benchProvenance(spark, monitor, port, ports, target.custom));
+    res.status(202).json(job);
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get("/api/sparks/:id/llm/quality-bench", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  res.json({
+    active: qualityBenchManager.getActive(spark.id),
+    runs: qualityBenchManager.history(spark.id),
+    defaults: QUALITY_BENCH_DEFAULTS,
+  });
+});
+
+app.get("/api/sparks/:id/llm/quality-bench/compare", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  const baseline = typeof req.query.baseline === "string" ? req.query.baseline : "";
+  const candidate = typeof req.query.candidate === "string" ? req.query.candidate : "";
+  if (!baseline || !candidate) return res.status(400).json({ error: "baseline and candidate are required" });
+  try {
+    res.json(qualityBenchManager.compare(spark.id, baseline, candidate));
+  } catch (err) {
+    res.status(err.status || 500).json({ error: err.message });
+  }
+});
+
+app.get("/api/sparks/:id/llm/quality-bench/:benchId", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  const job = qualityBenchManager.getJob(req.params.benchId);
+  if (!job || job.sparkId !== spark.id) {
+    return res.status(404).json({ error: "Benchmark not found" });
+  }
+  res.json(job);
+});
+
+app.delete("/api/sparks/:id/llm/quality-bench/:benchId", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  const job = qualityBenchManager.cancel(spark.id, req.params.benchId);
+  if (!job) return res.status(404).json({ error: "Benchmark not found" });
+  res.json(job);
+});
+
+/**
  * LLM Prompt Showcase — concurrent streaming demos.
  *
  * POST body: { port, modelId?, maxTokens?, temperature?, thinking?, promptType?, prompts: string[] }
@@ -2153,6 +2283,9 @@ app.post("/api/sparks/:id/llm/showcase", (req, res) => {
   }
   if (spark.llmMonitoring === false) {
     return res.status(403).json({ error: "LLM monitoring is disabled for this Spark" });
+  }
+  if (qualityBenchManager.getActive(spark.id)) {
+    return res.status(409).json({ error: "A quality benchmark is already running for this Spark" });
   }
 
   const monitor = monitors.get(req.params.id);
@@ -2699,6 +2832,9 @@ async function shutdown(signal) {
       "Interrupted — server restarted while the benchmark was running"
     );
     prefillBenchManager.interruptAll(
+      "Interrupted — server restarted while the benchmark was running"
+    );
+    qualityBenchManager.interruptAll(
       "Interrupted — server restarted while the benchmark was running"
     );
   } catch (err) {
