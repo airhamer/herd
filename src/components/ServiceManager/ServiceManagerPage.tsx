@@ -6,7 +6,7 @@ import type {
 import { Panel } from "../ui/Panel";
 import { GridIcon } from "../ui/icons";
 import { KindBadge, ServiceCard, StatusBadge } from "./ServiceCard";
-import { MemoryBudget } from "./MemoryBudget";
+import { MemoryBudget, type GroupPlanForNode } from "./MemoryBudget";
 
 export interface ServiceManagerPageProps {
   nodeId: string;
@@ -14,6 +14,13 @@ export interface ServiceManagerPageProps {
   services: ServiceInstance[];
   memory: MemoryBudgetType;
   versions: VersionInfo[];
+  /**
+   * SC3: this node's TP-group plan (GroupResourcePlan narrowed to the
+   * member view MemoryBudget renders). Parent builds it from the fleet
+   * snapshot: topology groups + memory.byNode budgets + the calculator's
+   * output. null/undefined → single-node view, unchanged.
+   */
+  groupPlan?: GroupPlanForNode | null;
   onStart: (serviceName: string) => void;
   onStop: (serviceName: string) => void;
   onSwitch: (serviceName: string) => void;
@@ -70,6 +77,10 @@ function VersionRow({ v }: { v: VersionInfo }) {
  * Service Manager page for one node: memory budget + make-room plan, one card
  * per service (start/stop/switch), and live version info. Layout mirrors
  * SparkPage (stacked sections in a 2-column grid).
+ *
+ * SC3: when `groupPlan` is threaded the MemoryBudget panel unlocks its
+ * multi-spark/TP section (group total + per-spark breakdown + shard
+ * availability); without it the page is byte-for-byte the single-node view.
  */
 export function ServiceManagerPage({
   nodeId,
@@ -77,6 +88,7 @@ export function ServiceManagerPage({
   services,
   memory,
   versions,
+  groupPlan,
   onStart,
   onStop,
   onSwitch,
@@ -105,6 +117,8 @@ export function ServiceManagerPage({
           services={memory.services}
           makeRoom={memory.makeRoom}
           needMakeRoom={memory.needMakeRoom}
+          groupAvailableMB={memory.groupAvailableMB}
+          group={groupPlan ?? null}
         />
 
         <section className="space-y-2 md:col-span-2">

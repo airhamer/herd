@@ -208,10 +208,104 @@ export interface MemoryBudget {
   services: MemoryService[];
   /** Make-room plan: which services to stop to free `wantMB`. Empty when free >= want. */
   makeRoom: MakeRoomEntry[];
-  /** true when a make-room plan is needed (free < want). */
+  /** true when a make-room plan is needed (free < want, or a TP group's
+   *  per-spark need exceeds free — SC3). */
   needMakeRoom: boolean;
+  /**
+   * SC3: memory here available to a TP group's per-spark shard (MB). Only
+   * present when the budget was computed with a group context
+   * (agent/catalog/memory.js → computeMemoryBudget opts.group).
+   */
+  groupAvailableMB?: number;
   /** Last time this budget was computed (ms epoch). */
   polledAt: number;
+}
+
+// ─── Multi-spark / TP-group resource calculator (SC3) ────────────────────
+//
+// Extends the single-node MemoryBudget above to a group of sparks running
+// one TP=x service (agent/catalog/memory.js → computeGroupMemoryBudget).
+// A TP group is n sparks holding ONE model: each spark carries an equal
+// shard, so the group's memory story is per-spark plus a group total —
+// never a plain fleet sum (shared per-spark state would be double-counted).
+
+/**
+ * One spark inside a group resource plan (SC3).
+ */
+export interface GroupSparkEntry {
+  /** Node id (matches registry id). */
+  nodeId: string;
+  /** true when this spark is the TP rank-0 head of the group. */
+  head: boolean;
+  /** Total unified memory on this spark (MB). */
+  totalMB: number;
+  /** Memory currently used on this spark (MB). */
+  usedMB: number;
+  /** Memory free on this spark before the plan (MB). */
+  freeMB: number;
+  /** Per-spark footprint of the planned TP service (MB, perSpark × shards). */
+  plannedMB: number;
+  /** Projected free after the plan (can go negative → tight/blocked). */
+  projectedFreeMB: number;
+  /** One make-room entry per spark (mirrors MemoryBudget.makeRoom). */
+  makeRoom: MakeRoomEntry[];
+  /** true when this spark can host its shard (make-room applied if needed). */
+  feasible: boolean;
+}
+
+/**
+ * Group-level resource plan for one TP=x service across n sparks
+ * (agent/catalog/memory.js → computeGroupMemoryBudget). The single-node
+ * per-spark math is delegated to computeMemoryBudget; this wrapper adds the
+ * TP sharding, the group total + per-spark breakdown, and the bootstrap
+ * estimate provenance.
+ */
+export interface GroupResourcePlan {
+  /** Group id (e.g. "tp2-glm"). */
+  groupId: string;
+  /** Tensor-parallel size of the planned service (== number of shards). */
+  tp: number;
+  /** Spark ids in the group, sorted; length must equal tp. */
+  sparkIds: string[];
+  /** Per-spark footprint of the planned service (MB, after TP sharding). */
+  perSparkMB: number;
+  /** Group total footprint of the planned service (MB). */
+  groupTotalMB: number;
+  /** Group aggregate: Σ per-spark totalMB (MB). */
+  groupTotalMemMB: number;
+  /** Group aggregate: Σ per-spark usedMB (MB). */
+  groupUsedMemMB: number;
+  /** Group aggregate: Σ per-spark freeMB (MB). */
+  groupFreeMemMB: number;
+  /** Headroom held back per spark (MB) — system/floor guard, summed. */
+  groupFloorMB: number;
+  /** Per-spark breakdown, in sparkIds order. */
+  sparks: GroupSparkEntry[];
+  /** true when every spark can host its shard (with make-room if needed). */
+  fits: boolean;
+  /** true when the estimate is a bootstrap hardcode (basis "estimated"). */
+  estimated: boolean;
+}
+
+/**
+ * SC3 bootstrap hardcodes (agent/catalog/memory.js → BOOTSTRAP_COMPONENTS):
+ * the seed memory estimates shipped before real-world refinement. Decision
+ * #2 (docs/IMPLEMENTATION_PLAN.md): the UI is unlocked and shows these as
+ * `estimated` until ≥5 history runs replace them with measured averages.
+ */
+export interface BootstrapComponentEstimate {
+  /** Component id (matches agent/catalog/components/*.json id). */
+  id: string;
+  /** Human name. */
+  name: string;
+  /** Tensor-parallel size the estimate was measured/estimated at. */
+  tp: number;
+  /** Per-spark memory estimate (MB). */
+  perSparkMB: number;
+  /** "measured" | "estimated" — "estimated" marks bootstrap hardcodes. */
+  basis: "measured" | "estimated";
+  /** Where the number came from (surfaced in the UI). */
+  notes: string;
 }
 
 // ─── Requests (queued/running/finished by model/engine/machine) ────────────
