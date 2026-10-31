@@ -162,7 +162,8 @@ export function parseLinuxSample(text, prev = {}, nowMs = Date.now()) {
   }
 
   if (c1 || c2) {
-    out.cpu = { usage, temperature, draw, tdp: 0 };
+    // drawSource (issue #33): a RAPL delta is a measurement; 0 means "none".
+    out.cpu = { usage, temperature, draw, tdp: 0, ...(rapl.length >= 2 ? { drawSource: "rapl" } : {}) };
   }
 
   // Memory: kB → integer MB.

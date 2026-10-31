@@ -9,8 +9,6 @@ import { gpuHolderLabel, memoryPool } from "../../lib/memoryPool";
 import { formatTps, llmBackendLabel } from "../../lib/llmBackend";
 import { HealthChips } from "../ui/HealthFindings";
 import { Tag } from "../ui/Tag";
-import { FleetEnergyCard } from "./FleetEnergyCard";
-import { MonthlyEnergy } from "./MonthlyEnergy";
 import { FleetAlertStrip } from "./FleetAlertStrip";
 import { ActivityIcon, PowerOffIcon, PowerOnIcon, RotateIcon } from "../ui/icons";
 
@@ -18,7 +16,6 @@ interface OverviewPageProps {
   sparks: SparkSnapshot[];
   hideOffline?: boolean;
   hideWorkers?: boolean;
-  showFleetEnergy?: boolean;
   showFleetExceptions?: boolean;
   /** Alert notifications on: the exceptions strip lists `serverAlerts` instead of deriving its own. */
   alertsEnabled?: boolean;
@@ -222,11 +219,9 @@ function SparkCard({
                   : "Comfy · idle"}
           </span>
         ) : null}
-        {online && gpu?.throttle?.clockCapMHz != null ? (
-          <Tag title="GPU clock locked with nvidia-smi -lgc">
-            Cap {(gpu.throttle.clockCapMHz / 1000).toFixed(1)} GHz
-          </Tag>
-        ) : null}
+        {online && typeof gpu?.throttle?.clockCapMHz === "number" && (
+          <Tag title="GPU clock locked with nvidia-smi -lgc">{`Cap ${(gpu.throttle.clockCapMHz / 1000).toFixed(1)} GHz`}</Tag>
+        )}
         <span className="text-[10px] uppercase tracking-wide text-muted">
           {online ? "online" : "offline"}
         </span>
@@ -423,7 +418,6 @@ export function OverviewPage({
   sparks,
   hideOffline = false,
   hideWorkers = false,
-  showFleetEnergy = false,
   showFleetExceptions = false,
   alertsEnabled = false,
   serverAlerts = null,
@@ -596,12 +590,6 @@ export function OverviewPage({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-overview-rhythm)" }}>
-      {showFleetEnergy ? (
-        <div>
-          <FleetEnergyCard nodeCount={sparks.length} />
-          <MonthlyEnergy />
-        </div>
-      ) : null}
       <FleetAlertStrip
         sparks={sparks}
         onSelect={onSelectSpark}

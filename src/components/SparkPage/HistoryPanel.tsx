@@ -1,7 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+// The unit page's History panel (docs/specs/unit-history.md §10): the
+// server-side bucketed history of one unit, drawn as small multiples that
+// share one crosshair. LIC2 clean-room rewrite, written from the spec.
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getUnitHistory } from "../../api/client";
 import type {
+  HistoryLlmPoint,
+  HistoryLlmSeries,
+  HistoryPoint,
   HistoryStat,
+  HistoryUnitSeries,
   MetricsHistoryData,
   MetricsHistoryRange,
   MetricsHistoryResponse,
@@ -10,17 +17,13 @@ import { Panel } from "../ui/Panel";
 import { ActivityIcon } from "../ui/icons";
 import { HistoryChart, type HistoryChartSeries, type HistoryThreshold } from "./HistoryChart";
 
-/**
- * The unit's server-side history (GET /api/sparks/:id/history): 48 h of 1-minute and
- * 30 days of 15-minute buckets, as small multiples with a shared crosshair.
- * Polls every 30 s, and only while the panel is on screen and the tab is visible.
- */
-
 export const HISTORY_RANGES: readonly MetricsHistoryRange[] = ["1h", "6h", "24h", "7d", "30d"];
+/** Refresh interval while the panel is on screen and the tab is visible. */
 export const HISTORY_POLL_MS = 30_000;
+/** localStorage key holding the last chosen range. */
 export const HISTORY_RANGE_KEY = "sparkdash.ui.history.range";
 
-const RANGE_TITLE: Record<MetricsHistoryRange, string> = {
+const SPAN_WORDS: Record<MetricsHistoryRange, string> = {
   "1h": "last hour",
   "6h": "last 6 hours",
   "24h": "last 24 hours",
@@ -28,80 +31,96 @@ const RANGE_TITLE: Record<MetricsHistoryRange, string> = {
   "30d": "last 30 days",
 };
 
+const isRange = (v: unknown): v is MetricsHistoryRange => HISTORY_RANGES.some((r) => r === v);
+
+/** The stored range, or 1h when nothing valid is stored (or storage is blocked). */
 export function readHistoryRange(): MetricsHistoryRange {
+  let stored: string | null = null;
   try {
-    const raw = localStorage.getItem(HISTORY_RANGE_KEY);
-    if (raw && (HISTORY_RANGES as readonly string[]).includes(raw)) return raw as MetricsHistoryRange;
+    stored = localStorage.getItem(HISTORY_RANGE_KEY);
   } catch {
-    /* private mode / blocked storage */
+    stored = null;
   }
-  return "1h";
+  return isRange(stored) ? stored : "1h";
 }
 
-function writeHistoryRange(range: MetricsHistoryRange) {
+function rememberRange(range: MetricsHistoryRange): void {
   try {
     localStorage.setItem(HISTORY_RANGE_KEY, range);
   } catch {
-    /* a preference is a convenience */
+    // Not remembering the choice is harmless.
   }
 }
 
-function stepLabel(ms: number): string {
-  if (ms < 60_000) return `${Math.round(ms / 1000)} s`;
-  return `${Math.round(ms / 60_000)} min`;
-}
+// ─── Value formatting ────────────────────────────────────
 
-// ─── Local formatters (fork idiom: one-liners live next to their panel) ───
-const pct = (v: number) => `${v < 10 ? v.toFixed(1) : Math.round(v)}%`;
-const watts = (v: number) => `${v < 10 ? v.toFixed(1) : Math.round(v)} W`;
-const tokS = (v: number) =>
-  v >= 1000 ? `${(v / 1000).toFixed(v >= 10_000 ? 0 : 1)}k` : v >= 100 ? v.toFixed(0) : v.toFixed(1);
+const GB = 1024;
+const TB = 1024 * GB;
 
-/** MB → human; whole-GB style matching the fork's memory figures. */
+/** Megabytes as MB, GB or TB (GB and TB with one decimal). */
 export function formatMb(mb: number): string {
-  if (mb >= 1024 * 1024) return `${(mb / 1024 / 1024).toFixed(1)} TB`;
-  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  if (mb >= TB) return `${(mb / TB).toFixed(1)} TB`;
+  if (mb >= GB) return `${(mb / GB).toFixed(1)} GB`;
   return `${Math.round(mb)} MB`;
 }
 
-function formatBytesPerSec(bps: number): string {
-  if (bps >= 1024 * 1024 * 1024) return `${(bps / 1024 / 1024 / 1024).toFixed(1)} GB/s`;
-  if (bps >= 1024 * 1024) return `${(bps / 1024 / 1024).toFixed(1)} MB/s`;
-  if (bps >= 1024) return `${(bps / 1024).toFixed(1)} KB/s`;
-  return `${bps} B/s`;
+/** One decimal for small values, whole numbers from 10 up. */
+const compact = (v: number): string => (v < 10 ? v.toFixed(1) : String(Math.round(v)));
+const asPercent = (v: number) => `${compact(v)}%`;
+const asWatts = (v: number) => `${compact(v)} W`;
+
+function asTokensPerSec(v: number): string {
+  if (v >= 1000) return `${(v / 1000).toFixed(v < 10_000 ? 1 : 0)}k`;
+  return v >= 100 ? String(Math.round(v)) : v.toFixed(1);
 }
 
-/** Free-memory headroom lines, same thresholds as the live memory panels use. */
-const HEADROOM_MB: Record<"unified" | "discrete", { low: number; critical: number }> = {
-  unified: { low: 8 * 1024, critical: 4 * 1024 },
-  discrete: { low: 2 * 1024, critical: 1 * 1024 },
-};
-const memoryModelFor = (kind: string | undefined): "unified" | "discrete" =>
-  kind === "host" ? "discrete" : "unified";
+const RATE_UNITS = ["B/s", "KB/s", "MB/s", "GB/s"];
+function asRate(bytesPerSec: number): string {
+  let v = Math.round(bytesPerSec);
+  if (v < 1024) return `${v} B/s`;
+  let unit = 0;
+  while (v >= 1024 && unit < RATE_UNITS.length - 1) {
+    v /= 1024;
+    unit++;
+  }
+  return `${v.toFixed(1)} ${RATE_UNITS[unit]}`;
+}
 
-/**
- * Tooltip and axis labels. The fork has no Settings → Time zone, so labels use
- * the browser's own zone.
- */
-function timeFormatters(range: MetricsHistoryRange) {
-  const long = range === "7d" || range === "30d";
-  const time = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
-  const day = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
-  const dayTime = new Intl.DateTimeFormat(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function bucketWidthText(stepMs: number): string {
+  return stepMs >= 60_000 ? `${Math.round(stepMs / 60_000)} min` : `${Math.round(stepMs / 1000)} s`;
+}
+
+/** Labels in the browser's own time zone (the app has no zone setting). */
+function clockFormats(range: MetricsHistoryRange) {
+  const hm = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+  const md = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" });
+  const mdhm = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  const short = range === "1h" || range === "6h";
+  const multiDay = range === "7d" || range === "30d";
   return {
-    tooltip: (t: number) => (range === "1h" || range === "6h" ? time.format(t) : dayTime.format(t)),
-    axis: (t: number) => (long ? day.format(t) : time.format(t)),
-    /** When the data on screen was fetched. */
-    stamp: (t: number) => time.format(t),
+    point: (t: number) => (short ? hm : mdhm).format(t),
+    edge: (t: number) => (multiDay ? md : hm).format(t),
+    clock: (t: number) => hm.format(t),
   };
 }
 
-interface ChartDef {
+// ─── Chart definitions ───────────────────────────────────
+
+const COLOR = {
+  primary: "var(--color-accent)",
+  warm: "var(--color-warning)",
+  neutral: "var(--color-text)",
+  good: "var(--color-success)",
+  bad: "var(--color-danger)",
+};
+
+/** Free-memory warning lines in MB, matching the live memory panels. */
+const FREE_MEMORY_LINES = {
+  unified: { low: 8 * GB, critical: 4 * GB },
+  discrete: { low: 2 * GB, critical: 1 * GB },
+} as const;
+
+interface ChartSpec {
   id: string;
   title: string;
   series: HistoryChartSeries[];
@@ -112,336 +131,343 @@ interface ChartDef {
   thresholds?: HistoryThreshold[];
 }
 
-/** Every bucket start in the response (unit and LLM points), ascending. */
+/** All bucket times of the response, unit and LLM alike, ascending and unique. */
 export function buildTimeline(data: MetricsHistoryData): number[] {
-  const ts = new Set<number>();
-  for (const p of data.points) ts.add(p.t);
-  for (const e of data.llm) for (const p of e.points) ts.add(p.t);
-  return [...ts].sort((a, b) => a - b);
+  const all = data.points.map((p) => p.t);
+  for (const endpoint of data.llm) all.push(...endpoint.points.map((p) => p.t));
+  return Array.from(new Set(all)).sort((a, b) => a - b);
 }
 
-function aligned<P extends { t: number }>(
+/** Lay one field of a point list onto the timeline, null where it is missing. */
+function onTimeline<K extends string>(
   timeline: readonly number[],
-  points: readonly P[],
-  pick: (p: P) => HistoryStat | undefined,
-  map?: (v: number) => number,
+  points: ReadonlyArray<{ t: number } & Partial<Record<K, HistoryStat>>>,
+  field: K,
+  scale?: (v: number) => number,
 ): Array<HistoryStat | null> {
-  const at = new Map<number, HistoryStat>();
+  const byTime = new Map<number, HistoryStat>();
   for (const p of points) {
-    const v = pick(p);
-    if (v) at.set(p.t, map ? { avg: map(v.avg), max: map(v.max), min: v.min != null ? map(v.min) : undefined } : v);
+    const stat = p[field] as HistoryStat | undefined;
+    if (stat) byTime.set(p.t, stat);
   }
-  return timeline.map((t) => at.get(t) ?? null);
+  return timeline.map((t) => {
+    const s = byTime.get(t);
+    if (!s) return null;
+    if (!scale) return s;
+    const scaled: HistoryStat = { avg: scale(s.avg), max: scale(s.max) };
+    if (s.min != null) scaled.min = scale(s.min);
+    return scaled;
+  });
 }
 
-const hasAny = (values: ReadonlyArray<HistoryStat | null>) => values.some(Boolean);
+const reported = (values: ReadonlyArray<HistoryStat | null>) => values.some((v) => v !== null);
 
-function buildCharts(
+function chartSpecs(
   data: MetricsHistoryData,
   timeline: readonly number[],
   kind: string | undefined,
   temperatureUnit: "celsius" | "fahrenheit",
-): ChartDef[] {
-  const pts = data.points;
-  const f = temperatureUnit === "fahrenheit";
-  const toTemp = f ? (c: number) => (c * 9) / 5 + 32 : undefined;
-  const temp = (v: number) => `${Math.round(v)}°${f ? "F" : "C"}`;
-  const accent = "var(--color-accent)";
-  const model = memoryModelFor(kind);
-  const headroom = HEADROOM_MB[model];
+): ChartSpec[] {
+  const unit = (field: HistoryUnitSeries, scale?: (v: number) => number) =>
+    onTimeline<HistoryUnitSeries>(timeline, data.points as HistoryPoint[], field, scale);
+  const fahrenheit = temperatureUnit === "fahrenheit";
+  const degrees = fahrenheit ? (c: number) => c * 1.8 + 32 : undefined;
+  const asDegrees = (v: number) => `${Math.round(v)}°${fahrenheit ? "F" : "C"}`;
+  const discrete = kind === "host";
+  const lines = FREE_MEMORY_LINES[discrete ? "discrete" : "unified"];
 
-  const charts: ChartDef[] = [
+  const specs: ChartSpec[] = [
     {
       id: "gpuUtil",
       title: "GPU utilization",
-      format: pct,
+      format: asPercent,
       yMin: 0,
       yMax: 100,
-      series: [{ key: "gpuUtil", label: "GPU", color: accent, band: "max", values: aligned(timeline, pts, (p) => p.gpuUtil) }],
+      series: [{ key: "gpuUtil", label: "GPU", color: COLOR.primary, band: "max", values: unit("gpuUtil") }],
     },
     {
       id: "gpuTemp",
       title: "GPU temperature",
-      format: temp,
+      format: asDegrees,
       yUnit: 5,
-      series: [{ key: "gpuTemp", label: "GPU", color: "var(--color-warning)", band: "max", values: aligned(timeline, pts, (p) => p.gpuTemp, toTemp) }],
+      series: [{ key: "gpuTemp", label: "GPU", color: COLOR.warm, band: "max", values: unit("gpuTemp", degrees) }],
     },
     {
       id: "gpuPower",
       title: "GPU power",
-      format: watts,
+      format: asWatts,
       yMin: 0,
-      series: [{ key: "gpuPower", label: "Power", color: "var(--color-text)", band: "max", values: aligned(timeline, pts, (p) => p.gpuPower) }],
+      series: [{ key: "gpuPower", label: "Power", color: COLOR.neutral, band: "max", values: unit("gpuPower") }],
     },
     {
       id: "memFree",
-      title: model === "unified" ? "Memory free (unified)" : "VRAM free",
+      title: discrete ? "VRAM free" : "Memory free (unified)",
       format: formatMb,
       yMin: 0,
-      yUnit: 1024,
+      yUnit: GB,
       thresholds: [
-        { value: headroom.low, label: `low ${formatMb(headroom.low)}`, color: "var(--color-warning)" },
-        { value: headroom.critical, label: `critical ${formatMb(headroom.critical)}`, color: "var(--color-danger)" },
+        { value: lines.low, label: `low ${formatMb(lines.low)}`, color: COLOR.warm },
+        { value: lines.critical, label: `critical ${formatMb(lines.critical)}`, color: COLOR.bad },
       ],
-      series: [{ key: "memFreeMB", label: "Free", color: "var(--color-success)", band: "min", values: aligned(timeline, pts, (p) => p.memFreeMB) }],
+      series: [{ key: "memFreeMB", label: "Free", color: COLOR.good, band: "min", values: unit("memFreeMB") }],
     },
     {
       id: "cpuUtil",
       title: "CPU utilization",
-      format: pct,
+      format: asPercent,
       yMin: 0,
       yMax: 100,
-      series: [{ key: "cpuUtil", label: "CPU", color: accent, band: "max", values: aligned(timeline, pts, (p) => p.cpuUtil) }],
+      series: [{ key: "cpuUtil", label: "CPU", color: COLOR.primary, band: "max", values: unit("cpuUtil") }],
     },
     {
       id: "cpuTemp",
       title: "CPU temperature",
-      format: temp,
+      format: asDegrees,
       yUnit: 5,
-      series: [{ key: "cpuTemp", label: "CPU", color: "var(--color-warning)", band: "max", values: aligned(timeline, pts, (p) => p.cpuTemp, toTemp) }],
+      series: [{ key: "cpuTemp", label: "CPU", color: COLOR.warm, band: "max", values: unit("cpuTemp", degrees) }],
     },
   ];
 
-  const ram = aligned(timeline, pts, (p) => p.ramUsedMB);
-  if (kind === "host" && hasAny(ram)) {
-    charts.push({
+  const ramUsed = unit("ramUsedMB");
+  if (discrete && reported(ramUsed)) {
+    specs.push({
       id: "ramUsed",
       title: "RAM used",
       format: formatMb,
       yMin: 0,
-      yUnit: 1024,
-      series: [{ key: "ramUsedMB", label: "Used", color: accent, band: "max", values: ram }],
+      yUnit: GB,
+      series: [{ key: "ramUsedMB", label: "Used", color: COLOR.primary, band: "max", values: ramUsed }],
     });
   }
 
-  charts.push({
+  specs.push({
     id: "network",
     title: "Network",
-    format: (v) => formatBytesPerSec(Math.round(v)),
+    format: asRate,
     yMin: 0,
     series: [
-      { key: "netRx", label: "↓ rx", color: accent, values: aligned(timeline, pts, (p) => p.netRx) },
-      { key: "netTx", label: "↑ tx", color: "var(--color-success)", values: aligned(timeline, pts, (p) => p.netTx) },
+      { key: "netRx", label: "↓ rx", color: COLOR.primary, values: unit("netRx") },
+      { key: "netTx", label: "↑ tx", color: COLOR.good, values: unit("netTx") },
     ],
   });
 
-  for (const endpoint of data.llm) {
-    const port = endpoint.port;
-    const lp = endpoint.points;
-    charts.push(
+  for (const { port, points } of data.llm) {
+    const llm = (field: HistoryLlmSeries, scale?: (v: number) => number) =>
+      onTimeline<HistoryLlmSeries>(timeline, points as HistoryLlmPoint[], field, scale);
+    specs.push(
       {
         id: `llm-${port}-gen`,
         title: `Decode tok/s · :${port}`,
-        format: tokS,
+        format: asTokensPerSec,
         yMin: 0,
-        series: [{ key: "genTps", label: "Decode", color: accent, band: "max", values: aligned(timeline, lp, (p) => p.genTps) }],
+        series: [{ key: "genTps", label: "Decode", color: COLOR.primary, band: "max", values: llm("genTps") }],
       },
       {
         id: `llm-${port}-prefill`,
         title: `Prefill tok/s · :${port}`,
-        format: tokS,
+        format: asTokensPerSec,
         yMin: 0,
-        series: [{ key: "prefillTps", label: "Prefill", color: "var(--color-text)", band: "max", values: aligned(timeline, lp, (p) => p.prefillTps) }],
+        series: [{ key: "prefillTps", label: "Prefill", color: COLOR.neutral, band: "max", values: llm("prefillTps") }],
       },
     );
-    const kv = aligned(timeline, lp, (p) => p.kvUsage, (v) => v * 100);
-    if (hasAny(kv)) {
-      charts.push({
+    const kv = llm("kvUsage", (fraction) => fraction * 100);
+    if (reported(kv)) {
+      specs.push({
         id: `llm-${port}-kv`,
         title: `KV cache · :${port}`,
-        format: pct,
+        format: asPercent,
         yMin: 0,
         yMax: 100,
-        series: [{ key: "kvUsage", label: "KV", color: "var(--color-warning)", band: "max", values: kv }],
+        series: [{ key: "kvUsage", label: "KV", color: COLOR.warm, band: "max", values: kv }],
       });
     }
   }
-  return charts;
+  return specs;
 }
 
-/**
- * Whether the element the returned ref is attached to is on screen. Without
- * IntersectionObserver (old browsers, tests) it counts as visible.
- */
-function useOnScreen(): [(el: HTMLElement | null) => void, boolean] {
-  const [visible, setVisible] = useState(typeof IntersectionObserver === "undefined");
-  const observer = useRef<IntersectionObserver | null>(null);
-  const ref = useCallback((el: HTMLElement | null) => {
-    observer.current?.disconnect();
-    observer.current = null;
-    if (!el || typeof IntersectionObserver === "undefined") return;
-    observer.current = new IntersectionObserver((entries) => {
-      const entry = entries[entries.length - 1];
-      if (entry) setVisible(entry.isIntersecting);
-    });
-    observer.current.observe(el);
-  }, []);
-  return [ref, visible];
-}
+// ─── Visibility and polling ──────────────────────────────
 
-function useTabVisible(): boolean {
-  const [visible, setVisible] = useState(() => document.visibilityState !== "hidden");
+/** True while the referenced element intersects the viewport (always true without IntersectionObserver). */
+function useInView<T extends Element>() {
+  const node = useRef<T>(null);
+  // With an observer, wait for its first report before counting as on screen.
+  const [inView, setInView] = useState(() => typeof IntersectionObserver === "undefined");
   useEffect(() => {
-    const onChange = () => setVisible(document.visibilityState !== "hidden");
+    const el = node.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver((entries) => {
+      const latest = entries.at(-1);
+      if (latest) setInView(latest.isIntersecting);
+    });
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  return [node, inView] as const;
+}
+
+function usePageVisible(): boolean {
+  const read = () => typeof document === "undefined" || document.visibilityState !== "hidden";
+  const [visible, setVisible] = useState(read);
+  useEffect(() => {
+    const onChange = () => setVisible(read());
     document.addEventListener("visibilitychange", onChange);
     return () => document.removeEventListener("visibilitychange", onChange);
   }, []);
   return visible;
 }
 
-/**
- * Poll the history endpoint while `active`; the last answer stays on screen while paused, and
- * after a failed refresh (`error` set with `data`, `loadedAt` saying when it was fetched).
- */
-function useUnitHistory(sparkId: string, range: MetricsHistoryRange, active: boolean) {
-  const [data, setData] = useState<MetricsHistoryResponse | null>(null);
-  const [loadedAt, setLoadedAt] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  // A new unit or range starts from "loading", not from the previous answer.
-  useEffect(() => {
-    setData(null);
-    setLoadedAt(null);
-    setError(null);
-  }, [sparkId, range]);
-
-  useEffect(() => {
-    if (!active) return;
-    let cancelled = false;
-    const load = () => {
-      getUnitHistory(sparkId, range)
-        .then((res) => {
-          if (cancelled) return;
-          setData(res);
-          setLoadedAt(Date.now());
-          setError(null);
-        })
-        .catch((err: unknown) => {
-          if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-        });
-    };
-    load();
-    const timer = setInterval(load, HISTORY_POLL_MS);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [sparkId, range, active]);
-
-  return { data, loadedAt, error };
+interface Feed {
+  /** Which unit and range this state belongs to. */
+  owner: string;
+  response?: MetricsHistoryResponse;
+  fetchedAt?: number;
+  error?: string;
 }
 
-export function HistoryPanel({
-  sparkId,
-  kind,
-  temperatureUnit,
-}: {
+/**
+ * Fetches the unit's history now and every HISTORY_POLL_MS while `live`.
+ * Pausing keeps what is on screen; a new unit or range starts empty.
+ */
+function useHistoryFeed(sparkId: string, range: MetricsHistoryRange, live: boolean): Feed {
+  const owner = `${sparkId}\u0000${range}`;
+  const [feed, setFeed] = useState<Feed>({ owner });
+
+  useEffect(() => {
+    if (!live) return;
+    let stopped = false;
+    const pull = async () => {
+      try {
+        const response = await getUnitHistory(sparkId, range);
+        if (!stopped) setFeed({ owner, response, fetchedAt: Date.now() });
+      } catch (err) {
+        if (stopped) return;
+        const error = err instanceof Error ? err.message : String(err);
+        setFeed((prev) => (prev.owner === owner ? { ...prev, error } : { owner, error }));
+      }
+    };
+    void pull();
+    const timer = setInterval(() => void pull(), HISTORY_POLL_MS);
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [sparkId, range, live, owner]);
+
+  return feed.owner === owner ? feed : { owner };
+}
+
+// ─── Panel ───────────────────────────────────────────────
+
+export interface HistoryPanelProps {
   sparkId: string;
   kind?: string;
   temperatureUnit: "celsius" | "fahrenheit";
-}) {
+}
+
+export function HistoryPanel({ sparkId, kind, temperatureUnit }: HistoryPanelProps) {
   const [range, setRange] = useState<MetricsHistoryRange>(readHistoryRange);
-  /** Shared crosshair: one timestamp for every chart. */
   const [cursorT, setCursorT] = useState<number | null>(null);
-  const [screenRef, onScreen] = useOnScreen();
-  const tabVisible = useTabVisible();
-  const { data, loadedAt, error } = useUnitHistory(sparkId, range, onScreen && tabVisible);
+  const [box, inView] = useInView<HTMLDivElement>();
+  const pageVisible = usePageVisible();
+  const { response, fetchedAt, error } = useHistoryFeed(sparkId, range, inView && pageVisible);
+  const clock = useMemo(() => clockFormats(range), [range]);
 
-  const enabled = data?.enabled === true ? data : null;
-  const timeline = useMemo(() => (enabled ? buildTimeline(enabled) : []), [enabled]);
-  const charts = useMemo(
-    () => (enabled ? buildCharts(enabled, timeline, kind, temperatureUnit) : []),
-    [enabled, timeline, kind, temperatureUnit],
+  const data = response && response.enabled ? response : null;
+  const timeline = useMemo(() => (data ? buildTimeline(data) : []), [data]);
+  const specs = useMemo(
+    () => (data ? chartSpecs(data, timeline, kind, temperatureUnit) : []),
+    [data, timeline, kind, temperatureUnit],
   );
-  const formats = useMemo(() => timeFormatters(range), [range]);
 
-  const pick = (next: MetricsHistoryRange) => {
-    if (next === range) return;
-    writeHistoryRange(next);
+  const choose = (next: MetricsHistoryRange) => {
+    rememberRange(next);
     setCursorT(null);
     setRange(next);
   };
 
-  const chips = (
-    <div className="flex items-center gap-1" role="group" aria-label="History range">
-      {HISTORY_RANGES.map((r) => (
-        <button
-          key={r}
-          type="button"
-          className={
-            r === range
-              ? "rounded-md bg-accent px-2 py-0.5 text-[11px] font-medium text-white"
-              : "rounded-md px-2 py-0.5 text-[11px] text-muted hover:bg-surface-hover"
-          }
-          aria-pressed={r === range}
-          onClick={() => pick(r)}
-        >
-          {r}
-        </button>
-      ))}
+  const rangeChips = (
+    <div role="group" aria-label="History range" className="flex items-center gap-1">
+      {HISTORY_RANGES.map((r) => {
+        const active = r === range;
+        return (
+          <button
+            key={r}
+            type="button"
+            aria-pressed={active}
+            onClick={() => choose(r)}
+            className={`rounded-md px-2 py-0.5 text-[11px] ${
+              active ? "bg-accent font-medium text-white" : "text-muted hover:bg-surface-hover"
+            }`}
+          >
+            {r}
+          </button>
+        );
+      })}
     </div>
   );
 
-  let body;
-  if (error && !data) {
-    body = <p className="text-xs text-danger">Could not load history: {error}</p>;
-  } else if (!data) {
-    body = <p className="text-xs text-muted">Loading history…</p>;
-  } else if (!enabled) {
-    body = <p className="text-xs text-muted">Metrics history is off on the server. Turn it on in Settings → Metrics history.</p>;
-  } else if (timeline.length === 0) {
-    body = (
-      <p className="py-4 text-center text-xs text-muted">
-        No history in this range yet. The server records every unit while it is online.
-      </p>
-    );
-  } else {
-    body = (
+  const content = (() => {
+    if (!response) {
+      return error ? (
+        <p className="text-xs text-danger">Could not load history: {error}</p>
+      ) : (
+        <p className="text-xs text-muted">Loading history…</p>
+      );
+    }
+    if (!data) {
+      return (
+        <p className="text-xs text-muted">
+          Metrics history is off on the server. Turn it on in Settings → Metrics history.
+        </p>
+      );
+    }
+    if (timeline.length === 0) {
+      return (
+        <p className="py-4 text-center text-xs text-muted">
+          No history in this range yet. The server records every unit while it is online.
+        </p>
+      );
+    }
+    return (
       <>
         <p className="text-xs text-muted">
-          Average per {stepLabel(enabled.stepMs)} · shaded: peak (low point for free memory) · gaps: offline or not
+          Average per {bucketWidthText(data.stepMs)} · shaded: peak (low point for free memory) · gaps: offline or not
           reported
         </p>
         <div className="grid gap-3 lg:grid-cols-2">
-          {charts.map((c) => (
+          {specs.map((spec) => (
             <HistoryChart
-              key={c.id}
-              id={c.id}
-              title={c.title}
+              key={spec.id}
+              {...spec}
               timeline={timeline}
-              stepMs={enabled.stepMs}
-              from={enabled.from}
-              to={enabled.to}
-              series={c.series}
-              format={c.format}
-              yMin={c.yMin}
-              yMax={c.yMax}
-              yUnit={c.yUnit}
-              thresholds={c.thresholds}
+              stepMs={data.stepMs}
+              from={data.from}
+              to={data.to}
               cursorT={cursorT}
               onCursor={setCursorT}
-              formatTime={formats.tooltip}
-              formatAxisTime={formats.axis}
+              formatTime={clock.point}
+              formatAxisTime={clock.edge}
             />
           ))}
         </div>
       </>
     );
-  }
-
-  // A refresh failed after an earlier answer: keep that answer on screen, but say it is stale.
-  const stale =
-    error && data && loadedAt !== null ? (
-      <p className="text-xs text-danger" role="status">
-        Stale: could not refresh ({error}). Showing data from {formats.stamp(loadedAt)}.
-      </p>
-    ) : null;
+  })();
 
   return (
-    <div ref={screenRef}>
-      <Panel title={`History · ${RANGE_TITLE[range]}`} icon={<ActivityIcon />} actions={chips} bodyClassName="space-y-2">
-        {stale}
-        {body}
+    <div ref={box}>
+      <Panel
+        title={`History · ${SPAN_WORDS[range]}`}
+        icon={<ActivityIcon />}
+        actions={rangeChips}
+        bodyClassName="space-y-2"
+      >
+        {response && error && fetchedAt !== undefined ? (
+          <p role="status" className="text-xs text-danger">
+            Stale: could not refresh ({error}). Showing data from {clock.clock(fetchedAt)}.
+          </p>
+        ) : null}
+        {content}
       </Panel>
     </div>
   );

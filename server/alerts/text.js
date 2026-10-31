@@ -1,25 +1,21 @@
-/**
- * Length caps for text that reaches an alert summary, a notification or the
- * Activity log. Much of it comes from elsewhere — a unit's name, a kernel Xid
- * line, an SSH error, a model id — so every such string is flattened to one
- * line and cut, with an ellipsis, before it is stored or sent.
- */
+// Length caps for text that comes from units (SSH errors, kernel lines,
+// finding titles) before it reaches a notification, the API or the log.
+// docs/specs/alerts.md §3. Clean-room implementation (LIC1).
 
-/** Summaries and details. */
-export const MAX_SUMMARY_CHARS = 120;
-/** Unit and channel names. */
 export const MAX_NAME_CHARS = 60;
+export const MAX_SUMMARY_CHARS = 120;
+
+// C0/C1 control characters plus any whitespace, collapsed to one space.
+const NOISE = /[\s\u0000-\u001f\u007f-\u009f]+/gu;
 
 /**
- * One line of at most `max` characters; longer text ends in "…".
- * @param {unknown} value
- * @param {number} [max]
+ * One-line, length-bounded text. Counts code points, so an emoji is never
+ * split; anything cut ends in "…" and is exactly `max` code points long.
  */
 export function capText(value, max = MAX_SUMMARY_CHARS) {
-  if (value == null) return "";
-  // eslint-disable-next-line no-control-regex
-  const flat = String(value).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
-  const chars = Array.from(flat);
-  if (chars.length <= max) return flat;
-  return `${chars.slice(0, Math.max(1, max - 1)).join("").trimEnd()}…`;
+  if (value === null || value === undefined) return "";
+  const flat = String(value).replace(NOISE, " ").trim();
+  const points = Array.from(flat);
+  if (points.length <= max) return flat;
+  return `${points.slice(0, Math.max(0, max - 1)).join("")}…`;
 }

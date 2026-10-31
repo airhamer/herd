@@ -371,6 +371,8 @@ sparkDash/
 | PUT | `/api/sparks/order` | Persist tab order |
 | GET | `/api/sparks/:id/metrics` | One-shot metrics snapshot |
 | GET | `/api/fleet-energy` | Estimated fleet watts, rolling energy, coverage, and Wh/output-token |
+| GET | `/api/events` | Activity log, newest first (`limit` ≤2000, `sparkId`, `sinceId`, `beforeId`, `type` comma list with `prefix.` matching, `severity`); new events are also pushed over `/ws` as `{ "type": "event", "event": … }` |
+| DELETE | `/api/events` | Clear the activity log (`olderThanMs` keeps anything newer) |
 | POST | `/api/sparks/test` | Ephemeral SSH + LLM (+ Comfy if enabled) test (no persist) |
 | POST | `/api/sparks/:id/test` | Connectivity test (can save password) |
 | POST | `/api/sparks/:id/comfy/cancel` | Cancel ComfyUI job by `promptId` |
@@ -390,14 +392,18 @@ sparkDash/
 
 There is no application authentication on the HTTP/WebSocket API. sparkDash therefore binds to loopback and refuses direct LAN binding. Use an SSH tunnel, authenticated TLS reverse proxy, or Tailscale Serve; see [Remote access](./docs/REMOTE-ACCESS.md).
 
-`/api/fleet-energy` samples the configured fleet independently every two seconds. It estimates
-each node as GPU board draw + a CPU utilization model (5.2–65 W) + 23 W of memory/network/base
-overhead, clamped to the DGX Spark power envelope. Current and hourly fleet watts require fresh,
-simultaneous telemetry from every node; coverage fields make gaps explicit. Minute buckets are
-persisted at mode `0600` for rolling 24-hour and 31-day windows. Wh/output-token is reported when
-exactly one configured node has role `head` and exposes a monotonic LLM output-token counter.
-These values are estimates, not wall-meter measurements. Restart sparkDash after changing fleet
-membership so the persisted series has one stable node set.
+`/api/fleet-energy` samples every SSH Spark and every agent node independently every two seconds
+(see [docs/specs/fleet-energy.md](./docs/specs/fleet-energy.md)). GB10 Sparks keep the calibrated
+estimate (GPU board draw + a 5.2–65 W CPU model + 23 W base, clamped to 240 W). Other hosts sum
+measured GPU power (nvidia-smi across every GPU, or AMD hwmon), CPU package power (RAPL, else a
+power sensor, else a TDP model) and a configurable idle baseline. A machine registered both as a
+Spark and as an agent node is counted once. Current and hourly watts sum the hosts that report;
+coverage fields (hosts reporting, share from sensors, 24-hour host-time) make gaps explicit. Minute
+buckets are persisted at mode `0600` for rolling 24-hour and 31-day windows; membership changes
+re-scope live. Wh/output-token is reported when exactly one node has role `head`, exposes a
+monotonic output-token counter and every host reported; otherwise the line is hidden. A cost
+estimate uses the configured electricity price. These values are estimates, not wall-meter
+measurements.
 
 ---
 
@@ -414,6 +420,10 @@ Gear icon in the header, or `GET`/`PUT` `/api/settings`:
 | Auto-hide offline | false | Hide offline Sparks on Overview |
 | Hide worker nodes | false | Hide Worker-role Sparks from Overview and the tab bar |
 | Temperature unit | Celsius | Display GPU temperature in °C or °F |
+| Show Fleet energy | true | Fleet tab energy card (Sparks + agent nodes) |
+| Electricity price | 0.17 /kWh | Cost estimate on the energy card; `0` hides cost (`electricityPricePerKwh`) |
+| Currency | USD | ISO 4217 code for the cost estimate (`electricityCurrency`) |
+| Idle baseline | 40 W | Added to non-GB10 hosts for board/fans/disks (`energyIdleBaselineW`; per host: `energyHostBaselines: { "<id>": W }`) |
 | Benchmark share image | true | Decode/prefill **Copy results** becomes a split button: the label copies the text summary, the caret offers **Copy as text** / **Copy as image** on hover or click. Turn it off to keep the plain button. The image copies where the page has an image clipboard (HTTPS or localhost); over plain http on a LAN IP the card downloads instead |
 
 ### Environment variables

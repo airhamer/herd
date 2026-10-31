@@ -370,6 +370,12 @@ export interface GpuMetrics {
   gpuAllocMB?: number;
   /** true when the GPU draws from the OS memory pool (GB10: nvidia-smi memory.total is N/A). */
   unifiedMemory?: boolean;
+  /** Summed draw (W) of every GPU on the host (#33). Optional: older agents omit it. */
+  powerDrawTotal?: number;
+  /** Number of GPUs seen (#33). */
+  gpuCount?: number;
+  /** Where the GPU power figure came from (#33); absent when nothing measured it. */
+  powerSource?: "nvidia-smi" | "amd-hwmon";
 }
 
 export interface CpuMetrics {
@@ -381,6 +387,8 @@ export interface CpuMetrics {
   draw: number;
   /** CPU TDP (W). */
   tdp: number;
+  /** Where `draw` came from (#33): a RAPL / thermal / hwmon sensor, or the TDP x usage model. */
+  drawSource?: "rapl" | "thermal" | "hwmon" | "estimated";
 }
 
 export interface MemMetrics {
@@ -684,6 +692,85 @@ export interface StacksFile {
   stacks: Stack[];
 }
 
+// ─── Library (SC6, on-disk state per node) ─────────────────────────────────
+//
+// Producer: agent/collectors/library.js (runs on the node that owns the
+// disk). Seam: NodeAgentSnapshot.library, additive like lanes/stackHistory.
+// Vocabulary (one method, pin claims from the node's validated recipe
+// store — imageDigest / modelRevision):
+//   "pinned"   artifact matches a pin claim;
+//   "unpinned" on disk, no claim governs it (ungoverned cache, not drift);
+//   "stray"    on disk inside something a claim governs, but matches none
+//              (drift next to the pin);
+//   "missing"  a claim whose artifact is NOT on disk (pull finding — only
+//              ever emitted for models that DO have pins).
+
+/** One local docker image as reported by the library collector. */
+export interface LibraryEngineImage {
+  /** Docker Repository, e.g. "lmsysorg/sglang". */
+  reference: string;
+  /** Tag; "<none>" when dangling. */
+  tag: string;
+  /** Normalized repo digest (sha256:...). null when docker reported none. */
+  repoDigest: string | null;
+  /** Image size in bytes. null when docker could not answer (unknown). */
+  sizeBytes: number | null;
+  /** Docker image id, sha256: stripped, 19 chars. */
+  imageId: string;
+  /** Engine-relevant by reference match (inference images the Library lists). */
+  inferenceEngine: boolean;
+  /** Some recipe pin's digest matches this image (a moved tag stays pinned). */
+  pinned: boolean;
+  /** Recipes claiming that pin. */
+  pinnedBy: string[];
+}
+
+/** One checkpoint (model revision) found on disk, or a missing-pin finding. */
+export interface LibraryCheckpoint {
+  /** Model id (org/name from the HF cache dir, or the plain dir name). */
+  model: string;
+  /** Snapshot hash / commit, or "<dir>" for a plain model directory. */
+  revision: string;
+  /** Default-ref name ("main") when surfaced through refs, else null. */
+  refName: string | null;
+  /** Size in bytes. null when du could not answer or nothing is materialized. */
+  sizeBytes: number | null;
+  /** Pin verdict. "missing" is a pin claim with no artifact on disk. */
+  status: "pinned" | "unpinned" | "stray" | "missing";
+  /** Recipes pinning this exact revision. */
+  pinnedBy: string[];
+}
+
+/** One resolved pin claim (what the recipe store says vs what disk has). */
+export interface LibraryPinClaim {
+  kind: "image" | "model";
+  /** Recipe (Component instance) making the claim. */
+  recipe: string;
+  /** Digest (image) or `model@revision` (model). */
+  ref: string;
+  /** Artifact present locally. */
+  present: boolean;
+  /** "pinned" when present, "missing" when the claim is unmet. */
+  status: "pinned" | "missing";
+}
+
+/**
+ * SC6 library report — NodeAgentSnapshot.library. Errors are the raw
+ * docker/du/readdir failures behind null fields; they are never swallowed.
+ */
+export interface LibraryReport {
+  /** Report-format version. Currently 1. */
+  version: 1;
+  /** All local images (inferenceEngine flags the relevant ones). */
+  engineImages: LibraryEngineImage[];
+  /** Checkpoints on disk + missing-pin findings. */
+  checkpoints: LibraryCheckpoint[];
+  /** Recipe pin claims, resolved against disk. */
+  pins: LibraryPinClaim[];
+  /** Raw-source failures; empty when every source answered. */
+  errors: string[];
+}
+
 // ─── Node agent snapshot (full telemetry) ──────────────────────────────────────────────────────────
 
 /**
@@ -819,6 +906,14 @@ export interface NodeAgentSnapshot {
    * (SC5+ ETA calc / UI) treat both as "no history".
    */
   stackHistory?: Record<string, CategoryHistory> | null;
+  /**
+   * SC6: on-disk library state (agent/collectors/library.js — engine images,
+   * checkpoints with pinned/stray/missing verdicts, recipe pins resolved
+   * against disk). Optional: agents older than SC6 omit the key; a raw
+   * docker/disk failure surfaces inside the report's `errors`, never as a
+   * fabricated value. Collectors attach it even when partial (null fields).
+   */
+  library?: LibraryReport | null;
   /**
    * Raw LLM port probes. Optional: an agent with no LLM ports omits it.
    * STAT2: the dashboard server adds `normalized` to each entry.

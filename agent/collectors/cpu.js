@@ -17,9 +17,48 @@ const GB10_TDP_W = 65;
 /** Previous /proc/stat sample (module-level baseline). */
 let lastStat = null;
 
-/** Reset the usage baseline (test hook). */
+/** Previous RAPL package-energy reading: { uj, atMs, key }. */
+let lastRapl = null;
+
+/** Reset the usage and RAPL baselines (test hook). */
 export function resetCpuBaseline() {
   lastStat = null;
+  lastRapl = null;
+}
+
+/**
+ * CPU package power from RAPL (issue #33): the change in the summed
+ * `energy_uj` of the top-level powercap packages (intel-rapl:N, which AMD
+ * Zen hosts expose too) since the previous poll. null on the first poll, when
+ * the counters are unreadable (often root-only), on a wrap, or when the set
+ * of packages changed.
+ */
+async function readRaplWatts(readFile, readDir, nowMs) {
+  let packages;
+  try {
+    packages = readDir("/sys/class/powercap").filter((n) => /^intel-rapl:\d+$/.test(n)).sort();
+  } catch {
+    return null;
+  }
+  if (packages.length === 0) return null;
+  let total = 0;
+  try {
+    for (const name of packages) {
+      const uj = parseInt((await readFile(`/sys/class/powercap/${name}/energy_uj`)).trim(), 10);
+      if (!Number.isFinite(uj) || uj < 0) return null;
+      total += uj;
+    }
+  } catch {
+    return null;
+  }
+  const key = packages.join(",");
+  const previous = lastRapl;
+  lastRapl = { uj: total, atMs: nowMs, key };
+  if (!previous || previous.key !== key) return null;
+  const seconds = (nowMs - previous.atMs) / 1000;
+  const deltaUj = total - previous.uj;
+  if (!(seconds > 0) || deltaUj < 0) return null;
+  return deltaUj / seconds / 1e6;
 }
 
 /**
@@ -105,9 +144,10 @@ async function readCpuTemp(readFile) {
  * (mW); else idle+usage estimate (SystemCollector ARM formula).
  * @param {(path: string) => Promise<string>} readFile
  * @param {number} usageFraction 0–1
- * @returns {Promise<{draw:number, tdp:number}>}
+ * @param {{ readDir?: (dir: string) => string[], nowMs?: number }} [opts]
+ * @returns {Promise<{draw:number, tdp:number, drawSource:"rapl"|"thermal"|"hwmon"|"estimated"}>}
  */
-async function readCpuPower(readFile, usageFraction) {
+async function readCpuPower(readFile, usageFraction, { readDir = (dir) => fs.readdirSync(dir), nowMs = Date.now() } = {}) {
   let tdp = GB10_TDP_W;
   try {
     for (const cap of fs.readdirSync("/sys/class/powercap")) {
@@ -132,12 +172,18 @@ async function readCpuPower(readFile, usageFraction) {
     /* powercap absent */
   }
 
-  let draw = null;
-  try {
-    const mW = parseInt((await readFile("/sys/class/thermal/thermal_zone0/power/avg_power")).trim(), 10);
-    if (Number.isFinite(mW) && mW > 0) draw = mW / 1000;
-  } catch {
-    /* fall through to hwmon */
+  let draw = await readRaplWatts(readFile, readDir, nowMs);
+  let drawSource = draw != null ? "rapl" : null;
+  if (draw == null) {
+    try {
+      const mW = parseInt((await readFile("/sys/class/thermal/thermal_zone0/power/avg_power")).trim(), 10);
+      if (Number.isFinite(mW) && mW > 0) {
+        draw = mW / 1000;
+        drawSource = "thermal";
+      }
+    } catch {
+      /* fall through to hwmon */
+    }
   }
   if (draw == null) {
     try {
@@ -146,6 +192,7 @@ async function readCpuPower(readFile, usageFraction) {
           const mW = parseInt((await readFile(`/sys/class/hwmon/${h}/power1_input`)).trim(), 10);
           if (Number.isFinite(mW) && mW > 0) {
             draw = mW / 1000;
+            drawSource = "hwmon";
             break;
           }
         } catch {
@@ -160,8 +207,9 @@ async function readCpuPower(readFile, usageFraction) {
     const frac = Number.isFinite(usageFraction) ? Math.min(1, Math.max(0, usageFraction)) : 0;
     const idleWatts = tdp * 0.08;
     draw = idleWatts + (tdp - idleWatts) * frac;
+    drawSource = "estimated";
   }
-  return { draw: Math.round(draw * 10) / 10, tdp };
+  return { draw: Math.round(draw * 10) / 10, tdp, drawSource };
 }
 
 /**
@@ -169,7 +217,7 @@ async function readCpuPower(readFile, usageFraction) {
  * @param {{ readFile?: (path: string) => Promise<string>, now?: () => number }} [deps]
  * @returns {Promise<{usage:number, temperature:number, draw:number, tdp:number} | null>}
  */
-export async function collectCpu({ readFile = readTextFile, now = Date.now } = {}) {
+export async function collectCpu({ readFile = readTextFile, now = Date.now, readDir } = {}) {
   try {
     const raw = await readFile("/proc/stat");
     const cur = parseCpuStat(raw);
@@ -189,10 +237,10 @@ export async function collectCpu({ readFile = readTextFile, now = Date.now } = {
 
     const [temperature, power] = await Promise.all([
       readCpuTemp(readFile),
-      readCpuPower(readFile, usageFraction),
+      readCpuPower(readFile, usageFraction, { ...(readDir ? { readDir } : {}), nowMs: now() }),
     ]);
 
-    return { usage, temperature, draw: power.draw, tdp: power.tdp };
+    return { usage, temperature, draw: power.draw, tdp: power.tdp, drawSource: power.drawSource };
   } catch {
     return null;
   }

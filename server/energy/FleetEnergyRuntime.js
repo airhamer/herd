@@ -57,8 +57,16 @@ export function runFleetEnergySamplerTick({
   orderedSnapshots,
   monitors,
   now = Date.now,
+  collectInputs = null,
 }) {
   const atMs = now();
+  if (typeof collectInputs === "function") {
+    // Issue #33: Sparks and agent nodes, already estimated per host
+    // (server/energy/inputs.js). The scope follows the live fleet.
+    const { inputs, scope } = collectInputs(atMs);
+    if (Array.isArray(scope) && typeof tracker.setNodeIds === "function") tracker.setNodeIds(scope);
+    return tracker.record(inputs, atMs);
+  }
   const snapshots = orderedSnapshots();
   const trackerInputs = snapshots.map((snapshot) => ({
     ...snapshot,
@@ -72,31 +80,52 @@ export function runFleetEnergySamplerTick({
 }
 
 /** Build the read-only Express handler around the tracker's canonical contract. */
-export function createFleetEnergyHandler(tracker) {
-  return (_req, res) => res.json(tracker.snapshot());
+export function createFleetEnergyHandler(tracker, decorate = null) {
+  return (_req, res) => {
+    const snapshot = tracker.snapshot();
+    res.json(typeof decorate === "function" ? decorate(snapshot) : snapshot);
+  };
 }
 
-/** Register the read-only fleet-energy endpoints (plus explicit monthly-history maintenance). */
-export function registerFleetEnergyRoute(app, tracker) {
-  // Permanent monthly roll-up. Survives window resets; clearing it is a separate, explicit call.
-  app.get("/api/fleet-energy/monthly", (_req, res) => res.json(tracker.monthlySnapshot()));
-  // Query: month=YYYY-MM (one month) or all=true&confirm=delete-all-history (everything). One is required.
-  app.delete("/api/fleet-energy/monthly", (req, res) => {
-    const { month, all, confirm } = req.query ?? {};
-    if (all === "true" && month == null) {
-      if (confirm !== "delete-all-history") {
-        return res
-          .status(400)
-          .json({ error: "deleting all permanent history needs confirm=delete-all-history" });
-      }
-      return res.json({ removed: tracker.clearMonthly({ all: true }) });
-    }
-    if (typeof month === "string" && monthRange(month) && all == null) {
-      return res.json({ removed: tracker.clearMonthly({ month }) });
-    }
-    return res.status(400).json({ error: "pass month=YYYY-MM, or all=true&confirm=delete-all-history" });
+const WIPE_CONFIRMATION = "delete-all-history";
+
+/**
+ * Decide what a DELETE on the monthly history asks for. Exactly one form is
+ * accepted: `month=YYYY-MM`, or `all=true` with `confirm=delete-all-history`.
+ * Returns `{ target }` or `{ problem }` (a 400 message).
+ */
+function monthlyDeleteRequest(query = {}) {
+  const { month, all, confirm } = query;
+  const wantsAll = all !== undefined;
+  const wantsMonth = month !== undefined;
+  if (wantsAll && !wantsMonth && all === "true") {
+    return confirm === WIPE_CONFIRMATION
+      ? { target: { all: true } }
+      : { problem: `wiping the whole monthly history requires confirm=${WIPE_CONFIRMATION}` };
+  }
+  if (wantsMonth && !wantsAll && typeof month === "string" && monthRange(month) !== null) {
+    return { target: { month } };
+  }
+  return { problem: `give month=YYYY-MM, or all=true&confirm=${WIPE_CONFIRMATION}` };
+}
+
+/**
+ * Fleet-energy HTTP surface: the 31-day window is read-only; the monthly
+ * history (docs/specs/monthly-energy.md) can be read and, explicitly, pruned.
+ */
+export function registerFleetEnergyRoute(app, tracker, { decorate = null } = {}) {
+  app.get("/api/fleet-energy/monthly", (_req, res) => {
+    res.json(tracker.monthlySnapshot());
   });
-  return app.get("/api/fleet-energy", createFleetEnergyHandler(tracker));
+  app.delete("/api/fleet-energy/monthly", (req, res) => {
+    const { target, problem } = monthlyDeleteRequest(req.query ?? {});
+    if (problem) {
+      res.status(400).json({ error: problem });
+      return;
+    }
+    res.json({ removed: tracker.clearMonthly(target) });
+  });
+  return app.get("/api/fleet-energy", createFleetEnergyHandler(tracker, decorate));
 }
 
 /** Preserve startup ordering without coupling the sampler to server or WS state. */
@@ -118,6 +147,7 @@ export function createFleetEnergyRuntime({
   tracker,
   orderedSnapshots,
   monitors,
+  collectInputs = null,
   now = Date.now,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
@@ -139,7 +169,7 @@ export function createFleetEnergyRuntime({
   const sample = () => {
     if (stopped) return;
     try {
-      runFleetEnergySamplerTick({ tracker, orderedSnapshots, monitors, now });
+      runFleetEnergySamplerTick({ tracker, orderedSnapshots, monitors, now, collectInputs });
     } catch (error) {
       reportError("fleet energy sample error", error);
     }
