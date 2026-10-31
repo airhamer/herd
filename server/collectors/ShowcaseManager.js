@@ -212,8 +212,38 @@ export class ShowcaseManager {
    * Archive a finished live session (idempotent by sessionId).
    * @param {object} session
    */
+  /**
+   * Receive lifecycle notices (issue #32): `fn(session)` with a summary
+   * when a run starts and once when it settles. Pass null to detach.
+   * @param {((session: object) => void) | null} fn
+   */
+  setEventSink(fn) {
+    this._eventSink = typeof fn === "function" ? fn : null;
+  }
+
+  _emitLifecycle(session) {
+    if (!this._eventSink) return;
+    try {
+      this._eventSink({
+        sessionId: session.sessionId,
+        sparkId: session.sparkId,
+        status: session.status,
+        modelId: session.modelId ?? null,
+        port: session.port ?? null,
+        streams: session.streams,
+        error: session.error ?? null,
+      });
+    } catch {
+      /* a sink failure must not affect the run */
+    }
+  }
+
   _archiveSession(session) {
     if (!session || session.status === "running") return;
+    if (!session._settledNotified) {
+      session._settledNotified = true;
+      this._emitLifecycle(session);
+    }
     const record = publicSessionRecord(session, { fromHistory: true });
     const list = this.historyBySpark.get(session.sparkId) || [];
     const next = [
@@ -452,6 +482,7 @@ export class ShowcaseManager {
 
     this.sessions.set(sessionId, session);
     this.activeBySpark.set(sparkId, sessionId);
+    this._emitLifecycle(session);
 
     this._runSession(session).catch(() => {
       /* errors recorded on session */

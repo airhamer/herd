@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type {
   MemoryBudget,
   NodeAgentSnapshot,
@@ -26,6 +27,12 @@ export interface FleetPageProps {
   };
   /** When set, node cards become clickable and open the node detail view. */
   onSelectNode?: (nodeId: string) => void;
+  /** Rendered under the node cards (the Fleet energy card, issue #33). */
+  energy?: ReactNode;
+  /** Rendered beside the energy card (the LLM token totals card, issue #38). */
+  tokens?: ReactNode;
+  /** Rendered under the node cards (the Recent activity card, issue #32). */
+  activity?: ReactNode;
 }
 
 function formatMb(mb: number): string {
@@ -63,9 +70,10 @@ function sumRequests(byMachine: Record<string, RequestStat[]>) {
 }
 
 /**
- * Fleet overview page: summary strip + one FleetCard per node.
+ * Fleet overview page: summary strip + one FleetCard per node, then the
+ * optional energy and activity slots.
  */
-export function FleetPage({ nodes, topology, requests, memory, onSelectNode }: FleetPageProps) {
+export function FleetPage({ nodes, topology, requests, memory, onSelectNode, energy, tokens, activity }: FleetPageProps) {
   const onlineCount = nodes.filter((n) => n.online).length;
   const offlineCount = nodes.length - onlineCount;
   const reqs = sumRequests(requests.byMachine);
@@ -162,12 +170,30 @@ export function FleetPage({ nodes, topology, requests, memory, onSelectNode }: F
                 topology={node.topology}
                 memory={node.memory}
                 polledAt={node.polledAt}
+                llm={node.llm}
                 onSelect={onSelectNode}
               />
             );
           })}
         </div>
       )}
+
+      {tokens && energy ? (
+        <div
+          className="grid items-start lg:grid-cols-2"
+          style={{ gap: "var(--density-page-gap)" }}
+          data-testid="fleet-usage-row"
+        >
+          {tokens}
+          {energy}
+        </div>
+      ) : (
+        <>
+          {tokens}
+          {energy}
+        </>
+      )}
+      {activity}
     </div>
   );
 }

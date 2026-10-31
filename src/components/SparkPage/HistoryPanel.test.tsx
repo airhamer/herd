@@ -1,305 +1,318 @@
+// Tests for the History panel and its chart helpers, written from
+// docs/specs/unit-history.md §10 (LIC2 clean-room rewrite).
 import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flush, render } from "../../testing/render";
-import type { MetricsHistoryData, MetricsHistoryResponse } from "../../api/types";
-import { nearestIndex, segmentRuns, yDomain } from "./HistoryChart";
-import { HISTORY_POLL_MS, HISTORY_RANGE_KEY, HistoryPanel } from "./HistoryPanel";
+import type { HistoryStat, MetricsHistoryData, MetricsHistoryResponse } from "../../api/types";
+import { nearestIndex, segmentRuns, yDomain, type HistoryChartSeries } from "./HistoryChart";
+import { buildTimeline, formatMb, HISTORY_POLL_MS, HISTORY_RANGE_KEY, HistoryPanel, readHistoryRange } from "./HistoryPanel";
 
-vi.mock("../../api/client", () => ({
-  getUnitHistory: vi.fn(),
-}));
-
+vi.mock("../../api/client", () => ({ getUnitHistory: vi.fn() }));
 import { getUnitHistory } from "../../api/client";
+const api = vi.mocked(getUnitHistory);
 
-const fetchHistory = vi.mocked(getUnitHistory);
+const MIN = 60_000;
+const START = Date.UTC(2026, 3, 14, 9, 0, 0);
+const s = (avg: number, max = avg, min?: number): HistoryStat => (min == null ? { avg, max } : { avg, max, min });
 
-const STEP = 60_000;
-const T0 = Date.UTC(2026, 9, 1, 12, 0, 0);
-
-/** 6 one-minute buckets with the third and fourth missing (unit offline). */
-function data(overrides: Partial<MetricsHistoryData> = {}): MetricsHistoryData {
-  const at = (i: number) => T0 + i * STEP;
+/** Ten one-minute buckets; minutes 4–6 are missing (the unit was away). */
+function sample(extra: Partial<MetricsHistoryData> = {}): MetricsHistoryData {
+  const minutes = [0, 1, 2, 3, 7, 8, 9];
   return {
     enabled: true,
-    range: "6h",
-    stepMs: STEP,
-    from: at(0),
-    to: at(6),
-    points: [0, 1, 4, 5].map((i) => ({
-      t: at(i),
-      gpuUtil: { avg: 10 * (i + 1), max: 10 * (i + 2) },
-      gpuTemp: { avg: 50 + i, max: 55 + i },
-      memFreeMB: { avg: 9_000, max: 9_500, min: 7_000 },
-      netRx: { avg: 2048, max: 4096 },
-      netTx: { avg: 1024, max: 1024 },
+    range: "1h",
+    stepMs: MIN,
+    from: START,
+    to: START + 10 * MIN,
+    points: minutes.map((m) => ({
+      t: START + m * MIN,
+      gpuUtil: s(20 + m, 30 + m),
+      gpuTemp: s(40, 45),
+      gpuPower: s(5),
+      memFreeMB: s(20_000, 21_000, 12_000),
+      cpuUtil: s(3),
+      netRx: s(3 * 1024 * 1024),
+      netTx: s(512),
     })),
-    llm: [
-      {
-        port: 8888,
-        points: [0, 1].map((i) => ({ t: at(i), genTps: { avg: 40 + i, max: 45 }, kvUsage: { avg: 0.25, max: 0.5 } })),
-      },
-    ],
-    ...overrides,
+    llm: [{ port: 30000, points: [8, 9].map((m) => ({ t: START + m * MIN, genTps: s(12.5, 14), prefillTps: s(2500, 2600) })) }],
+    ...extra,
   };
 }
 
-function chart(container: HTMLElement, id: string): HTMLElement {
-  const el = container.querySelector<HTMLElement>(`[data-chart="${id}"]`);
-  if (!el) throw new Error(`no chart ${id}`);
-  return el;
-}
-
-/** Charts with something to draw (empty ones show "No data in this range"). */
-function chartsWithData(container: HTMLElement) {
-  return [...container.querySelectorAll("[data-chart]")].filter(
-    (c) => !c.textContent!.includes("No data in this range"),
-  );
-}
-
-function plot(container: HTMLElement, id: string): HTMLElement {
-  return chart(container, id).querySelector<HTMLElement>('[role="group"]')!;
-}
-
-function key(el: HTMLElement, k: string) {
-  act(() => {
-    el.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
-  });
-}
-
-async function mount(response: MetricsHistoryResponse = data()) {
-  fetchHistory.mockResolvedValue(response);
-  const result = render(<HistoryPanel sparkId="spark-1" kind="spark" temperatureUnit="celsius" />);
+async function show(reply: MetricsHistoryResponse | Error = sample(), kind = "spark", unit: "celsius" | "fahrenheit" = "celsius") {
+  if (reply instanceof Error) api.mockRejectedValue(reply);
+  else api.mockResolvedValue(reply);
+  const view = render(<HistoryPanel sparkId="node-a" kind={kind} temperatureUnit={unit} />);
   await flush();
-  return result;
+  return view.container;
 }
+
+const q = (root: ParentNode, sel: string) => root.querySelector<HTMLElement>(sel);
+const chartOf = (root: ParentNode, id: string) => {
+  const el = q(root, `[data-chart="${id}"]`);
+  expect(el, `chart ${id}`).not.toBeNull();
+  return el!;
+};
+const plotOf = (root: ParentNode, id: string) => q(chartOf(root, id), '[role="group"]')!;
+const press = (el: HTMLElement, key: string) =>
+  act(() => {
+    el.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+  });
 
 beforeEach(() => {
+  api.mockReset();
   localStorage.clear();
-  fetchHistory.mockReset();
 });
-
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
-describe("HistoryChart helpers", () => {
-  it("breaks lines at missing buckets and at jumps longer than a step", () => {
-    const v = { avg: 1, max: 1 };
-    expect(segmentRuns([0, 60, 120, 300, 360], [v, v, null, v, v], 60)).toEqual([[0, 1], [3, 4]]);
-    expect(segmentRuns([0, 60, 300, 360], [v, v, v, v], 60)).toEqual([[0, 1], [2, 3]]);
+describe("chart helpers", () => {
+  it("splits runs at nulls and at gaps wider than one and a half steps", () => {
+    const t = [0, 10, 20, 50, 60, 70, 80];
+    const v = [s(1), s(1), s(1), s(1), null, s(1), s(1)];
+    expect(segmentRuns(t, v, 10)).toEqual([[0, 1, 2], [3], [5, 6]]);
+    expect(segmentRuns([0, 15], [s(1), s(1)], 10)).toEqual([[0, 1]]);
+    expect(segmentRuns([], [], 10)).toEqual([]);
   });
 
-  it("finds the nearest bucket", () => {
-    expect(nearestIndex([0, 10, 20], 14)).toBe(1);
-    expect(nearestIndex([0, 10, 20], 16)).toBe(2);
-    expect(nearestIndex([0, 10, 20], -5)).toBe(0);
+  it("picks the closest bucket, the earlier one on a tie, and -1 for an empty timeline", () => {
+    const t = [100, 200, 300];
+    expect(nearestIndex(t, 0)).toBe(0);
+    expect(nearestIndex(t, 249)).toBe(1);
+    expect(nearestIndex(t, 250)).toBe(1);
+    expect(nearestIndex(t, 251)).toBe(2);
+    expect(nearestIndex(t, 999)).toBe(2);
     expect(nearestIndex([], 5)).toBe(-1);
   });
 
-  it("covers the band and thresholds in the y range, with room above the highest threshold", () => {
-    const d = yDomain(
-      [{ key: "m", label: "m", color: "x", band: "min", values: [{ avg: 7_700, max: 7_800, min: 7_600 }] }],
-      0,
-      undefined,
-      [
-        { value: 8192, label: "low", color: "x" },
-        { value: 4096, label: "critical", color: "x" },
-      ],
-      1024,
-    )!;
+  it("sizes the y range to the data, the band edge and the thresholds", () => {
+    const one = (values: Array<HistoryStat | null>, band?: "max" | "min"): HistoryChartSeries[] => [
+      { key: "k", label: "k", color: "red", values, band },
+    ];
+    expect(yDomain(one([null, null]))).toBeNull();
+    // Fixed bounds stay unless the data is outside them.
+    expect(yDomain(one([s(40, 70)], "max"), 0, 100)).toEqual({ lo: 0, hi: 100 });
+    expect(yDomain(one([s(40, 130)], "max"), 0, 100)).toEqual({ lo: 0, hi: 130 });
+    // The min band reaches below the average; thresholds get 25% headroom above the top one.
+    const d = yDomain(one([s(6000, 6000, 1500)], "min"), 0, undefined, [
+      { value: 8192, label: "low", color: "x" },
+      { value: 4096, label: "critical", color: "x" },
+    ], 1024)!;
     expect(d.lo).toBe(0);
     expect(d.hi).toBeGreaterThanOrEqual(8192 * 1.25);
-    expect(yDomain([{ key: "a", label: "a", color: "x", values: [null] }])).toBeNull();
+    expect((d.hi / 1024) % 1).toBe(0);
+    // Auto bounds snap to round numbers.
+    const auto = yDomain(one([s(41), s(57)]))!;
+    expect(auto.lo).toBeLessThanOrEqual(41);
+    expect(auto.hi).toBeGreaterThanOrEqual(57);
+    expect([1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8].some((m) => [1, 10, 100].some((p) => auto.hi === m * p))).toBe(true);
+  });
+
+  it("formats memory and builds the shared timeline from unit and LLM buckets", () => {
+    expect(formatMb(512.4)).toBe("512 MB");
+    expect(formatMb(1536)).toBe("1.5 GB");
+    expect(formatMb(3 * 1024 * 1024)).toBe("3.0 TB");
+    const d = sample({ points: [{ t: 30 }, { t: 10 }], llm: [{ port: 1, points: [{ t: 20 }, { t: 10 }] }] });
+    expect(buildTimeline(d)).toEqual([10, 20, 30]);
   });
 });
 
 describe("HistoryPanel", () => {
-  it("defaults to 1h, and the range chips refetch and are remembered", async () => {
-    const { container } = await mount();
-    expect(fetchHistory).toHaveBeenLastCalledWith("spark-1", "1h");
-    const chip = [...container.querySelectorAll('[aria-label="History range"] button')].find(
-      (b) => b.textContent === "24h",
-    ) as HTMLButtonElement;
-    expect(chip.getAttribute("aria-pressed")).toBe("false");
-    act(() => chip.click());
-    await flush();
-    expect(fetchHistory).toHaveBeenLastCalledWith("spark-1", "24h");
-    expect(chip.getAttribute("aria-pressed")).toBe("true");
-    expect(localStorage.getItem(HISTORY_RANGE_KEY)).toBe("24h");
-    expect(container.querySelector(".panel-title")!.textContent).toContain("History · last 24 hours");
+  it("starts on the hour view, and a chip switches, refetches and is remembered", async () => {
+    const root = await show();
+    expect(api).toHaveBeenLastCalledWith("node-a", "1h");
+    expect(q(root, ".panel-title")!.textContent).toContain("History · last hour");
+    const chips = [...root.querySelectorAll<HTMLButtonElement>('[aria-label="History range"] button')];
+    expect(chips.map((c) => c.textContent)).toEqual(["1h", "6h", "24h", "7d", "30d"]);
+    expect(chips[0].getAttribute("aria-pressed")).toBe("true");
 
-    fetchHistory.mockClear();
-    render(<HistoryPanel sparkId="spark-1" temperatureUnit="celsius" />);
+    act(() => chips[3].click());
     await flush();
-    expect(fetchHistory).toHaveBeenLastCalledWith("spark-1", "24h");
+    expect(api).toHaveBeenLastCalledWith("node-a", "7d");
+    expect(q(root, ".panel-title")!.textContent).toContain("last 7 days");
+    expect(chips[3].getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem(HISTORY_RANGE_KEY)).toBe("7d");
+    expect(readHistoryRange()).toBe("7d");
   });
 
-  it("draws an offline stretch as a gap, not a line across it", async () => {
-    const { container } = await mount();
-    const gpu = chart(container, "gpuUtil");
+  it("reads a stored range and ignores junk", async () => {
+    localStorage.setItem(HISTORY_RANGE_KEY, "24h");
+    await show();
+    expect(api).toHaveBeenLastCalledWith("node-a", "24h");
+    localStorage.setItem(HISTORY_RANGE_KEY, "2y");
+    expect(readHistoryRange()).toBe("1h");
+  });
+
+  it("explains the empty states", async () => {
+    expect((await show({ enabled: false })).textContent).toContain(
+      "Metrics history is off on the server. Turn it on in Settings → Metrics history.",
+    );
+    expect((await show(sample({ points: [], llm: [] }))).textContent).toContain("No history in this range yet.");
+    expect((await show(new Error("boom"))).textContent).toContain("Could not load history: boom");
+  });
+
+  it("draws the expected charts with a caption, and leaves a gap where the unit was away", async () => {
+    const root = await show();
+    expect(root.textContent).toContain("Average per 1 min · shaded: peak (low point for free memory)");
+    const ids = [...root.querySelectorAll("[data-chart]")].map((c) => c.getAttribute("data-chart"));
+    expect(ids).toEqual([
+      "gpuUtil", "gpuTemp", "gpuPower", "memFree", "cpuUtil", "cpuTemp", "network", "llm-30000-gen", "llm-30000-prefill",
+    ]);
+    const gpu = chartOf(root, "gpuUtil");
     expect(gpu.querySelectorAll('polyline[data-series="gpuUtil"]')).toHaveLength(2);
     expect(gpu.querySelectorAll('polygon[data-band="gpuUtil"]')).toHaveLength(2);
+    expect(gpu.querySelector('[data-readout="gpuUtil"]')!.textContent).toBe("29%");
+    expect(chartOf(root, "gpuPower").querySelector('[data-readout="gpuPower"]')!.textContent).toBe("5.0 W");
+    expect(chartOf(root, "cpuTemp").textContent).toContain("No data in this range");
+    expect(chartOf(root, "llm-30000-prefill").querySelector("[data-readout]")!.textContent).toBe("2.5k");
+    expect(chartOf(root, "llm-30000-gen").querySelector("[data-readout]")!.textContent).toBe("12.5");
+    const net = chartOf(root, "network");
+    expect(net.querySelector('[data-readout="netRx"]')!.textContent).toBe("↓ rx3.0 MB/s");
+    expect(net.querySelector('[data-readout="netTx"]')!.textContent).toBe("↑ tx512 B/s");
+    expect(net.querySelector("[data-band]")).toBeNull();
+    for (const axis of ["ymax", "ymin", "xstart", "xend"]) expect(gpu.querySelector(`[data-axis="${axis}"]`)).not.toBeNull();
     expect(gpu.querySelector('[data-axis="ymax"]')!.textContent).toBe("100%");
-    expect(gpu.querySelector('[data-axis="ymin"]')!.textContent).toBe("0.0%");
-    expect(gpu.querySelector('[data-axis="xstart"]')!.textContent).not.toBe("");
-    expect(gpu.querySelector('[data-axis="xend"]')!.textContent).not.toBe("");
   });
 
-  it("shows the headroom thresholds on the free-memory chart", async () => {
-    const { container } = await mount();
-    const mem = chart(container, "memFree");
-    expect(mem.textContent).toContain("Memory free (unified)");
-    expect(mem.querySelectorAll("[data-threshold]")).toHaveLength(2);
-    expect(mem.textContent).toContain("low 8.0 GB");
-    expect(mem.textContent).toContain("critical 4.0 GB");
+  it("draws a lone bucket as a short line", async () => {
+    const root = await show(sample({ points: [{ t: START + 5 * MIN, gpuUtil: s(50) }], llm: [] }));
+    expect(chartOf(root, "gpuUtil").querySelector('line[data-series="gpuUtil"]')).not.toBeNull();
   });
 
-  it("uses the discrete thresholds on a GPU host", async () => {
-    fetchHistory.mockResolvedValue(data());
-    const { container } = render(<HistoryPanel sparkId="h" kind="host" temperatureUnit="celsius" />);
-    await flush();
-    const mem = chart(container, "memFree");
-    expect(mem.textContent).toContain("VRAM free");
-    expect(mem.textContent).toContain("low 2.0 GB");
+  it("marks low and critical free memory, unified versus discrete", async () => {
+    const unified = chartOf(await show(), "memFree");
+    expect(unified.textContent).toContain("Memory free (unified)");
+    expect([...unified.querySelectorAll("[data-threshold]")].map((l) => l.getAttribute("data-threshold"))).toEqual([
+      "low 8.0 GB",
+      "critical 4.0 GB",
+    ]);
+    expect(unified.querySelector('polygon[data-band="memFreeMB"]')).not.toBeNull();
+
+    const pts = sample().points.map((p) => ({ ...p, ramUsedMB: s(4096) }));
+    const host = await show(sample({ points: pts }), "host");
+    const vram = chartOf(host, "memFree");
+    expect(vram.textContent).toContain("VRAM free");
+    expect(vram.textContent).toContain("low 2.0 GB");
+    expect(vram.textContent).toContain("critical 1.0 GB");
+    expect(chartOf(host, "ramUsed").textContent).toContain("RAM used");
   });
 
-  it("charts each LLM endpoint, KV only when reported", async () => {
-    const { container } = await mount();
-    expect(chart(container, "llm-8888-gen")).toBeTruthy();
-    expect(chart(container, "llm-8888-prefill").textContent).toContain("No data in this range");
-    expect(chart(container, "llm-8888-kv")).toBeTruthy();
+  it("adds a KV cache chart only for endpoints that report it, as a percentage", async () => {
+    const llm = [
+      { port: 8001, points: [{ t: START, genTps: s(10), kvUsage: s(0.42, 0.6) }] },
+      { port: 8002, points: [{ t: START, genTps: s(10) }] },
+    ];
+    const root = await show(sample({ llm }));
+    expect(chartOf(root, "llm-8001-kv").textContent).toContain("KV cache · :8001");
+    expect(chartOf(root, "llm-8001-kv").querySelector("[data-readout]")!.textContent).toBe("42%");
+    expect(q(root, '[data-chart="llm-8002-kv"]')).toBeNull();
   });
 
-  it("moves one crosshair across every chart from the keyboard, with a tooltip", async () => {
-    const { container } = await mount();
-    const gpu = plot(container, "gpuUtil");
-    act(() => gpu.focus());
-    // Focus lands on the newest bucket; every chart with data draws the crosshair there.
-    expect(chartsWithData(container).length).toBe(6);
-    expect(container.querySelectorAll("[data-crosshair]")).toHaveLength(6);
-    const tooltips = () => container.querySelectorAll("[data-tooltip]");
-    expect(tooltips()).toHaveLength(1);
-    expect(tooltips()[0].textContent).toContain("60%");
-    expect(tooltips()[0].textContent).toContain("max 70%");
-
-    key(gpu, "ArrowLeft");
-    expect(tooltips()[0].textContent).toContain("50%");
-    // Other charts read out the same timestamp.
-    expect(chart(container, "gpuTemp").querySelector('[data-readout="gpuTemp"]')!.textContent).toBe("54°C");
-
-    key(gpu, "Home");
-    expect(tooltips()[0].textContent).toContain("10%");
-    expect(chart(container, "llm-8888-gen").querySelector('[data-readout="genTps"]')!.textContent).toBe("40.0");
-    key(gpu, "ArrowRight");
-    expect(tooltips()[0].textContent).toContain("20%");
-
-    key(gpu, "Escape");
-    expect(container.querySelectorAll("[data-crosshair]")).toHaveLength(0);
-    expect(tooltips()).toHaveLength(0);
+  it("shows temperatures in Fahrenheit when the setting says so", async () => {
+    const root = await show(sample(), "spark", "fahrenheit");
+    expect(chartOf(root, "gpuTemp").querySelector("[data-readout]")!.textContent).toBe("104°F");
   });
 
-  it("follows the pointer to the nearest bucket on every chart", async () => {
-    const { container } = await mount();
-    const net = plot(container, "network");
-    net.getBoundingClientRect = () => ({ left: 0, width: 600, top: 0, height: 90, right: 600, bottom: 90, x: 0, y: 0, toJSON: () => ({}) });
-    // 600 px for 6 minutes: x = 150 sits over the second bucket's middle.
+  it("keyboard moves one crosshair across all charts; only the focused chart has a tooltip", async () => {
+    const root = await show();
+    const plot = plotOf(root, "gpuUtil");
+    act(() => plot.focus());
+    const withData = [...root.querySelectorAll("[data-chart]")].filter((c) => c.querySelector("[data-series]"));
+    for (const c of withData) expect(c.querySelector("[data-crosshair]"), c.getAttribute("data-chart")!).not.toBeNull();
+
+    const tip = () => root.querySelectorAll("[data-tooltip]");
+    expect(tip()).toHaveLength(1);
+    expect(tip()[0].getAttribute("role")).toBe("status");
+    expect(tip()[0].textContent).toContain("29%");
+    expect(tip()[0].textContent).toContain("max 39%");
+
+    press(plot, "ArrowLeft");
+    expect(q(chartOf(root, "gpuUtil"), "[data-readout]")!.textContent).toBe("28%");
+    press(plot, "Home");
+    expect(q(chartOf(root, "gpuUtil"), "[data-readout]")!.textContent).toBe("20%");
+    press(plot, "End");
+    expect(q(chartOf(root, "gpuUtil"), "[data-readout]")!.textContent).toBe("29%");
+    press(plot, "Escape");
+    expect(root.querySelectorAll("[data-crosshair]")).toHaveLength(0);
+    expect(tip()).toHaveLength(0);
+  });
+
+  it("follows the pointer to the nearest bucket middle and clears on leave", async () => {
+    const root = await show();
+    const plot = plotOf(root, "cpuUtil");
+    vi.spyOn(plot, "getBoundingClientRect").mockReturnValue({
+      left: 0, top: 0, width: 1000, height: 90, right: 1000, bottom: 90, x: 0, y: 0, toJSON: () => ({}),
+    } as DOMRect);
+    // 250 px of 1000 is minute 2.5, the middle of the bucket that starts at minute 2.
     act(() => {
-      net.dispatchEvent(new MouseEvent("pointermove", { clientX: 150, bubbles: true }));
+      plot.dispatchEvent(new MouseEvent("pointermove", { clientX: 250, bubbles: true }));
     });
-    const tip = container.querySelector("[data-tooltip]")!;
-    expect(tip.textContent).toContain("↓ rx2.0 KB/s");
-    expect(tip.textContent).toContain("↑ tx1.0 KB/s");
-    expect(container.querySelectorAll("[data-crosshair]").length).toBe(chartsWithData(container).length);
-    expect(chart(container, "gpuUtil").querySelector('[data-readout="gpuUtil"]')!.textContent).toBe("20%");
+    expect(q(chartOf(root, "gpuUtil"), "[data-readout]")!.textContent).toBe("22%");
+    expect(root.querySelectorAll("[data-tooltip]")).toHaveLength(1);
+    expect(q(chartOf(root, "cpuUtil"), "[data-tooltip]")).not.toBeNull();
     act(() => {
-      net.dispatchEvent(new MouseEvent("pointerout", { bubbles: true, relatedTarget: document.body }));
+      plot.dispatchEvent(new MouseEvent("pointerout", { bubbles: true }));
+      plot.dispatchEvent(new MouseEvent("pointerleave", { bubbles: false }));
     });
-    expect(container.querySelectorAll("[data-crosshair]")).toHaveLength(0);
+    expect(root.querySelectorAll("[data-crosshair]")).toHaveLength(0);
   });
 
-  it("converts temperatures to °F when asked", async () => {
-    fetchHistory.mockResolvedValue(data());
-    const { container } = render(<HistoryPanel sparkId="spark-1" temperatureUnit="fahrenheit" />);
-    await flush();
-    expect(chart(container, "gpuTemp").querySelector('[data-readout="gpuTemp"]')!.textContent).toBe("131°F");
-  });
-
-  it("says when the server has the setting off", async () => {
-    const { container } = await mount({ enabled: false });
-    expect(container.textContent).toContain("Metrics history is off on the server");
-    expect(container.querySelector("[data-chart]")).toBeNull();
-  });
-
-  it("polls every 30 s and pauses while the tab is hidden", async () => {
+  it("refreshes every 30 s, holds while the tab is hidden and refetches when it returns", async () => {
     vi.useFakeTimers();
-    let visibility: DocumentVisibilityState = "visible";
-    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
-    await mount();
-    expect(fetchHistory).toHaveBeenCalledTimes(1);
-    await act(async () => {
-      vi.advanceTimersByTime(HISTORY_POLL_MS);
-    });
-    expect(fetchHistory).toHaveBeenCalledTimes(2);
+    let state: DocumentVisibilityState = "visible";
+    vi.spyOn(document, "visibilityState", "get").mockImplementation(() => state);
+    await show();
+    expect(api).toHaveBeenCalledTimes(1);
+    await act(async () => void vi.advanceTimersByTime(HISTORY_POLL_MS));
+    expect(api).toHaveBeenCalledTimes(2);
 
-    visibility = "hidden";
-    act(() => {
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await act(async () => {
-      vi.advanceTimersByTime(HISTORY_POLL_MS * 3);
-    });
-    expect(fetchHistory).toHaveBeenCalledTimes(2);
+    state = "hidden";
+    act(() => void document.dispatchEvent(new Event("visibilitychange")));
+    await act(async () => void vi.advanceTimersByTime(HISTORY_POLL_MS * 4));
+    expect(api).toHaveBeenCalledTimes(2);
 
-    visibility = "visible";
-    act(() => {
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    expect(fetchHistory).toHaveBeenCalledTimes(3);
+    state = "visible";
+    act(() => void document.dispatchEvent(new Event("visibilitychange")));
+    await flush();
+    expect(api).toHaveBeenCalledTimes(3);
   });
 
-  it("keeps the last data after a failed refresh but says it is stale, until a refresh succeeds", async () => {
+  it("keeps the charts after a failed refresh with a stale notice that clears on success", async () => {
     vi.useFakeTimers();
-    const { container } = await mount();
-    expect(container.textContent).not.toContain("Stale");
-    fetchHistory.mockRejectedValueOnce(new Error("HTTP 502"));
-    await act(async () => {
-      vi.advanceTimersByTime(HISTORY_POLL_MS);
-    });
+    const root = await show();
+    api.mockRejectedValueOnce(new Error("timeout"));
+    await act(async () => void vi.advanceTimersByTime(HISTORY_POLL_MS));
     await flush();
-    const note = container.querySelector('[role="status"]');
-    expect(note?.textContent).toMatch(/^Stale: could not refresh \(HTTP 502\)\. Showing data from .+\.$/);
-    expect(chartsWithData(container).length).toBeGreaterThan(0);
-    await act(async () => {
-      vi.advanceTimersByTime(HISTORY_POLL_MS);
-    });
+    const notice = q(root, 'p[role="status"]');
+    expect(notice?.textContent).toMatch(/^Stale: could not refresh \(timeout\)\. Showing data from .+\.$/);
+    expect(q(root, '[data-chart="gpuUtil"]')).not.toBeNull();
+
+    await act(async () => void vi.advanceTimersByTime(HISTORY_POLL_MS));
     await flush();
-    expect(container.textContent).not.toContain("Stale");
+    expect(root.textContent).not.toContain("Stale:");
   });
 
-  it("does not poll while the panel is scrolled off screen", async () => {
-    let notify: ((entries: Array<{ isIntersecting: boolean }>) => void) | null = null;
+  it("waits until the panel scrolls into view", async () => {
+    const watchers: Array<(e: Array<{ isIntersecting: boolean }>) => void> = [];
     vi.stubGlobal(
       "IntersectionObserver",
       class {
-        constructor(cb: (entries: Array<{ isIntersecting: boolean }>) => void) {
-          notify = cb;
+        constructor(cb: (e: Array<{ isIntersecting: boolean }>) => void) {
+          watchers.push(cb);
         }
         observe() {}
         disconnect() {}
       },
     );
-    fetchHistory.mockResolvedValue(data());
-    const { container } = render(<HistoryPanel sparkId="spark-1" temperatureUnit="celsius" />);
+    await show();
+    expect(api).not.toHaveBeenCalled();
+    act(() => watchers.forEach((cb) => cb([{ isIntersecting: true }])));
     await flush();
-    expect(fetchHistory).not.toHaveBeenCalled();
-    expect(container.textContent).toContain("Loading history");
-    act(() => notify!([{ isIntersecting: true }]));
-    await flush();
-    expect(fetchHistory).toHaveBeenCalledTimes(1);
-    expect(container.querySelector("[data-chart]")).not.toBeNull();
-    act(() => notify!([{ isIntersecting: false }]));
-    expect(container.querySelector("[data-chart]")).not.toBeNull(); // the last answer stays
+    expect(api).toHaveBeenCalledTimes(1);
+    act(() => watchers.forEach((cb) => cb([{ isIntersecting: false }])));
+    expect(api).toHaveBeenCalledTimes(1);
   });
 });

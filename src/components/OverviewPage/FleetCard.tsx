@@ -1,4 +1,5 @@
 import type {
+  AgentLlmEntry,
   ContainerInfo,
   CpuMetrics,
   GpuMetrics,
@@ -11,6 +12,7 @@ import type {
   VersionInfo,
 } from "../../../shared/types";
 import { MetricBar } from "../ui/MetricBar";
+import { NormalizedEngineInline } from "../ui/NormalizedEngineMetrics";
 import { MemoryPoolBar } from "../ui/MemoryPoolBar";
 import { gpuHolderLabel, isUnifiedGpu, memBudgetStat, memoryPool } from "../../lib/memoryPool";
 import { useNodeUpdateDisplay } from "../Updates/FleetUpdatesContext";
@@ -38,6 +40,8 @@ export interface FleetCardProps {
   topology: TopologyInfo | null;
   memory: MemoryBudget | null;
   polledAt: number;
+  /** STAT2: the agent's LLM port probes, with server-added normalized windows. */
+  llm?: AgentLlmEntry[];
   /** When set, the card is clickable and opens the node detail view. */
   onSelect?: (nodeId: string) => void;
 }
@@ -154,6 +158,7 @@ export function FleetCard(props: FleetCardProps) {
     requests,
     memory,
     polledAt,
+    llm,
     onSelect,
   } = props;
 
@@ -206,6 +211,9 @@ export function FleetCard(props: FleetCardProps) {
     .slice()
     .sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.port - b.port);
   const versionByName = new Map(versions.map((v) => [v.serviceName, v]));
+  const normalizedByPort = new Map(
+    (llm ?? []).filter((e) => e && Number.isInteger(e.port)).map((e) => [e.port, e.normalized ?? null]),
+  );
   const gpuHolder = gpuHolderLabel(
     llmServices.filter((s) => s.status === "running").map((s) => s.modelId),
     gpu?.processes?.[0]?.name,
@@ -339,32 +347,37 @@ export function FleetCard(props: FleetCardProps) {
                     `${v?.modelPath ? ` \u00b7 ${v.modelPath}` : ""}${v?.quantization ? ` \u00b7 ${v.quantization}` : ""}` +
                     ` \u00b7 ${s.engine}${(v?.engineVersion ?? s.engineVersion) ? ` ${(v?.engineVersion ?? s.engineVersion)}` : ""} \u00b7 :${s.port}`;
                   return (
-                    <li key={`${s.name}:${s.port}`} className="flex items-center gap-1.5 text-[11px]" title={title}>
-                      <span
-                        className={`h-1.5 w-1.5 shrink-0 rounded-full ${modelDot(s.status)}`}
-                        aria-hidden="true"
-                      />
-                      <span
-                        className={`min-w-0 flex-1 truncate ${
-                          s.status === "running" ? "font-medium text-text" : "text-muted"
-                        }`}
-                      >
-                        {s.modelId ?? s.name}
-                        {v?.quantization ? ` (${v.quantization})` : ""}
-                      </span>
-                      {(s.status === "loading" || s.status === "wedged") && (
-                        <span className={`shrink-0 text-[10px] ${s.status === "wedged" ? "text-danger" : "text-warning"}`}>
-                          {s.status}
+                    <li key={`${s.name}:${s.port}`} className="flex flex-col text-[11px]" title={title}>
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className={`h-1.5 w-1.5 shrink-0 rounded-full ${modelDot(s.status)}`}
+                          aria-hidden="true"
+                        />
+                        <span
+                          className={`min-w-0 flex-1 truncate ${
+                            s.status === "running" ? "font-medium text-text" : "text-muted"
+                          }`}
+                        >
+                          {s.modelId ?? s.name}
+                          {v?.quantization ? ` (${v.quantization})` : ""}
                         </span>
-                      )}
-                      {s.active && s.status === "running" && (
-                        <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] uppercase tracking-wide text-accent">
-                          active
+                        {(s.status === "loading" || s.status === "wedged") && (
+                          <span className={`shrink-0 text-[10px] ${s.status === "wedged" ? "text-danger" : "text-warning"}`}>
+                            {s.status}
+                          </span>
+                        )}
+                        {s.active && s.status === "running" && (
+                          <span className="shrink-0 rounded bg-accent/15 px-1 text-[9px] uppercase tracking-wide text-accent">
+                            active
+                          </span>
+                        )}
+                        <span className="shrink-0 font-tabular text-[10px] text-muted">
+                          {s.engine} · :{s.port}
                         </span>
+                      </div>
+                      {s.status === "running" && (
+                        <NormalizedEngineInline windows={normalizedByPort.get(s.port)} />
                       )}
-                      <span className="shrink-0 font-tabular text-[10px] text-muted">
-                        {s.engine} · :{s.port}
-                      </span>
                     </li>
                   );
                 })}

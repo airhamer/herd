@@ -1,3 +1,4 @@
+import type { NormalizedEngineWindows } from "../../shared/types";
 // ─── Spark config (matches server/sparks.json) ────────────
 export interface SparkConfig {
   id: string;
@@ -187,8 +188,8 @@ export interface GpuThrottle {
   smClockMaxMHz: number | null;
   /** Current SM clock as % of max (0–100). null when clocks unavailable. */
   smClockPct: number | null;
-  /** Max graphics clock locked with `nvidia-smi -lgc` (MHz), from the sparkdash
-   *  gpu-clock-cap marker on the host. null/absent when no lock is recorded. */
+  /** Graphics clock ceiling (MHz) recorded by the gpu-clock-cap marker; null or
+   *  missing when no lock is known (docs/specs/gpu-clock-cap.md). */
   clockCapMHz?: number | null;
   /** Human-readable active reasons (tooltip). */
   detail: string;
@@ -283,44 +284,46 @@ export interface NetworkMetrics {
   wolMac?: string | null;
 }
 
-// ─── RoCE / RDMA (server/collectors/roce.js) ──────────────
+// ─── RoCE / RDMA (docs/specs/roce.md §2) ──────────────────
 export interface RoceQos {
-  /** "pcp" or "dscp" (mlnx_qos "Priority trust state"). */
+  /** mlnx_qos trust mode, lower case ("pcp", "dscp"). */
   trust: string | null;
-  /** Priorities with PFC enabled; [] means PFC is off everywhere; null when mlnx_qos is unavailable. */
+  /** Priorities with PFC on ([] = off on all); null when mlnx_qos gave nothing. */
   pfcPriorities: number[] | null;
   cableLen: number | null;
-  /** priority -> DSCP values, present in DSCP trust mode. */
+  /** DSCP values per priority (DSCP trust mode only). */
   dscpMap: Record<string, number[]> | null;
 }
 
 export interface RoceDevice {
-  /** RDMA device, e.g. "rocep1s0f0". */
+  /** RDMA device name. */
   name: string;
-  /** Its network interface, e.g. "enp1s0f0np0". */
+  /** Attached network interface, when there is one. */
   netdev: string | null;
   state: string | null;
   physState: string | null;
   active: boolean;
-  /** Was ACTIVE at some point while sparkDash watched; an uncabled port never is. */
+  /** ACTIVE at least once since herd started watching (uncabled ports never are). */
   everActive: boolean;
   rateGbps: number | null;
   linkLayer: string | null;
   operstate: string | null;
   mtu: number | null;
   speedMbps: number | null;
+  /** Bytes per second since the previous read; null on the first read. */
   rxBps: number | null;
   txBps: number | null;
   rxErrors: number | null;
   txErrors: number | null;
   rxDropped: number | null;
   txDropped: number | null;
-  /** RDMA hw_counters, lifetime totals. */
+  /** Lifetime hw_counters values. */
   counters: Record<string, number>;
-  /** Change since the previous sample. */
+  /** Growth of each counter since the previous read. */
   deltas: Record<string, number>;
-  loss: { rising: string[]; streak: number };
-  /** ethtool -S subset (discards, CRC, pause frames, per-priority). */
+  /** Rising loss counters; streak = reads in a row, ethStreak = slow samples in a row with port drops. */
+  loss: { rising: string[]; streak: number; ethStreak?: number };
+  /** Selected ethtool -S counters. */
   eth: Record<string, number> | null;
   flowControl: { rx: boolean | null; tx: boolean | null } | null;
   qos: RoceQos | null;
@@ -354,9 +357,36 @@ export interface UnifiedMemoryMetrics {
 }
 
 // ─── LLM metrics ─────────────────────────────────────────
+/**
+ * Where an LLM value came from (Page §3). Tier order: counter (engine counters
+ * herd differences) < native (a rate the engine computes) < proxy < client.
+ */
+export interface LlmValueSource {
+  source: "counter" | "native" | "proxy" | "client";
+  /** Seconds the value spans; null for gauges and lifetime totals. */
+  windowS: number | null;
+  /** True when the engine value only approximates the live rate. */
+  approximate: boolean;
+}
+
 export interface LlmMetrics {
   available: boolean;
-  backend: "vllm" | "llama.cpp" | "sglang" | "ds4" | "exl3" | "q27" | null;
+  backend:
+    | "vllm"
+    | "llama.cpp"
+    | "sglang"
+    | "ds4"
+    | "exl3"
+    | "q27"
+    | "tensorfold"
+    | "freetoken"
+    | "strata"
+    | "locals"
+    | "splash"
+    | "lmstudio"
+    | "ollama"
+    | "tabbyapi"
+    | null;
   modelId: string | null;
   modelPath: string | null;
   /** For ollama etc: list of installed models. */
@@ -366,14 +396,34 @@ export interface LlmMetrics {
   gpuMemoryUtilization: number | null;
   slotsActive: number;
   slotsTotal: number;
-  generationTps: number;
-  prefillTps: number;
+  /** Live decode tok/s. null when the engine does not measure it (e.g. LM Studio, Ollama). */
+  generationTps: number | null;
+  /** Live prefill tok/s. null when the engine does not measure it. */
+  prefillTps: number | null;
   /** Live cached-prefill tok/s when the backend splits kinds (ds4, llama.cpp, sglang). */
   cachedPrefillTps?: number | null;
   /** Live uncached/computed prefill tok/s when split is available. */
   uncachedPrefillTps?: number | null;
   /** Cumulative total output (generation) tokens as reported by the LLM server */
-  totalOutputTokens: number;
+  totalOutputTokens: number | null;
+  /** Lifetime prompt tokens the engine reports (STAT1). null when not exposed. */
+  totalPromptTokens?: number | null;
+  /** Lifetime prompt tokens served from cache (STAT1). null when not exposed. */
+  totalCachedTokens?: number | null;
+  /** Computed-only prefill tok/s: (Δprompt − Δcached) / Δt. vLLM only. */
+  computedPrefillTps?: number | null;
+  /** Engine-native decode tok/s (Hasso formula on vLLM/SGLang; engine counters elsewhere). */
+  engineDecodeTps?: number | null;
+  /** Engine-native prefill tok/s (Hasso formula on vLLM/SGLang; engine counters elsewhere). */
+  enginePrefillTps?: number | null;
+  /** Mean queue time (s) of requests admitted in the window. */
+  queueTimeSeconds?: number | null;
+  /** Mean accepted tokens per speculative step. */
+  specAcceptLength?: number | null;
+  /** Source tier, window and approximate flag for each non-null value (STAT1). */
+  valueSources?: Partial<Record<string, LlmValueSource>>;
+  /** STAT2: normalized engine record per rolling window ("60", "300"). null when unreachable. */
+  normalized?: NormalizedEngineWindows | null;
   /** vLLM KV cache usage fraction (0–1). null when backend !== vllm or unreachable. */
   kvCacheUsage?: number | null;
   /** vLLM running request count. null when unavailable. */
@@ -596,57 +646,93 @@ export interface SparkSnapshot {
 }
 
 // ─── WebSocket envelope ───────────────────────────────────
+// ─── Activity (server/events, /api/events, issue #32) ───
+
+export type ActivitySeverity = "info" | "warn" | "error" | "success";
+
+/** One fleet activity event. `sparkId` is the fleet-wide unit id (Spark id or node agent id). */
+export interface ActivityEvent {
+  id: number;
+  /** ms epoch */
+  ts: number;
+  /** Dotted type, e.g. spark.offline, gpu.throttle.start, service.started, alert.fired. */
+  type: string;
+  severity: ActivitySeverity;
+  sparkId: string | null;
+  sparkName: string | null;
+  message: string;
+  data?: Record<string, unknown>;
+}
+
+export interface EventsResponse {
+  /** Newest first. */
+  events: ActivityEvent[];
+  oldestId: number | null;
+  newestId: number | null;
+  total: number;
+}
+
+export interface EventsQuery {
+  limit?: number;
+  sparkId?: string;
+  sinceId?: number;
+  beforeId?: number;
+  /** Exact types or trailing-dot prefixes ("gpu."). */
+  types?: string[];
+  severities?: ActivitySeverity[];
+}
+
+/** Live push of one activity event over the dashboard WebSocket. */
+export interface WsActivityEvent {
+  type: "event";
+  event: ActivityEvent;
+}
+
 export interface WsSnapshot {
   type: "snapshot";
   /** Server generation time; optional while clients and servers roll independently. */
   generatedAt?: number;
   sparks: SparkSnapshot[];
   refreshInterval: number;
-  /** Alert notifications' firing set — present only while `alertsEnabled` is on. */
+  /** Server-side alerts currently firing; sent only when alertsEnabled is true. */
   alerts?: { active: AlertInstance[] };
 }
 
-// ─── Alert notifications (server/alerts) ───
+// ─── Alerts API (server/alerts, /api/alerts*) ───
 export type AlertSeverity = "warning" | "critical";
+export type AlertChannelType = "ntfy" | "discord" | "slack" | "webhook";
+type RuleValues = { enabled?: boolean; forSec?: number };
 
-/**
- * One pending or firing alert (GET /api/alerts, WS `alerts.active`). The
- * condition is a Health finding or an Overview strip exception; `ruleId` is the
- * finding id (thermal, memory, …) or the strip's (offline, throttle, disk, llm, tailnet).
- */
-export interface AlertInstance {
-  /** `${unitId}:${ruleId}` — the same key the Overview strip uses. */
+/** Fields shared by a live alert and a logged transition. */
+interface AlertSubject {
+  /** unitId + ":" + ruleId; identical to the FleetAlertStrip row key. */
   key: string;
+  /** A Health finding id or a strip exception id (offline, throttle, disk, llm, tailnet). */
   ruleId: string;
   ruleName: string;
   unitId: string;
   unitName: string;
   severity: AlertSeverity;
-  /** Highest severity reached while firing (a resolved alert is routed by it). */
-  peakSeverity?: AlertSeverity;
-  state: "pending" | "firing";
-  /** Short predicate after the unit name ("GPU is running hot"). */
+  /** Phrase that follows the unit name in a sentence. */
   label: string;
   summary: string;
-  /** Epoch ms the condition first held — survives a server restart. */
+  /** When the condition was first seen (epoch ms); kept across restarts. */
   startsAt: number;
-  firingAt: number | null;
 }
 
-/** One firing / resolved transition (newest first in `recent`). */
-export interface AlertEvent {
+/** A tracked alert, either still waiting out its `for` time or firing. */
+export interface AlertInstance extends AlertSubject {
+  state: "pending" | "firing";
+  firingAt: number | null;
+  /** Worst severity seen while firing; decides routing of the resolve message. */
+  peakSeverity?: AlertSeverity;
+}
+
+/** An entry of `recent`: an alert started or stopped firing. */
+export interface AlertEvent extends AlertSubject {
   id: number;
   at: number;
   status: "firing" | "resolved";
-  key: string;
-  ruleId: string;
-  ruleName: string;
-  unitId: string;
-  unitName: string;
-  severity: AlertSeverity;
-  label: string;
-  summary: string;
-  startsAt: number;
   endsAt: number | null;
 }
 
@@ -657,47 +743,45 @@ export interface AlertsResponse {
   recent: AlertEvent[];
 }
 
-/** A rule as GET /api/alerts/config describes it: where it comes from, on/off and `for`. */
+/** One rule from GET /api/alerts/config. */
 export interface AlertRule {
   id: string;
   name: string;
   description: string;
   source: "health" | "strip";
   defaults: { enabled: boolean; forSec: number };
-  /** Only the values the user changed. */
-  overrides: { enabled?: boolean; forSec?: number };
+  /** Values differing from `defaults`; empty when untouched. */
+  overrides: RuleValues;
 }
 
-export type AlertChannelType = "ntfy" | "discord" | "slack" | "webhook";
-
 export interface AlertChannel {
-  /** Absent on a channel added in the dialog and not yet saved. */
+  /** Missing until the server has stored the channel. */
   id?: string;
   name: string;
   type: AlertChannelType;
-  /** Masked by the server (`https://ntfy.sh…ab12`); send it back unchanged to keep it. */
-  url: string;
-  /** The server has a URL for this channel (in its encrypted secrets store). */
-  hasUrl?: boolean;
   enabled: boolean;
   minSeverity: AlertSeverity;
-  /** `lastError` is a status code or a fixed reason, never a server's answer. */
+  /** As returned the URL is masked; sending the masked text back keeps the stored one. */
+  url: string;
+  /** False when the server has no stored URL for this channel. */
+  hasUrl?: boolean;
+  /** Delivery bookkeeping; `lastError` holds a status code or a fixed phrase only. */
   status?: { lastSentAt: number | null; lastError: string | null; lastErrorAt: number | null };
 }
 
 export interface AlertsConfig {
   enabled: boolean;
-  /** 0 = no reminders while an alert keeps firing. */
-  repeatIntervalMin: number;
   rules: AlertRule[];
   channels: AlertChannel[];
+  /** Minutes between reminders for a still-firing alert; 0 disables them. */
+  repeatIntervalMin: number;
 }
 
-export interface AlertsConfigUpdate {
-  repeatIntervalMin?: number;
-  rules?: Record<string, { enabled?: boolean; forSec?: number }>;
-  channels?: AlertChannel[];
-}
+export type AlertsConfigUpdate = Partial<{
+  rules: Record<string, RuleValues>;
+  channels: AlertChannel[];
+  repeatIntervalMin: number;
+}>;
 
 export interface AlertTestResult {
   ok: boolean;
@@ -722,33 +806,90 @@ export interface FleetEnergy {
   nodeCoverage24hMs: Record<string, number>;
   nodeCoverage31dMs: Record<string, number>;
   hourlyWatts24h: Array<number | null>;
+  /** Issue #33 view fields (server/energy/view.js). Always "estimated, not wall-metered". */
+  label?: string;
+  hosts?: FleetEnergyHost[];
+  coverage?: FleetEnergyCoverage;
+  /** null when the electricity price is 0 (cost hidden). */
+  cost?: FleetEnergyCost | null;
+  /** FLEET3: "ledger" when outputTokens24h / whPerOutputToken24h come from the fleet-wide token ledger. */
+  tokenSource?: "ledger";
 }
 
-/** One UTC month of the permanent energy roll-up. */
+export type GpuPowerSource = "nvidia-smi" | "amd-hwmon";
+export type CpuPowerSource = "rapl" | "hwmon" | "thermal" | "estimated";
+
+/** One SSH Spark or agent node in the Fleet energy table. */
+export interface FleetEnergyHost {
+  id: string;
+  name: string;
+  kind: "spark" | "host" | "node";
+  online: boolean;
+  /** Counted right now (fresh power telemetry). */
+  reporting: boolean;
+  /** Set when this agent node is the same machine as an SSH Spark (counted once, under the Spark). */
+  duplicateOf: string | null;
+  /** "gb10" = calibrated GB10 formula; "measured" = sensors + idle baseline. */
+  model: "gb10" | "measured" | null;
+  watts: number | null;
+  measuredWatts: number | null;
+  gpuWatts: number | null;
+  cpuWatts: number | null;
+  baselineWatts: number | null;
+  gpuSource: GpuPowerSource | null;
+  cpuSource: CpuPowerSource | null;
+  gpuCount: number | null;
+}
+
+export interface FleetEnergyCoverage {
+  reportingHosts: number;
+  hostsInScope: number;
+  /** reportingHosts / hostsInScope, 0–100. */
+  percent: number;
+  /** Share of current watts that came from sensors rather than the model/baseline. */
+  measuredSharePct: number | null;
+  /** Mean per-host time covered over the last 24 h, 0–100. */
+  coverage24hPct: number;
+}
+
+export interface FleetEnergyCost {
+  currency: string;
+  pricePerKwh: number;
+  cost24h: number | null;
+  cost31d: number | null;
+  costPerDayAtCurrent: number | null;
+}
+
+/** Per-node share of a month in the long-run energy history. */
+export interface MonthlyEnergyNode {
+  wh: number;
+  coverageMs: number;
+}
+
+/**
+ * A UTC calendar month of the long-run energy history
+ * (GET /api/fleet-energy/monthly; see docs/specs/monthly-energy.md).
+ */
 export interface MonthlyEnergyMonth {
-  /** "YYYY-MM" (UTC). */
-  month: string;
-  startMs: number;
-  /** Exclusive end of the month. */
-  endMs: number;
-  /** False while the month is still the current one. */
-  closed: boolean;
-  /** Nodes that reported in this month (the scope at the time). */
-  nodeIds: string[];
-  nodes: Record<string, { wh: number; coverageMs: number }>;
-  totalWh: number;
-  fleetWh: number;
+  month: string; // "YYYY-MM"
+  startMs: number; // first instant of the month
+  endMs: number; // first instant of the next month
+  closed: boolean; // false for the month that is still running
+  nodeIds: string[]; // every node that contributed, sorted
+  nodes: Record<string, MonthlyEnergyNode>;
+  totalWh: number; // sum of the per-node estimates
+  fleetWh: number; // fleet-level estimate (what the UI shows)
   fleetCoverageMs: number;
   outputTokens: number;
   coveredOutputTokens: number;
-  whPerOutputToken: number | null;
+  whPerOutputToken: number | null; // null until any tokens were paired with energy
 }
 
+/** Response body of GET /api/fleet-energy/monthly (months oldest first). */
 export interface MonthlyEnergy {
   estimated: boolean;
   generatedAt: number;
   foldedThroughMs: number;
-  /** Oldest first. */
   months: MonthlyEnergyMonth[];
 }
 
@@ -764,15 +905,23 @@ export interface Settings {
   benchDebugTraces: boolean;
   /** Layout density — compact (default) or comfortable. */
   density: "comfortable" | "compact";
-  /** Overview Fleet Energy card. Off by default. */
+  /** Fleet tab energy card (issue #33). On by default. */
   showFleetEnergy: boolean;
+  /** Electricity price per kWh for the energy cost estimate; 0 hides cost. Default 0.17. */
+  electricityPricePerKwh?: number;
+  /** ISO 4217 code for the cost estimate. Default "USD". */
+  electricityCurrency?: string;
+  /** Idle/board baseline added to measured (non-GB10) hosts, in watts. Default 40. */
+  energyIdleBaselineW?: number;
+  /** Per-host overrides of the idle baseline, keyed by Spark or node id. */
+  energyHostBaselines?: Record<string, number>;
   /** Overview active fleet exceptions strip. Off by default. */
   showFleetExceptions: boolean;
   /** Overview search field + status filter. Off by default. */
   showOverviewSearch: boolean;
   /** Benchmark dialogs offer "Copy image" — a PNG share card of the results. */
   benchShareImage: boolean;
-  /** Alert notifications (Settings → Alerts). Off by default; while off nothing is evaluated or sent. */
+  /** Master switch for server alerts (default off). Off means no evaluation and no sends. */
   alertsEnabled?: boolean;
   /** Opt-in dense 48 h GPU/unit history + bucketed day/week tiers. Off by default (saves disk + CPU). */
   metricsHistory: boolean;
@@ -1151,6 +1300,21 @@ export type {
   ComponentActionTraffic,
   ComponentActionResult,
   ComponentActionPlan,
+  // STAT2 normalized engine metrics.
+  AgentLlmEntry,
+  EngineSourceTier,
+  NormalizedEngineField,
+  NormalizedEngineValue,
+  NormalizedEngineRecord,
+  NormalizedEngineWindows,
+  // FLEET3 token ledger.
+  LlmTokenRange,
+  LlmTokenSplit,
+  LlmTokenModelRow,
+  LlmTokenEndpointRow,
+  LlmTokenTotals,
+  LlmTokenHistoryPoint,
+  LlmTokenHistory,
 } from "../../shared/types";
 
 // ─── Fleet updates (docs/SPEC-UPDATES.md §6/§9) ────
@@ -1224,17 +1388,17 @@ export interface ScheduleUpdateRequest {
   cron?: string;
   mirrorCron?: boolean;
 }
-// ─── Unit history (GET /api/sparks/:id/history) ──────────
+// ─── Unit history (docs/specs/unit-history.md §5, §9) ────
 export type MetricsHistoryRange = "1h" | "6h" | "24h" | "7d" | "30d";
 
-/** One series in one bucket. `min` only on memFreeMB (headroom's low point). */
+/** Average and peak of a series over one bucket; `min` is only sent for memFreeMB. */
 export interface HistoryStat {
   avg: number;
   max: number;
   min?: number;
 }
 
-/** Unit-level series: %, °C, W, MB, bytes/s. */
+/** Unit series: percentages, °C, watts, megabytes and bytes per second. */
 export type HistoryUnitSeries =
   | "gpuUtil"
   | "gpuTemp"
@@ -1247,32 +1411,30 @@ export type HistoryUnitSeries =
   | "netRx"
   | "netTx";
 
-/** Per LLM endpoint: tok/s, and the KV pool fill as 0–1. */
+/** LLM endpoint series: decode and prefill tok/s, KV cache fill as a 0–1 fraction. */
 export type HistoryLlmSeries = "genTps" | "prefillTps" | "kvUsage";
 
-/** A bucket; a series the unit did not report in it is absent (a gap). */
+/** One bucket, keyed by its start time; series missing from it are gaps. */
 export type HistoryPoint = { t: number } & Partial<Record<HistoryUnitSeries, HistoryStat>>;
 export type HistoryLlmPoint = { t: number } & Partial<Record<HistoryLlmSeries, HistoryStat>>;
 
 export interface MetricsHistoryData {
   enabled: true;
   range: MetricsHistoryRange;
-  /** Bucket width of the points; a jump larger than this is a gap. */
+  /** Width of one bucket in ms. */
   stepMs: number;
-  /** Window the range covers (epoch ms); the x-axis spans exactly this. */
+  /** The requested window in epoch ms; charts span exactly from..to. */
   from: number;
   to: number;
   points: HistoryPoint[];
   llm: Array<{ port: number; points: HistoryLlmPoint[] }>;
 }
 
+/** `{ enabled: false }` while Settings → Metrics history is off. */
 export type MetricsHistoryResponse = MetricsHistoryData | { enabled: false };
 
-// ─── GPU raw history (GET /api/sparks/:id/gpu-history) ───
-/**
- * Parallel arrays, newest last. `p` may hold nulls (power unknown). `gpus`
- * lists the cards of a multi-GPU host, each with arrays parallel to `t`.
- */
+// ─── Raw GPU history (GET /api/sparks/:id/gpu-history) ───
+/** One card of a multi-GPU host; arrays line up with the response's `t`. */
 export interface GpuHistoryDevice {
   index: number;
   name: string | null;
@@ -1281,6 +1443,7 @@ export interface GpuHistoryDevice {
   p: Array<number | null>;
 }
 
+/** Parallel arrays, oldest first; `p` is null where power was unknown. */
 export interface GpuHistoryResponse {
   t: number[];
   u: number[];

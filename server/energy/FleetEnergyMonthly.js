@@ -1,255 +1,232 @@
+/**
+ * Permanent monthly energy history.
+ *
+ * The 31-day tracker window is pruned and is set aside when fleet membership
+ * changes; this archive keeps a compact per-UTC-month total of every finished
+ * minute so long-run figures survive both. Clean-room implementation written
+ * from docs/specs/monthly-energy.md (herd LIC1).
+ */
 import fs from "node:fs";
 import path from "node:path";
-import { writeStateAtomically } from "./atomicWrite.js";
+import { atomicWrite } from "../util/atomicWrite.js";
 
-/**
- * Permanent monthly roll-up of fleet energy.
- *
- * The tracker keeps per-minute buckets for 31 days. This archive folds each
- * finished minute into its UTC month once, so totals outlive that window,
- * restarts, resets and fleet membership changes.
- *
- * Idempotency: one watermark (`foldedThroughMs`) is stored in the same file as
- * the totals and written atomically with them. A minute is folded only when its
- * start is at or after the watermark, and the watermark then moves past it, so
- * a minute can never be counted twice (re-feeding the same buckets, reloading
- * the 31-day file after a crash, or backfilling on every start are all safe).
- *
- * A month is "closed" once its end is past the late-write grace at the time of
- * reading. There is no separate close step; the current UTC month is open.
- */
+const ARCHIVE_VERSION = 1;
+const ONE_MINUTE = 60_000;
+const ONE_DAY = 86_400_000;
+/** A minute is only final once it ended this long ago (late samples may still land). */
+const SETTLE_MS = 10_000;
+const WATT_MS_PER_WH = 3_600_000;
+const MONTH_PATTERN = /^(\d{4})-(0[1-9]|1[0-2])$/;
 
-const FILE_VERSION = 1;
-const MINUTE_MS = 60_000;
-/** A minute can still receive a late interval for this long after it ends (the tracker's MAX_GAP_MS). */
-const LATE_WRITE_GRACE_MS = 10_000;
-/** Sanity cap: never fold, or hold a watermark, beyond the clock plus this. */
-const MAX_AHEAD_MS = 24 * 60 * 60_000;
-const MONTH_RE = /^(\d{4})-(0[1-9]|1[0-2])$/;
+const isCount = (v) => Number.isSafeInteger(v) && v >= 0;
+const isAmount = (v) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+const amountOr0 = (v) => (isAmount(v) ? v : 0);
 
-const num = (v) => (Number.isFinite(v) && v >= 0 ? v : 0);
-const round3 = (v) => Math.round(v * 1000) / 1000;
-
-/** "2026-10" for a UTC instant. */
+/** "YYYY-MM" of the UTC month containing `ms`. */
 export function monthKey(ms) {
   const d = new Date(ms);
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-/** [startMs, endMs) of a "YYYY-MM" key, or null when it is not one. */
+/** [start, end) of a "YYYY-MM" UTC month, or null when the key is malformed. */
 export function monthRange(key) {
-  const m = MONTH_RE.exec(key ?? "");
+  const m = typeof key === "string" ? MONTH_PATTERN.exec(key) : null;
   if (!m) return null;
   const year = Number(m[1]);
-  const month = Number(m[2]) - 1;
-  return [Date.UTC(year, month, 1), Date.UTC(year, month + 1, 1)];
+  const monthIndex = Number(m[2]) - 1;
+  return [Date.UTC(year, monthIndex, 1), Date.UTC(year, monthIndex + 1, 1)];
 }
 
-function emptyMonth() {
-  return {
-    nodes: {},
-    fleetWh: 0,
-    fleetCoverageMs: 0,
-    outputTokens: 0,
-    coveredOutputTokens: 0,
-    tokenFleetWh: 0,
-  };
+function blankMonth() {
+  return { nodes: {}, fleetWh: 0, fleetCoverageMs: 0, outputTokens: 0, coveredOutputTokens: 0, tokenFleetWh: 0 };
 }
 
-function cleanMonth(raw) {
-  const month = emptyMonth();
-  for (const [id, node] of Object.entries(raw?.nodes ?? {})) {
-    month.nodes[id] = { wh: num(node?.wh), coverageMs: num(node?.coverageMs) };
+/** Rebuild one stored month, keeping only well-formed numbers. */
+function reviveMonth(stored) {
+  const month = blankMonth();
+  if (!stored || typeof stored !== "object") return month;
+  for (const [id, node] of Object.entries(stored.nodes ?? {})) {
+    if (!id || !node || typeof node !== "object") continue;
+    month.nodes[id] = { wh: amountOr0(node.wh), coverageMs: amountOr0(node.coverageMs) };
   }
-  for (const key of ["fleetWh", "fleetCoverageMs", "outputTokens", "coveredOutputTokens", "tokenFleetWh"]) {
-    month[key] = num(raw?.[key]);
-  }
+  month.fleetWh = amountOr0(stored.fleetWh);
+  month.fleetCoverageMs = amountOr0(stored.fleetCoverageMs);
+  month.outputTokens = amountOr0(stored.outputTokens);
+  month.coveredOutputTokens = amountOr0(stored.coveredOutputTokens);
+  month.tokenFleetWh = amountOr0(stored.tokenFleetWh);
   return month;
 }
 
+/** Node ids with a usable reading in this bucket (an empty list means "nothing measured"). */
+function measuredNodes(bucket) {
+  const wh = bucket?.nodeWh;
+  if (!wh || typeof wh !== "object") return [];
+  return Object.keys(wh).filter((id) => isAmount(wh[id]));
+}
+
 export class MonthlyEnergyArchive {
-  constructor({
-    filePath = null,
-    now = () => Date.now(),
-    fileSystem = fs,
-    writeState = writeStateAtomically,
-  } = {}) {
+  constructor({ filePath = null, now = () => Date.now(), fileSystem = fs } = {}) {
     this.filePath = filePath;
-    this._now = now;
+    this._clock = typeof now === "function" ? now : () => Date.now();
     this._fs = fileSystem;
-    this._writeState = writeState;
-    this._months = new Map();
-    this._foldedThroughMs = 0;
-    this._dirty = false;
-    this._load();
+    /** @type {Map<string, ReturnType<typeof blankMonth>>} */
+    this._byMonth = new Map();
+    /** Minutes starting before this instant are already in the totals. */
+    this.foldedThroughMs = 0;
+    this._changed = false;
+    this._readFile();
   }
 
-  get foldedThroughMs() {
-    return this._foldedThroughMs;
+  _readFile() {
+    if (!this.filePath) return;
+    let text;
+    try {
+      text = this._fs.readFileSync(this.filePath, "utf8");
+    } catch (error) {
+      if (error?.code !== "ENOENT") console.warn(`[MonthlyEnergy] cannot read ${this.filePath}: ${error.message}`);
+      return;
+    }
+    let doc = null;
+    try {
+      doc = JSON.parse(text);
+    } catch {
+      doc = null;
+    }
+    if (!doc || doc.version !== ARCHIVE_VERSION || typeof doc.months !== "object" || doc.months === null) {
+      this._setAside();
+      return;
+    }
+    for (const [key, stored] of Object.entries(doc.months)) {
+      if (monthRange(key)) this._byMonth.set(key, reviveMonth(stored));
+    }
+    if (isCount(doc.foldedThroughMs)) this.foldedThroughMs = doc.foldedThroughMs;
+    // A watermark written while the clock ran far ahead would hide real minutes forever.
+    const current = this._clock();
+    if (Number.isFinite(current) && this.foldedThroughMs > current + ONE_DAY) {
+      this.foldedThroughMs = Math.floor(current / ONE_MINUTE) * ONE_MINUTE;
+      this._changed = true;
+    }
   }
 
-  /** Start (ms) of the first minute that is no longer open to late writes at `nowMs`. */
-  static closedBefore(nowMs) {
-    return Math.floor((nowMs - LATE_WRITE_GRACE_MS) / MINUTE_MS) * MINUTE_MS;
+  /** Keep an unparseable file for inspection instead of overwriting it. */
+  _setAside() {
+    const { dir, name, ext } = path.parse(this.filePath);
+    const target = path.join(dir, `${name}.unreadable-${Math.floor(this._clock())}${ext || ".json"}`);
+    try {
+      this._fs.renameSync(this.filePath, target);
+      console.warn(`[MonthlyEnergy] ${this.filePath} was unreadable; kept as ${target}`);
+    } catch (error) {
+      console.warn(`[MonthlyEnergy] ${this.filePath} is unreadable and could not be moved: ${error.message}`);
+    }
+  }
+
+  _monthFor(key) {
+    let month = this._byMonth.get(key);
+    if (!month) {
+      month = blankMonth();
+      this._byMonth.set(key, month);
+    }
+    return month;
   }
 
   /**
-   * Fold finished minutes from `buckets` (any iterable of tracker minute buckets).
-   * Buckets before the watermark were folded already and are skipped.
-   * `trackedSinceMs` is the minute from which output tokens were counted; only
-   * fleet energy from then on is paired with tokens.
-   * @returns {number} how many minutes were added
+   * Add every finished, not-yet-counted minute. Returns how many minutes were added.
+   * `trackedSinceMs` marks when output tokens started being counted; only fleet
+   * energy from then on is paired with tokens for the Wh/token figure.
    */
-  foldBuckets(buckets, { nowMs = this._now(), trackedSinceMs = null } = {}) {
-    if (!Number.isFinite(nowMs)) return 0;
-    // Clock-jump guard: a clock that ran far ahead must not park the watermark in the future,
-    // or real minutes after the clock returns would be skipped. Never fold past now + 1 day;
-    // a stored watermark beyond that is clamped back (totals are kept).
-    const cap = MonthlyEnergyArchive.closedBefore(this._now() + MAX_AHEAD_MS);
-    const boundary = Math.min(MonthlyEnergyArchive.closedBefore(nowMs), cap);
-    if (this._foldedThroughMs > cap) {
-      this._foldedThroughMs = boundary;
-      this._dirty = true;
-    }
-    if (boundary <= this._foldedThroughMs) return 0;
-
-    let folded = 0;
+  foldBuckets(buckets, { nowMs = this._clock(), trackedSinceMs = null } = {}) {
+    const ceiling = Math.min(nowMs - SETTLE_MS, this._clock() + ONE_DAY);
+    const ready = [];
     for (const bucket of buckets ?? []) {
       const start = bucket?.minuteStartMs;
-      if (!Number.isSafeInteger(start) || start % MINUTE_MS !== 0) continue;
-      if (start < this._foldedThroughMs || start >= boundary) continue;
-      if (this._add(start, bucket, trackedSinceMs)) folded += 1;
+      if (!isCount(start) || start < this.foldedThroughMs) continue;
+      if (start + ONE_MINUTE > ceiling) continue;
+      ready.push(bucket);
     }
-    // The watermark only moves when something was added, so an empty scan
-    // (a fresh start, a quiet fleet) can never hide minutes recorded later.
-    if (folded > 0) {
-      this._foldedThroughMs = boundary;
-      this._dirty = true;
+    ready.sort((a, b) => a.minuteStartMs - b.minuteStartMs);
+
+    let added = 0;
+    for (const bucket of ready) {
+      const start = bucket.minuteStartMs;
+      if (start < this.foldedThroughMs) continue; // duplicate minute in the input
+      this.foldedThroughMs = start + ONE_MINUTE;
+      this._changed = true;
+      const nodeIds = measuredNodes(bucket);
+      if (nodeIds.length === 0) continue;
+      const month = this._monthFor(monthKey(start));
+      for (const id of nodeIds) {
+        const slot = (month.nodes[id] ??= { wh: 0, coverageMs: 0 });
+        slot.wh += bucket.nodeWh[id];
+        slot.coverageMs += amountOr0(bucket.nodeCoverageMs?.[id]);
+      }
+      const fleetWh = amountOr0(bucket.fleetWattMs) / WATT_MS_PER_WH;
+      month.fleetWh += fleetWh;
+      month.fleetCoverageMs += amountOr0(bucket.fleetCoverageMs);
+      month.outputTokens += amountOr0(bucket.outputTokens);
+      month.coveredOutputTokens += amountOr0(bucket.coveredOutputTokens);
+      if (trackedSinceMs === null || trackedSinceMs === undefined || start >= trackedSinceMs) {
+        month.tokenFleetWh += fleetWh;
+      }
+      added += 1;
     }
-    return folded;
+    return added;
   }
 
-  _add(start, bucket, trackedSinceMs) {
-    const nodes = [];
-    for (const [id, wh] of Object.entries(bucket.nodeWh ?? {})) {
-      const coverageMs = Math.min(num(bucket.nodeCoverageMs?.[id]), MINUTE_MS);
-      const energy = num(wh);
-      if (energy === 0 && coverageMs === 0) continue;
-      nodes.push([id, energy, coverageMs]);
-    }
-    const fleetWh = num(bucket.fleetWattMs) / 3_600_000;
-    // A discarded bucket adds nothing anywhere (fleet, coverage, tokens or nodes).
-    if (!(nodes.length > 0 || fleetWh > 0 || bucket.outputTokens > 0)) return false;
-    const key = monthKey(start);
-    const month = this._months.get(key) ?? emptyMonth();
-    for (const [id, energy, coverageMs] of nodes) {
-      const node = (month.nodes[id] ??= { wh: 0, coverageMs: 0 });
-      node.wh += energy;
-      node.coverageMs += coverageMs;
-    }
-    month.fleetWh += fleetWh;
-    month.fleetCoverageMs += Math.min(num(bucket.fleetCoverageMs), MINUTE_MS);
-    month.outputTokens += Math.trunc(num(bucket.outputTokens));
-    month.coveredOutputTokens += Math.trunc(num(bucket.coveredOutputTokens));
-    if (trackedSinceMs !== null && start >= trackedSinceMs) month.tokenFleetWh += fleetWh;
-    this._months.set(key, month);
-    return true;
+  /** The public document served by GET /api/fleet-energy/monthly. */
+  snapshot(atMs = this._clock()) {
+    const months = [...this._byMonth.keys()].sort().map((key) => {
+      const data = this._byMonth.get(key);
+      const [startMs, endMs] = monthRange(key);
+      const nodeIds = Object.keys(data.nodes).sort();
+      const nodes = {};
+      let totalWh = 0;
+      for (const id of nodeIds) {
+        nodes[id] = { wh: data.nodes[id].wh, coverageMs: data.nodes[id].coverageMs };
+        totalWh += data.nodes[id].wh;
+      }
+      return {
+        month: key,
+        startMs,
+        endMs,
+        closed: endMs <= atMs,
+        nodeIds,
+        nodes,
+        totalWh,
+        fleetWh: data.fleetWh,
+        fleetCoverageMs: data.fleetCoverageMs,
+        outputTokens: data.outputTokens,
+        coveredOutputTokens: data.coveredOutputTokens,
+        whPerOutputToken: data.coveredOutputTokens > 0 ? data.tokenFleetWh / data.coveredOutputTokens : null,
+      };
+    });
+    return { estimated: true, generatedAt: atMs, foldedThroughMs: this.foldedThroughMs, months };
   }
 
-  /** Months oldest first, with derived totals. */
-  snapshot(nowMs = this._now()) {
-    const months = [...this._months.entries()]
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([key, m]) => {
-        const [startMs, endMs] = monthRange(key);
-        const nodes = Object.fromEntries(
-          Object.entries(m.nodes).map(([id, n]) => [id, { wh: round3(n.wh), coverageMs: Math.round(n.coverageMs) }])
-        );
-        const totalWh = Object.values(m.nodes).reduce((s, n) => s + n.wh, 0);
-        return {
-          month: key,
-          startMs,
-          endMs,
-          closed: endMs <= MonthlyEnergyArchive.closedBefore(nowMs),
-          nodeIds: Object.keys(nodes).sort(),
-          nodes,
-          totalWh: round3(totalWh),
-          fleetWh: round3(m.fleetWh),
-          fleetCoverageMs: Math.round(m.fleetCoverageMs),
-          outputTokens: m.outputTokens,
-          coveredOutputTokens: m.coveredOutputTokens,
-          whPerOutputToken:
-            m.tokenFleetWh > 0 && m.coveredOutputTokens > 0 ? m.tokenFleetWh / m.coveredOutputTokens : null,
-        };
-      });
-    return { estimated: true, generatedAt: nowMs, foldedThroughMs: this._foldedThroughMs, months };
-  }
-
-  /**
-   * Delete archived months: one (`month: "YYYY-MM"`) or all (`all: true`).
-   * The watermark is kept, so cleared minutes are not backfilled again.
-   * @returns {number} months removed
-   */
+  /** Remove one month (`{ month }`) or everything (`{ all: true }`). The watermark stays. */
   clear({ month, all } = {}) {
     let removed = 0;
     if (all === true) {
-      removed = this._months.size;
-      this._months.clear();
-    } else if (monthRange(month) && this._months.delete(month)) {
+      removed = this._byMonth.size;
+      this._byMonth.clear();
+    } else if (typeof month === "string" && this._byMonth.delete(month)) {
       removed = 1;
     }
-    this._dirty = true;
-    this.flush();
+    if (removed > 0) {
+      this._changed = true;
+      this.flush();
+    }
     return removed;
   }
 
+  /** Persist when something changed. Returns true when a file was written. */
   flush() {
-    if (!this.filePath || !this._dirty) return false;
-    const months = Object.fromEntries([...this._months.entries()].sort(([a], [b]) => (a < b ? -1 : 1)));
-    const state = { version: FILE_VERSION, savedAt: this._now(), foldedThroughMs: this._foldedThroughMs, months };
-    this._writeState(this.filePath, `${JSON.stringify(state)}\n`, this._fs);
-    this._dirty = false;
+    if (!this.filePath || !this._changed) return false;
+    const months = {};
+    for (const key of [...this._byMonth.keys()].sort()) months[key] = this._byMonth.get(key);
+    const doc = { version: ARCHIVE_VERSION, savedAt: this._clock(), foldedThroughMs: this.foldedThroughMs, months };
+    atomicWrite(this.filePath, `${JSON.stringify(doc)}\n`, 0o600);
+    this._changed = false;
     return true;
-  }
-
-  _load() {
-    if (!this.filePath) return;
-    let raw;
-    try {
-      raw = JSON.parse(this._fs.readFileSync(this.filePath, "utf8"));
-    } catch (error) {
-      if (error?.code === "ENOENT") return;
-      this._setAside(error);
-      return;
-    }
-    if (raw?.version !== FILE_VERSION || !raw.months || typeof raw.months !== "object") {
-      this._setAside(new Error("unrecognised format"));
-      return;
-    }
-    for (const [key, value] of Object.entries(raw.months)) {
-      if (monthRange(key)) this._months.set(key, cleanMonth(value));
-    }
-    if (Number.isSafeInteger(raw.foldedThroughMs) && raw.foldedThroughMs >= 0) {
-      this._foldedThroughMs = raw.foldedThroughMs;
-      // Same clock-jump guard as foldBuckets: a watermark beyond now + 1 day is clamped back now.
-      const cap = MonthlyEnergyArchive.closedBefore(this._now() + MAX_AHEAD_MS);
-      if (this._foldedThroughMs > cap) {
-        this._foldedThroughMs = MonthlyEnergyArchive.closedBefore(this._now());
-        this._dirty = true;
-      }
-    }
-  }
-
-  /** An unreadable archive is kept beside the live file, never overwritten. */
-  _setAside(error) {
-    const parsed = path.parse(this.filePath);
-    const aside = path.join(parsed.dir, `${parsed.name}.unreadable-${Math.floor(this._now())}${parsed.ext}`);
-    try {
-      this._fs.renameSync(this.filePath, aside);
-      console.warn(`[MonthlyEnergyArchive] ${error.message}; kept the old file at ${aside}`);
-    } catch (renameError) {
-      console.warn(`[MonthlyEnergyArchive] unable to read ${this.filePath}: ${renameError.message}`);
-    }
   }
 }
 
