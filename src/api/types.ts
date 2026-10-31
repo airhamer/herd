@@ -1023,6 +1023,153 @@ export interface StartPrefillBenchRequest {
   tls?: boolean;
 }
 
+// ─── LLM quality benchmark (#42) ─────────────────────────
+export type QualityCategoryKey =
+  | "qa"
+  | "reasoning"
+  | "arithmetic"
+  | "state"
+  | "gsm8k"
+  | "mmlu"
+  | "instruction"
+  | "longctx";
+
+export interface QualityCategoryInfo {
+  key: QualityCategoryKey;
+  label: string;
+  count: number;
+  optIn: boolean;
+  source: string;
+}
+
+export interface QualityCategoryScore {
+  key: QualityCategoryKey;
+  label: string;
+  total: number;
+  attempted: number;
+  scored: number;
+  passed: number;
+  errored: number;
+  /** % of scored items passed; null when nothing was scored. */
+  accuracy: number | null;
+  maxTokens: number | null;
+}
+
+export interface QualitySummary {
+  categories: QualityCategoryScore[];
+  /** Mean of category %. */
+  overall: number | null;
+  itemsTotal: number;
+  itemsScored: number;
+  itemsErrored: number;
+  passed: number;
+}
+
+export interface QualityBenchJob {
+  benchId: string;
+  sparkId: string;
+  status: "running" | "completed" | "failed" | "cancelled" | "interrupted";
+  startedAt: number;
+  completedAt: number | null;
+  config: {
+    port: number;
+    modelId: string | null;
+    categories: QualityCategoryKey[];
+    concurrency: number;
+    seed: number;
+    suiteVersion: string;
+    requests: number;
+    host?: string;
+    tls?: boolean;
+  };
+  progress: {
+    done: number;
+    total: number;
+    errored: number;
+    currentCategory: QualityCategoryKey | null;
+    message: string;
+  };
+  summary: QualitySummary;
+  error: string | null;
+  durationMs: number;
+}
+
+/** One stored run (overall record in the bench results store). */
+export interface QualityRunSummary {
+  benchId: string;
+  runId: string;
+  status: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  modelId: string | null;
+  engine: string | null;
+  hwBucket: string | null;
+  concurrency: number | null;
+  categories: QualityCategoryScore[];
+  overall: number | null;
+  itemsScored: number | null;
+  itemsErrored: number | null;
+  passed: number | null;
+  durationMs: number | null;
+  suiteVersion: string | null;
+}
+
+export interface QualityBenchDefaults {
+  categories: QualityCategoryInfo[];
+  defaultCategories: QualityCategoryKey[];
+  concurrencyOptions: number[];
+  defaultConcurrency: number;
+  seed: number;
+  suiteVersion: string;
+  noiseP: number;
+  historyLimit: number;
+}
+
+export interface QualityBenchListResponse {
+  active: QualityBenchJob | null;
+  runs: QualityRunSummary[];
+  defaults: QualityBenchDefaults;
+}
+
+export interface StartQualityBenchRequest {
+  port?: number;
+  categories: QualityCategoryKey[];
+  concurrency: number;
+  modelId?: string | null;
+  host?: string;
+  tls?: boolean;
+}
+
+export interface QualityMcNemar {
+  paired: number;
+  both_pass: number;
+  both_fail: number;
+  baseline_only: number;
+  candidate_only: number;
+  p: number;
+  within_noise: boolean;
+}
+
+export interface QualityCompareResponse {
+  baseline: QualityRunSummary;
+  candidate: QualityRunSummary;
+  warnings: string[];
+  overall: { baseline: number | null; candidate: number | null; delta: number | null; mcnemar: QualityMcNemar };
+  categories: Array<{
+    key: QualityCategoryKey;
+    label: string;
+    baseline: number | null;
+    candidate: number | null;
+    delta: number | null;
+    mcnemar: QualityMcNemar;
+  }>;
+  /** Item ids that passed in the baseline only. */
+  regressed: string[];
+  /** Item ids that passed in the candidate only. */
+  improved: string[];
+  noiseP: number;
+}
+
 // ─── LLM Prompt Showcase ─────────────────────────────────
 export type ShowcasePromptType = "structural" | "text" | "mixed";
 

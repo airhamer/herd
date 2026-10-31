@@ -1323,4 +1323,22 @@ export interface BenchCompareResponse {
     candidate_definitions: string[];
     reason: string;
   }>;
+  /** Exact McNemar on the paired per-item vectors (null unless both sides carry `quality`). */
+  quality: BenchMcNemar | null;
+}
+
+/** Exact McNemar between two per-item pass/fail vectors (Quality bench, #42). */
+export interface BenchMcNemar {
+  /** Items scored in both runs. */
+  paired: number;
+  both_pass: number;
+  both_fail: number;
+  /** Passed in the baseline only (regressions). */
+  baseline_only: number;
+  /** Passed in the candidate only (improvements). */
+  candidate_only: number;
+  /** Two-sided exact p. */
+  p: number;
+  /** p ≥ 0.05. */
+  within_noise: boolean;
 }

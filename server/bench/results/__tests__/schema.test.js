@@ -193,3 +193,17 @@ test("lower-is-better metrics report improvement on decrease", () => {
   assert.equal(row.improved, true);
   assert.ok(row.delta < 0);
 });
+
+test("compare adds exact McNemar only when both sides carry item vectors", () => {
+  assert.equal(compareResults(herd(), herd()).quality, null);
+  const a = herd();
+  const b = herd();
+  a.quality = { items: Array.from({ length: 12 }, (_, i) => ({ id: `q${i}`, pass: i < 2 })) };
+  b.quality = { items: Array.from({ length: 12 }, (_, i) => ({ id: `q${i}`, pass: true })) };
+  const out = compareResults(a, b);
+  assert.equal(out.quality.paired, 12);
+  assert.equal(out.quality.candidate_only, 10);
+  assert.equal(out.quality.within_noise, false);
+  b.run.suite_version = "9";
+  assert.equal(compareResults(a, b).quality, null);
+});

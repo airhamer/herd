@@ -16,6 +16,7 @@ import {
   getDefinition,
   definitionsComparable,
 } from "./definitions.js";
+import { mcnemarCompare } from "./mcnemar.js";
 
 export const SCHEMA_VERSION = 1;
 
@@ -382,7 +383,7 @@ export function comparabilityKey(rec) {
  */
 export function compareResults(baseline, candidate) {
   const reasons = incomparabilityReasons(baseline, candidate);
-  if (reasons.length) return { comparable: false, reasons, rows: [], refused: [] };
+  if (reasons.length) return { comparable: false, reasons, rows: [], refused: [], quality: null };
 
   const rows = [];
   const refused = [];
@@ -414,7 +415,12 @@ export function compareResults(baseline, candidate) {
       candidate_definition: match.definition,
     });
   }
-  return { comparable: true, reasons: [], rows, refused };
+  // Per-item vectors on both sides: exact McNemar on the paired items.
+  const quality =
+    Array.isArray(baseline.quality?.items) && Array.isArray(candidate.quality?.items)
+      ? mcnemarCompare(baseline.quality.items, candidate.quality.items)
+      : null;
+  return { comparable: true, reasons: [], rows, refused, quality };
 }
 
 function round(v, digits) {

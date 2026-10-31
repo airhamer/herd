@@ -33,6 +33,10 @@ import type {
   StartDecodeBenchRequest,
   PrefillBenchJob,
   PrefillBenchListResponse,
+  QualityBenchJob,
+  QualityBenchListResponse,
+  QualityCompareResponse,
+  StartQualityBenchRequest,
   StartPrefillBenchRequest,
   UpdateActionResponse,
 } from "./types";
@@ -301,6 +305,37 @@ export function clearPrefillBenchHistory(
   const q =
     port != null && Number.isInteger(port) ? `?port=${encodeURIComponent(port)}` : "";
   return apiFetch(`/api/sparks/${id}/llm/prefill-bench${q}`, { method: "DELETE" });
+}
+
+// ─── LLM quality benchmark (#42) ──────────────────────
+export function startQualityBench(id: string, body: StartQualityBenchRequest): Promise<QualityBenchJob> {
+  return apiFetch(`/api/sparks/${id}/llm/quality-bench`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+export function getQualityBench(id: string, benchId: string): Promise<QualityBenchJob> {
+  return apiFetch(`/api/sparks/${id}/llm/quality-bench/${encodeURIComponent(benchId)}`);
+}
+
+export function listQualityBench(id: string): Promise<QualityBenchListResponse> {
+  return apiFetch(`/api/sparks/${id}/llm/quality-bench`);
+}
+
+export function cancelQualityBench(id: string, benchId: string): Promise<QualityBenchJob> {
+  return apiFetch(`/api/sparks/${id}/llm/quality-bench/${encodeURIComponent(benchId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function compareQualityBench(
+  id: string,
+  baseline: string,
+  candidate: string
+): Promise<QualityCompareResponse> {
+  const q = `baseline=${encodeURIComponent(baseline)}&candidate=${encodeURIComponent(candidate)}`;
+  return apiFetch(`/api/sparks/${id}/llm/quality-bench/compare?${q}`);
 }
 
 // ─── LLM Prompt Showcase ──────────────────────────────
