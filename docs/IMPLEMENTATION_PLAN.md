@@ -51,11 +51,26 @@ From Hasso source review (DESIGN.md, CAPABILITIES.md, recipes.py, lifecycle.py):
 | SC7 | Multi-spark support: group stacks (distributed, some components single-spark), per-spark addons if mem fits, TP calc | pending | Topology TBD later per user. |
 | SC8 | Downtime/execute flow: shutdown sequence to free, then startup (parallel per stack); preview + live | pending | |
 | SC9 | Presentation updates: Hasso memory display, aggregated group mem on fleet, group cards no individuals | pending | |
-| SC10 | Bootstrap + pre-defined stacks handling (hardcode initial, unlock UI, tp=1 for single, tp=x default for multi) | pending | |
+| SC10 | Bootstrap + pre-defined stacks handling (hardcode initial, unlock UI, tp=1 for single, tp=x default for multi) | pending | POC4 review (docs/COMPONENTS-DESIGN-PROPOSAL.md §7.10): SC10 must also settle the handle class (§7.6 pt 5: adopt node's unit vs define own launch) and the machineClass capability record (D4) — both harden into deployed behavior once dispatch ships. |
+| SC10h | Node-hygiene batch on the seam's critical path (pre-/early SC10): fix proxy collector false-negative + servingContainer truncation; unit-aware `versions` so unit-managed engines are observable; re-materialize 1c2c recipes.json (ghost recipes are a live switch hazard) | pending | From POC4 (issue #8, docs/BATCH8-POC4-LIVE-TEST.md findings 4–6; rulings D1/D2/D5 in the design proposal §7.10). Traffic-check and the Components-tab live join are unverifiable until this lands. |
 | SC11 | Integration: with proxy (LLM traffic only through proxy), recipes, fleet, telemetry, existing S3 lanes | pending | |
 | SC12 | Update this plan + progress tracking; test plan updates | pending | |
 
 (After these, resume retained S work if any open.)
+
+### POC4 review note (2026-10-30, batch 8 / issue #8)
+
+The live test on gx10-1c2c passed the UI/server legs and blocked the switch
+leg at the undeployed v2 dispatcher. The full worked→didn't review and its
+refinement rulings live in
+`docs/COMPONENTS-DESIGN-PROPOSAL.md` §7.10 (W1–W5, F1–F6, D1–D5). Two
+consequences bind this register before more recipe gathering: (1) SC10
+inherits two design settlements it must make inside its own dispatch —
+the handle class and the machineClass capability record; (2) the SC10h
+node-hygiene row gates honest live verification of every later action
+(traffic-check, live join, ghost-recipe refusal). No seam or schema shape
+changes were ruled; component-definition gathering continues on the
+existing format, live-shape-first per D5.
 
 ## Retained from Prior (superseded for new work)
 

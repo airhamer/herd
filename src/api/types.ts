@@ -345,6 +345,12 @@ export interface UnifiedMemoryMetrics {
     current: number;
     peak: number;
   };
+  /** /proc/meminfo Cached (MB): reclaimable page cache, inside `available`. Optional (#26). */
+  cached?: number;
+  /** /proc/meminfo SwapTotal (MB). Optional (#26). */
+  swapTotal?: number;
+  /** /proc/meminfo SwapFree (MB). Optional (#26). */
+  swapFree?: number;
 }
 
 // ─── LLM metrics ─────────────────────────────────────────
@@ -1137,6 +1143,14 @@ export type {
   LanePool,
   LaneCandidate,
   NodeLanes,
+  // POC2 component-action seam types (issue #7 Components tab consumes these).
+  ComponentActionType,
+  ComponentActionConfirm,
+  ComponentActionRequest,
+  ComponentActionStep,
+  ComponentActionTraffic,
+  ComponentActionResult,
+  ComponentActionPlan,
 } from "../../shared/types";
 
 // ─── Fleet updates (docs/SPEC-UPDATES.md §6/§9) ────

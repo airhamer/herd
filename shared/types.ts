@@ -272,6 +272,10 @@ export interface GpuMetrics {
   vramAvailableMB: number;
   /** Top GPU processes by VRAM usage (max 5). */
   processes: Array<{ pid: number; name: string; vramMB: number }>;
+  /** Sum of ALL compute-apps GPU memory (MB), not capped at 5. Optional: agents before #26 omit it. */
+  gpuAllocMB?: number;
+  /** true when the GPU draws from the OS memory pool (GB10: nvidia-smi memory.total is N/A). */
+  unifiedMemory?: boolean;
 }
 
 export interface CpuMetrics {
@@ -294,6 +298,12 @@ export interface MemMetrics {
   availableMB: number;
   /** Memory percentage (0-100). */
   percentage: number;
+  /** /proc/meminfo Cached (MB): reclaimable page cache, inside availableMB. Optional (#26). */
+  cachedMB?: number;
+  /** /proc/meminfo SwapTotal (MB). Optional (#26). */
+  swapTotalMB?: number;
+  /** /proc/meminfo SwapFree (MB). Optional (#26). */
+  swapFreeMB?: number;
 }
 
 export interface DiskMetrics {
@@ -567,9 +577,19 @@ export interface NodeAgentSnapshot {
 }
 
 // ─── Actions ───────────────────────────────────────────────────────────────
+//
+// Component-action seam (SC action design, docs/COMPONENTS-DESIGN-PROPOSAL.md §7).
+// Dashboard → server → agent payload is ComponentActionRequest (v2). The
+// legacy ActionRequest below is v1: still accepted by the agent, and the
+// shape v2 downgrades to inside dispatch (v1 → v2 adapters are server-side
+// only). New code produces v2 and consumes ComponentActionResult.
 
 /**
  * One action request, sent to the node agent's POST /actions endpoint.
+ *
+ * @deprecated Superseded by ComponentActionRequest. Field semantics are
+ * unchanged for start/stop/restart; `switch` in v1 is split into
+ * `start` + `stop` in v2 (see docs/COMPONENTS-DESIGN-PROPOSAL.md §7.2).
  */
 export interface ActionRequest {
   /** Action id (unique, for idempotency). */
@@ -618,6 +638,151 @@ export interface ActionResponse {
   idempotent: boolean;
   /** Timestamp (ms epoch). */
   at: number;
+}
+
+/**
+ * Component-action seam (v2; docs/COMPONENTS-DESIGN-PROPOSAL.md §7).
+ * One component action names ONE component definition on ONE target spark.
+ * Dashboard (Components/Library tab) → dashboard server route → node agent
+ * POST /actions → engine on the port, with the guard/keepalive proxy as the
+ * sole LLM traffic path: the proxy front never changes address; a component
+ * action only changes what answers behind it.
+ */
+
+/** v2 action verbs. v1 `switch` is gone: the old-LLM handoff it discovered
+ *  by scanning live state becomes, in v2, either `start` with
+ *  `exclusiveWith` (stated intent, take-turn) or a server-orchestrated
+ *  stop-then-start. The agent only ever executes one goal-state verb. */
+export type ComponentActionType = "start" | "stop" | "restart";
+
+/** Confirmation class for a real (non-dry-run) execution. */
+export type ComponentActionConfirm = "none" | "required";
+
+/**
+ * One component-action request (dashboard → server → agent).
+ *
+ * - `start` — materialize componentId (if not already materialized on this
+ *   node) and start its recipe. When another component holds the same
+ *   exclusive lane pool, `exclusiveWith` names it and the agent performs a
+ *   take-turn: stop old → start new → canary (S3.1 lane semantics).
+ * - `stop`  — stop the recipe backing componentId. Idempotent: an
+ *   already-stopped service is success with canaryState "stopped".
+ * - `restart` — stop → start on the same recipe (e.g. context-mode switch
+ *   inside one component definition; no re-materialization, no pin change).
+ */
+export interface ComponentActionRequest {
+  /** Seam version. v2 agents require 2; v1 agents ignore this field. */
+  version: 2;
+  /** Client-generated UUID; idempotency key (replayed id = same result, no re-execution). */
+  actionId: string;
+  /** Catalog component definition id (agent/catalog/components/<id>.json). */
+  componentId: string;
+  /** Action verb. */
+  type: ComponentActionType;
+  /**
+   * Target spark: the node whose agent answers this request. The dashboard
+   * server routes by this id; the agent rejects a foreign nodeId. For a
+   * tp=x group stack the server fans out one request per member; `groupRef`
+   * names the group, `nodeId` this member.
+   */
+  nodeId: string;
+  /** tp=x group this action belongs to (null for single-spark actions). */
+  groupRef: string | null;
+  /**
+   * For `start` of an llm kind: component (already materialized here) that
+   * must be stopped first because it holds the same exclusive lane pool.
+   * null = no handoff; the agent does NOT scan live state to pick a victim
+   * — the caller states the intent.
+   */
+  exclusiveWith: string | null;
+  /**
+   * Token minted by a prior dry run for this exact (componentId, type,
+   * nodeId, exclusiveWith) plan. Required when the plan's confirm class is
+   * "required"; the agent refuses token-less execution of confirm-required
+   * actions and rejects mismatched/expired tokens (409).
+   */
+  confirmationToken: string | null;
+  /** Dry run: validate + plan + cost, change nothing, never audit. */
+  dryRun: boolean;
+  /** Start this already-materialized recipe instead of materializing
+   *  componentId (provenance override; null = materialize from catalog). */
+  recipeName: string | null;
+  /** Wall-clock budget ms (canary budget included); null = engine default. */
+  timeoutMs: number | null;
+  /** Requesting principal ("dashboard:<user>" / "agent:<id>"), audit-only. */
+  actor: string | null;
+}
+
+/** One step inside a component action. */
+export interface ComponentActionStep {
+  step: "materialize" | "stop" | "start" | "canary" | "traffic-check";
+  status: "success" | "failure" | "skipped";
+  message: string;
+  durationMs: number | null;
+}
+
+/** Proxy-seam evidence collected after the action (the traffic truth check). */
+export interface ComponentActionTraffic {
+  /** Guard/keepalive proxy answered its status endpoint. */
+  proxyReachable: boolean;
+  /** Served model ids the proxy reports as answering behind it. */
+  servingModels: string[];
+}
+
+/**
+ * One component-action result (agent → server → dashboard). The canary
+ * verdict travels in `canaryState`, never smuggled into `status` (v1's
+ * mapping is deprecated with ActionResponse).
+ */
+export interface ComponentActionResult {
+  version: 2;
+  /** Matches request. */
+  actionId: string;
+  componentId: string;
+  nodeId: string;
+  /** Echo of the verb actually executed. */
+  type: ComponentActionType;
+  /** Coarse status. "running" = accepted async (e.g. 12-min boot); poll status by actionId. */
+  status: "success" | "failure" | "running";
+  ok: boolean;
+  message: string;
+  error: string | null;
+  /** Canary verdict for start/take-turn; same state words as VersionInfo.state. */
+  canaryState: "ready" | "loading" | "stopped" | "wedged" | null;
+  /** Per-step trail in execution order. */
+  steps: ComponentActionStep[];
+  /** Updated live state of the acted-on component after the action (from /versions); null when unobservable. */
+  state: VersionInfo | null;
+  /** Proxy traffic-seam evidence after the action; null when the node has no proxy collector. */
+  traffic: ComponentActionTraffic | null;
+  /** Non-null only when the request was a dry run. */
+  plan: ComponentActionPlan | null;
+  /** Log tail surfaced on failure (last lines of engine/container logs); null otherwise. */
+  logs: string | null;
+  durationMs: number | null;
+  at: number;
+}
+
+/** Dry-run plan: what the agent WOULD do, in order, and what it costs. */
+export interface ComponentActionPlan {
+  /** Ordered step verbs for the real run (empty when scopeBlocked). */
+  willDo: Array<"stop" | "start" | "canary" | "traffic-check">;
+  /** Component stopped by the take-turn (null when none). */
+  displaces: string | null;
+  /** Confirmation class for the real execution. */
+  confirm: ComponentActionConfirm;
+  /** Token to replay in confirmationToken when confirm === "required" (null when "none"). */
+  confirmationToken: string | null;
+  /** Downtime estimate ms where NEITHER old nor new LLM answers (0 with no handoff); from boot estimates. */
+  estDowntimeMs: number;
+  /** Memory delta MB (negative = frees); from materialized footprintMB. */
+  memoryDeltaMB: number;
+  /** Live requests running against the displaced component (null = unobserved). */
+  inflightRequests: number | null;
+  /** Copy-on-scope refusal: component's (tp, machineClass) ≠ target's, or
+   *  the definition sets `multi_spark.singleSparkOnly` and the target is a
+   *  group member; reason string, willDo empty. */
+  scopeBlocked: string | null;
 }
 
 /**

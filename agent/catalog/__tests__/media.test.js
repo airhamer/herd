@@ -14,7 +14,8 @@
  *    non-media filtering
  *  - getMediaRecipe: valid name → Recipe; missing name → null;
  *    non-string name → null; explicit file arg (non-default module state)
- *  - agent/config/media-recipes.json loads + joins end to end
+ *  - fixtures/media-recipes.json loads + joins end to end; the gitignored
+ *    live agent/config/media-recipes.json is schema-checked when present
  */
 
 import assert from "node:assert/strict";
@@ -314,9 +315,15 @@ test("getMediaRecipe: explicit file arg (non-default module state)", () => {
 
 // ── real config file ────────────────────────────────────────────────────────
 
-test("agent/config/media-recipes.json: loads and joins end to end", () => {
-  const p = path.join(AGENT_DIR, "config", "media-recipes.json");
-  const file = loadMediaRecipes(p);
+// agent/config/media-recipes.json is per-node live config and gitignored, so
+// a fresh clone / CI has no such file. The end-to-end join is pinned on a
+// tracked fixture with the same five-service shape; the live file (when the
+// node has one) is checked separately below for schema validity only.
+const MEDIA_FIXTURE = path.join(TEST_DIR, "fixtures", "media-recipes.json");
+const LIVE_MEDIA_FILE = path.join(AGENT_DIR, "config", "media-recipes.json");
+
+test("fixtures/media-recipes.json: loads and joins end to end", () => {
+  const file = loadMediaRecipes(MEDIA_FIXTURE);
   assert.equal(file.recipes.length, 5);
   const byName = Object.fromEntries(file.recipes.map((r) => [r.name, r]));
 
@@ -353,3 +360,17 @@ test("agent/config/media-recipes.json: loads and joins end to end", () => {
     voice: "stopped",
   });
 });
+
+test(
+  "agent/config/media-recipes.json (live, per-node): validates when present",
+  {
+    skip: fs.existsSync(LIVE_MEDIA_FILE)
+      ? false
+      : "agent/config/media-recipes.json is gitignored per-node config; absent here",
+  },
+  () => {
+    const file = loadMediaRecipes(LIVE_MEDIA_FILE);
+    assert.ok(Array.isArray(file.recipes));
+    assert.ok(file.recipes.length > 0);
+  },
+);

@@ -77,6 +77,23 @@ export function parseNvErrNoMemoryCount(raw) {
   return n;
 }
 
+/**
+ * Issue #26: the /proc/meminfo fields the cards need beyond MemTotal/MemAvailable
+ * to split the pool Hasso-style — reclaimable page cache (inside MemAvailable)
+ * and swap. Line-anchored so `SwapCached:` is never read as `Cached:`. MB; 0 when absent.
+ * @param {unknown} raw
+ * @returns {{ cached: number, swapTotal: number, swapFree: number }}
+ */
+export function parseMeminfoPoolMB(raw) {
+  const text = String(raw ?? "");
+  const mb = (key) => {
+    const m = text.match(new RegExp(`^${key}:\\s+(\\d+)\\s+kB`, "m"));
+    const kb = m ? Number.parseInt(m[1], 10) : 0;
+    return Number.isFinite(kb) && kb > 0 ? Math.round(kb / 1024) : 0;
+  };
+  return { cached: mb("Cached"), swapTotal: mb("SwapTotal"), swapFree: mb("SwapFree") };
+}
+
 export const COLLECTION_SUCCESS = Symbol("sparkdash.collectionSuccess");
 
 export function collectionWasSuccessful(result) {
@@ -1111,6 +1128,7 @@ export class SystemCollector {
       percentage,
       oomRisk,
       bandwidth,
+      ...parseMeminfoPoolMB(raw),
     };
   }
 
@@ -1500,15 +1518,15 @@ export class SystemCollector {
     }
   }
 
-  async _getRemoteUnifiedMemory() {
+  async _getRemoteUnifiedMemory(executor = sshExec) {
     try {
       const cmd = [
-        "grep -E 'MemTotal|MemAvailable' /proc/meminfo 2>/dev/null",
+        "grep -E '^(MemTotal|MemAvailable|Cached|SwapTotal|SwapFree):' /proc/meminfo 2>/dev/null",
         "echo '---'",
         "nvidia-smi --query-compute-apps=pid,process_name,used_gpu_memory --format=csv,noheader,nounits 2>/dev/null",
       ].join("; ");
 
-      const output = await sshExec(this.spark, cmd);
+      const output = await executor(this.spark, cmd);
       const sections = output.split("---");
       const memOut = sections[0]?.trim() || "";
       const computeOut = sections[1]?.trim() || "";
@@ -1547,6 +1565,7 @@ export class SystemCollector {
         percentage,
         oomRisk,
         bandwidth: { current: 0, peak: 400 },
+        ...parseMeminfoPoolMB(memOut),
       };
     } catch (err) {
       console.error(`[SystemCollector] Remote Unified Memory error for ${this.spark.id}:`, err.message);

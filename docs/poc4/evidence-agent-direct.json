@@ -1,0 +1,82 @@
+[
+  {
+    "leg": "A1 server buildComponentAction -> v2 ComponentActionRequest",
+    "response": {
+      "version": 2,
+      "actionId": "5ef4d181-af9a-4bf1-9f01-516a06df0ce6",
+      "componentId": "qwen38-27b-stock-sglang-tp1-gx10",
+      "type": "start",
+      "nodeId": "gx10-1c2c",
+      "groupRef": null,
+      "exclusiveWith": "qwen38-flash-next-sglang-tp1-gx10",
+      "confirmationToken": null,
+      "dryRun": true,
+      "recipeName": null,
+      "timeoutMs": null,
+      "actor": "poc4-live-test"
+    }
+  },
+  {
+    "leg": "A2 full seam (v2 request, v1-guard tripwire) -> deployed agent",
+    "response": {
+      "status": 502,
+      "body": {
+        "error": "unknown service '__poc4_probe_impossible__': no such recipe on this node"
+      }
+    }
+  },
+  {
+    "leg": "A3 full seam (v2 body verbatim, no serviceName)",
+    "response": {
+      "status": 502,
+      "body": {
+        "error": "serviceName is required (non-empty string)"
+      }
+    }
+  },
+  {
+    "leg": "B direct v1-legal control on the deployed agent",
+    "response": {
+      "status": 404,
+      "body": {
+        "error": "unknown service '__poc4_probe_impossible__': no such recipe on this node"
+      }
+    }
+  },
+  {
+    "leg": "C traffic-seam proxy state + lanes (agent telemetry)",
+    "response": {
+      "agentVersion": "0.3.0",
+      "proxy": {
+        "running": false,
+        "version": null,
+        "lastProbe": null,
+        "generationProbe": null,
+        "servingContainer": "qwen38-",
+        "port": 8081,
+        "requestsInWindow": null,
+        "state": "unknown",
+        "note": null
+      },
+      "lanes": [
+        [
+          "llm-tp1:stopped",
+          "llm-tp2:stopped"
+        ]
+      ],
+      "versions": [],
+      "llmPorts": [
+        {
+          "port": 8080,
+          "backend": null,
+          "version": null,
+          "modelId": null
+        }
+      ]
+    }
+  },
+  {
+    "leg": "D agent audit log (GET /audit)",
+    "response": []
+  }
+]

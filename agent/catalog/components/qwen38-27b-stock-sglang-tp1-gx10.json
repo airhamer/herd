@@ -1,0 +1,91 @@
+{
+  "id": "qwen38-27b-stock-sglang-tp1-gx10",
+  "name": "Qwen3.8-27B NVFP4 + DFlash2 (SGLang, native window)",
+  "purpose": "code",
+  "kind": "llm",
+  "tp": 1,
+  "machineClass": "dgx-spark-gb10-128g",
+  "memory_estimate_mb": {
+    "perSpark": 102400,
+    "basis": "measured",
+    "notes": "Docker cap 100g (memory+swap) on a 128 GB unified pool; SGLang mem_fraction 0.50 with --disable-flashinfer-autotune (the measured GB10-safe ceiling for the native unit; docs/gb10-memory.md: above 0.50 with the autotuner on, SGLang's accounting misses 25-40 GB and can freeze the box). Measured on Hasso's reference box: KV pool 869,920-874,145 tokens at image v0.5.22. Boot 64 s (process start to 'fired up', lifecycle.py marker measurement)."
+  },
+  "engine": "sglang",
+  "image": "lmsysorg/sglang@sha256:e3a4f06001a29542fc4a8638536d9ffc5eb9c9942b08603c09b19a56eae4a1ae",
+  "imageAlias": "lmsysorg/sglang:v0.5.22",
+  "model": {
+    "repo": "RadixArk/Qwen3.8-27B-NVFP4",
+    "revision": "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854",
+    "servedModelName": "qwen3.8-27b",
+    "quantization": "modelopt_fp4"
+  },
+  "drafter": {
+    "algorithm": "DFLASH",
+    "repo": "maurienne-ai/Qwen3.8-27B-DFlash2-NVFP4-RTNcal",
+    "revision": "bd7a934213c47a9e7ef69eef36bb3325f47fd1f1",
+    "quantization": "modelopt_fp4",
+    "numDraftTokens": 16
+  },
+  "flags": {
+    "context_length": null,
+    "mem_fraction": 0.5,
+    "max_running_requests": 8,
+    "chunked_prefill": 8192,
+    "max_mamba_cache_size": 96,
+    "attention_backend": "flashinfer",
+    "mamba_cache_strategy": "extra_buffer",
+    "kv_cache_dtype": null,
+    "switches": {
+      "--sleep-on-idle": true,
+      "--enable-torch-compile": true,
+      "--disable-flashinfer-autotune": true,
+      "--enable-metrics": true,
+      "--enable-cache-report": true,
+      "--disable-prefill-cuda-graph": true,
+      "--trust-remote-code": false,
+      "--allow-auto-truncate": false
+    },
+    "rawArgs": [
+      "--tp-size", "1",
+      "--mem-fraction-static", "0.50",
+      "--attention-backend", "flashinfer",
+      "--chunked-prefill-size", "8192",
+      "--disable-prefill-cuda-graph", "--cuda-graph-max-bs-decode", "8",
+      "--disable-flashinfer-autotune",
+      "--mamba-radix-cache-strategy", "extra_buffer", "--mamba-ssm-dtype", "bfloat16",
+      "--max-mamba-cache-size", "96", "--max-running-requests", "8",
+      "--enable-torch-compile", "--torch-compile-max-bs", "4",
+      "--num-continuous-decode-steps", "2",
+      "--reasoning-parser", "qwen3", "--tool-call-parser", "qwen3_coder"
+    ]
+  },
+  "ports": { "engine": 30000, "notes": "Hasso box default PORT=30000, keepalive proxy PORT+1; per-box choice, not recipe material (kept as host placeholder upstream)." },
+  "memoryProfile": {
+    "docker": { "memory": "100g", "memorySwap": "100g", "shmSize": "16g", "network": "host", "ipc": "host" },
+    "hostFloorGiB": null,
+    "contextModes": {
+      "native": { "contextLength": null, "memFraction": 0.5 },
+      "1m": { "contextLength": 1010000, "memFraction": 0.76, "extraEnv": { "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1" } },
+      "64": { "notes": "native window in a unit sized for a 64 GB Spark" }
+    },
+    "env": {
+      "TORCHINDUCTOR_CACHE_DIR": "/cache/inductor",
+      "SGLANG_ENABLE_REQUEST_HEADER_OVERRIDES": "1",
+      "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "0",
+      "HF_HUB_OFFLINE": "1"
+    }
+  },
+  "multi_spark": {
+    "supported": false,
+    "rule": "copy-on-tp-or-machine-change: this file is tp=1 on dgx-spark-gb10-128g. A tp=2 / tp2_pair or gx10-64g variant is a COPY with its own re-measured flags and memory_estimate_mb (never reinterpret this file at another shape); the fleet's live TP2 pair runs a different engine (vLLM aeon) and is a separate component anyway. A 1M-context copy is likewise a separate id (context mode changes mem_fraction and env)."
+  },
+  "source": {
+    "origin": "hasso5703/dgx-spark-qwen38",
+    "upstreamCommit": "43a3597fdeab4b408fcc62ff663cff9ccc79a158",
+    "derivedFrom": ["dashboard/recipes.py", "install.sh", "qwen38-sglang.service.template", "qwen38-sglang-1m.service.template", "docs/gb10-memory.md", "docs/context-1m.md"],
+    "upstreamRecipeId": "stock",
+    "license": "MIT",
+    "retrievedAt": "2026-10-30"
+  },
+  "description": "27B lane, stock target: Qwen3.8-27B NVFP4 with the DFlash2 draft, SGLang on one GB10. Converted from Hasso's builtin recipe 'stock' (native context mode); pinned image/model/draft revisions and serving flags verbatim from upstream at the commit above."
+}

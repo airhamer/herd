@@ -105,6 +105,7 @@ export type FleetView =
   | { page: "fleet" }
   | { page: "topology" }
   | { page: "updates" }
+  | { page: "components" }
   | { page: "node"; nodeId: string }
   | { page: "node-services"; nodeId: string }
   | { page: "node-requests"; nodeId: string };
@@ -117,6 +118,8 @@ export function fleetViewToPath(v: FleetView): string {
       return "/topology";
     case "updates":
       return "/updates";
+    case "components":
+      return "/components";
     case "node":
       return `/node/${encodeURIComponent(v.nodeId)}`;
     case "node-services":
@@ -130,6 +133,7 @@ export function parseFleetPath(pathname: string): FleetView | null {
   if (pathname === "/fleet") return { page: "fleet" };
   if (pathname === "/topology") return { page: "topology" };
   if (pathname === "/updates") return { page: "updates" };
+  if (pathname === "/components") return { page: "components" };
   const m = pathname.match(/^\/node\/([^/]+)(?:\/(services|requests))?$/);
   if (!m) return null;
   const nodeId = decodeURIComponent(m[1]);
