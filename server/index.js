@@ -81,6 +81,8 @@ import { createLinuxSshFleet } from "./fleet/linuxSshCollector.js";
 import { createMacosSshFleet } from "./fleet/macosSshCollector.js";
 import { createWindowsFleet } from "./fleet/windowsSshCollector.js";
 import { buildTopology } from "./fleet/topology.js";
+import { applyGroupsToNodes, createGroupStore } from "./fleet/groups.js";
+import { registerGroupRoutes } from "./fleet/groupsRoutes.js";
 import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
 import { renderFleetMetrics } from "./fleet/metrics.js";
 import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
@@ -499,6 +501,15 @@ function refreshUpdatesLayer() {
 }
 refreshUpdatesLayer();
 
+// ─── Spark groups (SC5d, #75) ─────────────────────────────
+// config/groups.json (seeded from the registry's groupId designation on first
+// run) is the source of truth for TopologyInfo groupId / role / rank / headId.
+const groupStore = createGroupStore();
+/** Registry records with the persisted spark groups overlaid. */
+function groupedNodes(nodes) {
+  return applyGroupsToNodes(nodes, groupStore.read(nodes));
+}
+
 /** Minimal NodeAgentSnapshot for a registered node that has never polled successfully. */
 function emptyNodeSnapshot(rec) {
   return {
@@ -585,7 +596,7 @@ function buildFleetSnapshot() {
   }
   return {
     nodes: nodeSnaps,
-    topology: buildTopology(nodes),
+    topology: buildTopology(groupedNodes(nodes)),
     requests,
     memory: { totalMB, usedMB, freeMB, byNode },
     polledAt: Date.now(),
@@ -1213,7 +1224,21 @@ app.get("/api/components", (_req, res) => {
  * this to list available stacks. Server/fleet/stacksBootstrap.js.
  */
 app.get("/api/stacks", (_req, res) => {
-  res.json({ stacks: bootstrapStacksForFleet(listNodes()) });
+  // SC5d: group scopes come from the persisted spark groups (group-first).
+  res.json({ stacks: bootstrapStacksForFleet(groupedNodes(listNodes())) });
+});
+
+// SC5d (#75): spark groups edited on the Topology tab + the computed RoCE
+// plan. Apply defaults to a dry run; a real apply is a 501 stub for now.
+registerGroupRoutes(app, {
+  store: groupStore,
+  listNodes,
+  getSnapshot: (id) =>
+    fleetConnection.getSnapshot(id) ??
+    sshFleet.getSnapshot(id) ??
+    macosSshFleet.getSnapshot(id) ??
+    windowsFleet.getSnapshot(id) ??
+    null,
 });
 
 // ─── Fleet updates API (Batch 5, docs/SPEC-UPDATES.md §6) ───

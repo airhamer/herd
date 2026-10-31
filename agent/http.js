@@ -14,6 +14,10 @@
  *                       (agent/actions/dispatch.js, recipe-catalog mapped);
  *                       body = ActionRequest (shared/types.ts),
  *                       response = ActionResponse
+ *   POST /roce/apply  → RoCE link-plan apply seam (SC5d, #75): dry run by
+ *                       default (validates + lists the exact commands, of
+ *                       which there are none yet); dryRun:false is a 501
+ *                       "not implemented" stub (agent/actions/roceLinks.js)
  *   GET  /audit       → last N audit entries (AuditEntry[]; ?limit=N,
  *                       default 50)
   *   GET  /updates     → DGX-update view { snapshot, state, schedules }
@@ -32,6 +36,7 @@ import http from "node:http";
 
 import { dispatchAction } from "./actions/dispatch.js";
 import { readAudit, DEFAULT_READ_LIMIT } from "./actions/audit.js";
+import { applyLinkPlan } from "./actions/roceLinks.js";
 
 /** Hard cap on POST /actions body size (bytes). */
 const ACTION_BODY_MAX_BYTES = 64 * 1024;
@@ -140,7 +145,32 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
     const authorized = !token || req.headers.authorization === `Bearer ${token}`;
 
     try {
-      // ── POST /actions (the only POST route) ───────────────────────────
+      // ── POST /roce/apply (SC5d stub: dry run by default, never touches links) ──
+      if (req.method === "POST" && pathname === "/roce/apply") {
+        if (!authorized) {
+          json(res, 401, { error: "unauthorized" });
+          return;
+        }
+        readBody(req, ACTION_BODY_MAX_BYTES)
+          .then((raw) => {
+            let body;
+            try {
+              body = JSON.parse(raw === "" ? "{}" : raw);
+            } catch {
+              json(res, 400, { ok: false, error: "invalid JSON body" });
+              return;
+            }
+            const r = applyLinkPlan(body);
+            json(res, r.status, r.body);
+          })
+          .catch((err) => {
+            const status = Number.isInteger(err?.httpStatus) ? err.httpStatus : 500;
+            json(res, status, { ok: false, error: String(err?.message || "roce apply failed") });
+          });
+        return;
+      }
+
+      // ── POST /actions ─────────────────────────────────────────────────
       if (req.method === "POST") {
         if (pathname !== "/actions") {
           json(res, 405, { error: "method not allowed" });
@@ -195,6 +225,7 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
             "/containers",
             "/actions",
             "/audit",
+            "/roce/apply",
             "/health",
             "/updates",
           ],

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render } from "../../testing/render";
 import { FleetPage, type FleetPageProps } from "./FleetPage";
 import type { MemoryBudget, NodeAgentSnapshot, RequestStat, RoceLink, TopologyInfo } from "../../../shared/types";
@@ -97,14 +97,17 @@ function makeProps(overrides: Partial<FleetPageProps> = {}): FleetPageProps {
 }
 
 describe("FleetPage", () => {
-  it("renders one FleetCard per node plus the summary", () => {
+  it("renders one card per group plus one FleetCard per individual node, and the summary (SC5d)", () => {
     const { container } = render(<FleetPage {...makeProps()} />);
     const text = container.textContent ?? "";
 
     expect(text).toContain("Fleet Overview");
 
+    // head + w0 are in tp2 → one group card; solo keeps its own card.
     const cards = container.querySelectorAll("[aria-label^='Fleet node']");
-    expect(cards).toHaveLength(3);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].getAttribute("aria-label")).toBe("Fleet node solo");
+    expect(container.querySelectorAll('[data-testid="group-card"]')).toHaveLength(1);
     for (const name of ["head", "w0", "solo"]) {
       expect(text).toContain(name);
     }
@@ -127,39 +130,59 @@ describe("FleetPage", () => {
     expect(text).toContain("2/3 online");
   });
 
-  it("renders a group card per TP group with aggregated memory and no members (SC9)", () => {
-    const { container } = render(<FleetPage {...makeProps()} />);
+  it("renders a group card per group with aggregated bars and its member list (SC9, SC5d)", () => {
+    const onSelectGroup = vi.fn();
+    const { container } = render(<FleetPage {...makeProps()} onSelectGroup={onSelectGroup} />);
     const groupCards = container.querySelectorAll('[data-testid="group-card"]');
     expect(groupCards).toHaveLength(1); // only "tp2" — solo is standalone
     const card = groupCards[0] as HTMLElement;
 
-    // Group-level facts only: id, TP size, online count.
     expect(card.getAttribute("data-group-id")).toBe("tp2");
     expect(card.textContent).toContain("TP2 group");
     expect(card.querySelector('[data-testid="group-card-online"]')?.textContent).toBe("2/2 online");
 
-    // Memory is aggregated across members (128000×2 total, 216000 available)
-    // and shown with the Hasso pool bar.
-    expect(card.querySelector('[data-testid="memory-pool"]')).not.toBeNull();
+    // One memory bar for the group: 128000×2 total, 216000 available.
+    expect(card.querySelectorAll('[data-testid="memory-pool"]')).toHaveLength(1);
     expect(card.querySelector('[data-testid="memory-pool-used"]')?.textContent).toBe("39.1");
     expect(card.querySelector('[data-testid="group-card-total"]')?.textContent).toBe(
       "250.0 GiB total · 39.1 in use · 210.9 available"
     );
+    // GPU power summed: 30+30 W of 90+90 W.
+    expect(card.querySelector('[data-testid="group-card-power"]')?.textContent).toBe("GPU power 60W / 180W");
 
-    // No individuals on the group card — members stay on their own cards/pages.
-    expect(card.textContent).not.toContain("head");
-    expect(card.textContent).not.toContain("w0");
+    // Members are listed, head first, with their ranks.
+    const members = [...card.querySelectorAll('[data-testid="group-card-members"] li')].map((li) => li.textContent);
+    expect(members).toEqual(["headhead", "w0rank 1"]);
 
-    // Node cards still render.
-    expect(container.querySelectorAll("[aria-label^='Fleet node']")).toHaveLength(3);
+    // Members no longer get their own cards.
+    expect(container.querySelector("[aria-label='Fleet node head']")).toBeNull();
+    expect(container.querySelector("[aria-label='Fleet node w0']")).toBeNull();
+
+    // Drilling in opens the group detail view.
+    card.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(onSelectGroup).toHaveBeenCalledWith("tp2");
   });
 
-  it("resolves role/rank/group from the assembled topology graph", () => {
-    const { container } = render(<FleetPage {...makeProps()} />);
-    const w0Card = container.querySelector("[aria-label='Fleet node w0']");
-    expect(w0Card?.textContent).toContain("Worker");
-    expect(w0Card?.textContent).toContain("rank 1");
-    expect(w0Card?.textContent).toContain("tp2");
+  it("orders group members by rank and uses the persisted group name", () => {
+    const { container } = render(
+      <FleetPage
+        {...makeProps({
+          topology: {
+            nodes: [
+              { nodeId: "w0", role: "worker", rank: 1, groupId: "tp2", groupName: "Pair A", headId: "head", links: [] },
+              { nodeId: "head", role: "head", rank: 0, groupId: "tp2", groupName: "Pair A", headId: null, links: [] },
+              { nodeId: "solo", role: "standalone", rank: null, groupId: null, headId: null, links: [] },
+            ],
+            links: [],
+          },
+          nodes: [node("w0"), node("head"), node("solo", { online: false })],
+        })}
+      />
+    );
+    const card = container.querySelector('[data-testid="group-card"]') as HTMLElement;
+    expect(card.textContent).toContain("Pair A");
+    const ids = [...card.querySelectorAll('[data-testid="group-card-members"] li')].map((li) => li.textContent);
+    expect(ids[0]).toBe("headhead");
   });
 
   it("renders 0 cards and an empty summary for no nodes", () => {

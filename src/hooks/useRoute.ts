@@ -103,6 +103,7 @@ export function useRoute(
 //   /fleet                → fleet overview
 //   /topology             → topology / RoCE diagram
 //   /activity             → fleet activity log
+//   /group/:id            → spark group detail (SC5d: each member's own bars)
 //   /node/:id             → node detail
 //   /node/:id/services    → service manager (start/stop/switch)
 //   /node/:id/requests    → requests visualization
@@ -113,6 +114,7 @@ export type FleetView =
   | { page: "updates" }
   | { page: "components" }
   | { page: "activity" }
+  | { page: "group"; groupId: string }
   | { page: "node"; nodeId: string }
   | { page: "node-services"; nodeId: string }
   | { page: "node-requests"; nodeId: string };
@@ -129,6 +131,8 @@ export function fleetViewToPath(v: FleetView): string {
       return "/components";
     case "activity":
       return "/activity";
+    case "group":
+      return `/group/${encodeURIComponent(v.groupId)}`;
     case "node":
       return `/node/${encodeURIComponent(v.nodeId)}`;
     case "node-services":
@@ -144,6 +148,8 @@ export function parseFleetPath(pathname: string): FleetView | null {
   if (pathname === "/updates") return { page: "updates" };
   if (pathname === "/components") return { page: "components" };
   if (pathname === "/activity") return { page: "activity" };
+  const g = pathname.match(/^\/group\/([^/]+)$/);
+  if (g) return { page: "group", groupId: decodeURIComponent(g[1]) };
   const m = pathname.match(/^\/node\/([^/]+)(?:\/(services|requests))?$/);
   if (!m) return null;
   const nodeId = decodeURIComponent(m[1]);

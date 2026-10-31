@@ -22,6 +22,8 @@ config/gpu-history-long.json
 config/metrics-history.json
 config/metrics-history.json.corrupt-*
 config/fleet-update-plan.json
+config/groups.json
+config/groups.json.*.tmp
 config/.fleet-energy.json.*.tmp
 config/gpu-memory.json
 config/gpu-memory.json.*

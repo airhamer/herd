@@ -1,9 +1,13 @@
 import type { RoceLink, TopologyInfo } from "../../../shared/types";
+import type { GroupsApi } from "../../api/client";
 import { RoceDiagram } from "./RoceDiagram";
+import { SparkGroupsPanel } from "./SparkGroupsPanel";
 
 export interface TopologyPageProps {
   nodes: TopologyInfo[];
   links: RoceLink[];
+  /** Groups API (SC5d). When set, the spark group pages + RoCE plan render. */
+  groupsApi?: GroupsApi;
 }
 
 function formatMbps(mbps: number | null): string {
@@ -13,9 +17,9 @@ function formatMbps(mbps: number | null): string {
 }
 
 /**
- * Topology page: RoCE diagram + node table + link table.
+ * Topology page: spark group pages (SC5d) + RoCE diagram + node table + link table.
  */
-export function TopologyPage({ nodes, links }: TopologyPageProps) {
+export function TopologyPage({ nodes, links, groupsApi }: TopologyPageProps) {
   const linkCountByNode = new Map<string, number>();
   for (const link of links) {
     linkCountByNode.set(link.from, (linkCountByNode.get(link.from) ?? 0) + 1);
@@ -36,6 +40,8 @@ export function TopologyPage({ nodes, links }: TopologyPageProps) {
           {links.length === 1 ? "" : "s"}
         </span>
       </div>
+
+      {groupsApi && <SparkGroupsPanel api={groupsApi} />}
 
       <RoceDiagram nodes={nodes} links={links} />
 

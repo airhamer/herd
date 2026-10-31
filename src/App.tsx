@@ -22,6 +22,8 @@ import { ActivityPage, type ActivityUnit } from "./components/Activity/ActivityP
 import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { FleetShowcasePage } from "./components/ShowcasePage/FleetShowcasePage";
 import { TopologyPage } from "./components/Topology/TopologyPage";
+import { GroupDetailPage } from "./components/OverviewPage/GroupDetailPage";
+import { groupsApi } from "./api/client";
 import { UpdatesPage } from "./components/Updates/UpdatesPage";
 import { FleetUpdatesProvider } from "./components/Updates/FleetUpdatesContext";
 import { ServiceManagerPage } from "./components/ServiceManager/ServiceManagerPage";
@@ -653,6 +655,7 @@ function FleetViewPane({
         requests={fleet.requests}
         memory={fleet.memory}
         onSelectNode={(nodeId) => onNavigate({ page: "node", nodeId })}
+        onSelectGroup={(groupId) => onNavigate({ page: "group", groupId })}
         tokens={<FleetTokenTotals />}
         energy={
           showFleetEnergy ? (
@@ -669,7 +672,19 @@ function FleetViewPane({
   }
 
   if (view.page === "topology") {
-    return <TopologyPage nodes={fleet.topology.nodes} links={fleet.topology.links} />;
+    return <TopologyPage nodes={fleet.topology.nodes} links={fleet.topology.links} groupsApi={groupsApi} />;
+  }
+
+  if (view.page === "group") {
+    return (
+      <GroupDetailPage
+        groupId={view.groupId}
+        nodes={fleet.nodes}
+        topologyNodes={fleet.topology.nodes}
+        onSelectNode={(nodeId) => onNavigate({ page: "node", nodeId })}
+        onBack={() => onNavigate({ page: "fleet" })}
+      />
+    );
   }
 
   const node = fleet.nodes.find((n) => n.nodeId === view.nodeId) ?? null;

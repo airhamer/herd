@@ -19,6 +19,12 @@ Format: version sections are listed newest first.
 
 ### Added
 
+- **Spark groups on the Topology tab (SC5d, #75)**: groups work like phone home-screen pages. **Home** holds every individual node, and **+** adds an empty group page. Drag sparks between pages with native HTML5 drag and drop, or use each icon's *Move to* menu.
+  - **Limits:** a group takes 2–3 GB10 Sparks over direct RoCE cables. A 4th spark or a non-Spark host is refused with a reason. The `switchPresent` flag is stored but does nothing yet.
+  - **API:** groups persist to `config/groups.json` via `GET`/`PUT /api/fleet/groups`, with validation. On first run the file is seeded from the registry, so the existing tp2 carries over. The groups set `TopologyInfo.groupId`, `groupName`, head and rank.
+  - **RoCE plan:** a pair runs its one link at 200G; a triple runs all three links at 100G; links outside a group are disabled. *Apply* is a separate confirm that defaults to a dry run (`POST /api/fleet/groups/roce-apply` → agent `POST /roce/apply`). There is no verified command path yet, so the dry run lists no commands and a real apply returns 501 "not implemented". Cable and link-type verification is TODO.
+  - **Fleet:** each group gets one card (one aggregated bar per metric, plus a member list) instead of its members' cards. Opening the card goes to `/group/:id`, which shows each member's own bars. The aggregation helper `src/lib/groupAggregate.ts` is meant for reuse by multi-GPU VRAM combining (#30).
+
 - **AEON Bench Pod runbook and import (#47)**: [docs/AEON-POD.md](docs/AEON-POD.md) explains how to run AEON Bench Pod (aeon-suite-v4, the agentic-v2.5 harnesses and the aeon-perf-v1 ladder) against a Herd lane. It covers the `self_reported` path (`--target`, kept local by default) and the `attested` path (`--serve-url` + `--remote-host`), and imports the results.
   - **API:** new `POST /api/bench-results/import/aeon-pod` (`server/bench/aeonPod/`) turns one pod run into `origin: aeon-pod` records, with Herd's provenance for the named lane. The board status is what the operator states: `not_submitted`, `self_reported`, or `attested` with its board URL. The pod's own `trust_tier` is kept as a claim only.
   - **Script:** `scripts/aeon-pod-import.mjs` is zero-dependency and fetches from the pod dashboard or a saved run JSON.

@@ -68,6 +68,8 @@ export function buildTopology(nodes) {
       groupId: node.groupId ?? null,
       headId: node.headId ?? null,
       links,
+      // SC5d: the persisted group's display name, when the groups overlay set one.
+      ...(typeof node.groupName === "string" && node.groupName ? { groupName: node.groupName } : {}),
     });
 
     for (const link of links) {

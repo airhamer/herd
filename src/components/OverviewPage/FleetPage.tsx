@@ -31,6 +31,8 @@ export interface FleetPageProps {
   };
   /** When set, node cards become clickable and open the node detail view. */
   onSelectNode?: (nodeId: string) => void;
+  /** When set, group cards open the group detail view (SC5d). */
+  onSelectGroup?: (groupId: string) => void;
   /** Rendered under the node cards (the Fleet energy card, issue #33). */
   energy?: ReactNode;
   /** Rendered beside the energy card (the LLM token totals card, issue #38). */
@@ -73,33 +75,41 @@ function sumRequests(byMachine: Record<string, RequestStat[]>) {
   return { queued, running, finished };
 }
 
-/** A TP group assembled from the fleet's nodes (SC9). */
-interface FleetGroup {
+/** A spark group assembled from the fleet's nodes (SC9, SC5d). */
+export interface FleetGroup {
   groupId: string;
-  members: NodeAgentSnapshot[];
+  name: string;
+  /** Members, head (rank 0) first. */
+  members: Array<{ snapshot: NodeAgentSnapshot; rank: number | null }>;
 }
 
-/** Group nodes by resolved groupId, in first-appearance order. */
-function collectGroups(
+/**
+ * Group nodes by resolved groupId (server-set from config/groups.json), in
+ * first-appearance order, members sorted by rank (head first).
+ */
+export function collectGroups(
   nodes: NodeAgentSnapshot[],
   topologyNodes: TopologyInfo[],
 ): FleetGroup[] {
   const byId = new Map<string, FleetGroup>();
   for (const node of nodes) {
-    const { groupId } = resolveRole(node, topologyNodes);
+    const { groupId, rank } = resolveRole(node, topologyNodes);
     if (!groupId) continue;
     let group = byId.get(groupId);
     if (!group) {
-      group = { groupId, members: [] };
+      const name = topologyNodes.find((t) => t.groupId === groupId && t.groupName)?.groupName ?? groupId;
+      group = { groupId, name, members: [] };
       byId.set(groupId, group);
     }
-    group.members.push(node);
+    group.members.push({ snapshot: node, rank });
   }
+  const r = (x: number | null) => (x == null ? Number.MAX_SAFE_INTEGER : x);
+  for (const g of byId.values()) g.members.sort((a, b) => r(a.rank) - r(b.rank));
   return [...byId.values()];
 }
 
 /** Who holds the GPU part of a set of nodes (one group, or the fleet): the models running across them. */
-function groupHolder(members: NodeAgentSnapshot[]): string {
+export function groupHolder(members: NodeAgentSnapshot[]): string {
   const models = members
     .flatMap((m) => m.services)
     .filter((s) => s.kind === "llm" && s.status === "running")
@@ -112,14 +122,19 @@ function groupHolder(members: NodeAgentSnapshot[]): string {
 }
 
 /**
- * Fleet overview page: summary strip + one FleetCard per node, then the
+ * Fleet overview page: summary strip + one GroupCard per spark group and one
+ * FleetCard per individual node (group members have no card of their own), then the
  * optional energy and activity slots.
  */
-export function FleetPage({ nodes, topology, requests, memory, onSelectNode, energy, tokens, activity }: FleetPageProps) {
+export function FleetPage({ nodes, topology, requests, memory, onSelectNode, onSelectGroup, energy, tokens, activity }: FleetPageProps) {
   const onlineCount = nodes.filter((n) => n.online).length;
   const offlineCount = nodes.length - onlineCount;
   const reqs = sumRequests(requests.byMachine);
   const groups = collectGroups(nodes, topology.nodes);
+  // SC5d: a group gets ONE card instead of its members' cards; individual
+  // nodes keep their own cards.
+  const grouped = new Set(groups.flatMap((g) => g.members.map((m) => m.snapshot.nodeId)));
+  const individuals = nodes.filter((n) => !grouped.has(n.nodeId));
   // SC9: the fleet's memory is shown Hasso-style (issue #26 display), not as
   // plain numbers — one pool aggregated across every node's readings.
   const fleetPool = aggregateMemoryPool(nodes.map((n) => ({ mem: n.mem, gpu: n.gpu })));
@@ -196,28 +211,6 @@ export function FleetPage({ nodes, topology, requests, memory, onSelectNode, ene
         )}
       </div>
 
-      {/* TP groups: aggregated group memory, group-level facts only (SC9) */}
-      {groups.length > 0 && (
-        <div className="flex flex-col gap-3" data-testid="fleet-group-cards">
-          <h2 className="panel-title">TP Groups</h2>
-          <div
-            className="overview-page grid sm:grid-cols-2 lg:grid-cols-3"
-            style={{ gap: "var(--density-page-gap)" }}
-          >
-            {groups.map((group) => (
-              <GroupCard
-                key={group.groupId}
-                groupId={group.groupId}
-                memberCount={group.members.length}
-                onlineCount={group.members.filter((m) => m.online).length}
-                pool={aggregateMemoryPool(group.members.map((m) => ({ mem: m.mem, gpu: m.gpu })))}
-                holder={groupHolder(group.members)}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Cards */}
       {nodes.length === 0 ? (
         <div className="panel mx-auto mt-8 max-w-md p-8 text-center">
@@ -230,8 +223,19 @@ export function FleetPage({ nodes, topology, requests, memory, onSelectNode, ene
         <div
           className="overview-page grid sm:grid-cols-2 lg:grid-cols-3"
           style={{ gap: "var(--density-page-gap)" }}
+          data-testid="fleet-cards"
         >
-          {nodes.map((node) => {
+          {groups.map((group) => (
+            <GroupCard
+              key={`group:${group.groupId}`}
+              groupId={group.groupId}
+              name={group.name}
+              members={group.members}
+              holder={groupHolder(group.members.map((m) => m.snapshot))}
+              onOpen={onSelectGroup}
+            />
+          ))}
+          {individuals.map((node) => {
             const { role, rank, groupId } = resolveRole(node, topology.nodes);
             return (
               <FleetCard
