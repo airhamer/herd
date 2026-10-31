@@ -49,6 +49,7 @@ test("a new WebSocket client receives its initial snapshot without rebroadcastin
       SECRETS_KEY_PATH: path.join(tmp, ".secrets-key"),
       LLM_DAILY_JSON_PATH: path.join(tmp, "llm-daily.json"),
       FLEET_ENERGY_JSON_PATH: path.join(tmp, "fleet-energy.json"),
+      BENCH_RESULTS_PATH: path.join(tmp, "bench-results.json"),
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
