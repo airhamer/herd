@@ -113,14 +113,45 @@ describe("FleetPage", () => {
     expect(container.querySelector('[data-testid="fleet-summary-nodes"]')?.textContent).toBe(
       "3 total · 2 online · 1 offline"
     );
-    expect(container.querySelector('[data-testid="fleet-summary-memory"]')?.textContent).toContain(
-      "used"
-    );
+    // SC9: fleet-level memory renders Hasso-style (issue #26 display), not
+    // plain numbers. The pool is summed across the two online nodes:
+    // total 256000 MB, available 216000 MB → 39.1 / 250.0 GiB in use.
+    const memory = container.querySelector('[data-testid="fleet-summary-memory"]');
+    expect(memory?.querySelector('[data-testid="memory-pool"]')).not.toBeNull();
+    expect(memory?.querySelector('[data-testid="memory-pool-used"]')?.textContent).toBe("39.1");
+    expect(memory?.textContent).toContain("210.9"); // GiB available
     // q1+1 · r2+2 · f10+10
     expect(container.querySelector('[data-testid="fleet-summary-requests"]')?.textContent).toBe(
       "q2 · r4 · f20"
     );
     expect(text).toContain("2/3 online");
+  });
+
+  it("renders a group card per TP group with aggregated memory and no members (SC9)", () => {
+    const { container } = render(<FleetPage {...makeProps()} />);
+    const groupCards = container.querySelectorAll('[data-testid="group-card"]');
+    expect(groupCards).toHaveLength(1); // only "tp2" — solo is standalone
+    const card = groupCards[0] as HTMLElement;
+
+    // Group-level facts only: id, TP size, online count.
+    expect(card.getAttribute("data-group-id")).toBe("tp2");
+    expect(card.textContent).toContain("TP2 group");
+    expect(card.querySelector('[data-testid="group-card-online"]')?.textContent).toBe("2/2 online");
+
+    // Memory is aggregated across members (128000×2 total, 216000 available)
+    // and shown with the Hasso pool bar.
+    expect(card.querySelector('[data-testid="memory-pool"]')).not.toBeNull();
+    expect(card.querySelector('[data-testid="memory-pool-used"]')?.textContent).toBe("39.1");
+    expect(card.querySelector('[data-testid="group-card-total"]')?.textContent).toBe(
+      "250.0 GiB total · 39.1 in use · 210.9 available"
+    );
+
+    // No individuals on the group card — members stay on their own cards/pages.
+    expect(card.textContent).not.toContain("head");
+    expect(card.textContent).not.toContain("w0");
+
+    // Node cards still render.
+    expect(container.querySelectorAll("[aria-label^='Fleet node']")).toHaveLength(3);
   });
 
   it("resolves role/rank/group from the assembled topology graph", () => {
@@ -141,6 +172,10 @@ describe("FleetPage", () => {
     expect(container.querySelector('[data-testid="fleet-summary-nodes"]')?.textContent).toBe(
       "0 total · 0 online · 0 offline"
     );
+    // No pool data at all (SSH-only fleet) → the strip keeps its totals
+    // fallback and no group cards render.
+    expect(container.querySelector('[data-testid="fleet-summary-memory"]')?.textContent).toContain("used");
+    expect(container.querySelector('[data-testid="fleet-group-cards"]')).toBeNull();
     expect(text).toContain("No nodes registered");
   });
 

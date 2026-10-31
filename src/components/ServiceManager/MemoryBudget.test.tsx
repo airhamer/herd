@@ -100,7 +100,7 @@ describe("MemoryBudget", () => {
       };
     }
 
-    it("renders the group total, shard, and per-spark breakdown with head + make-room + infeasible rows", async () => {
+    it("renders group-level facts only — total, shard, availability; no member rows (SC9)", async () => {
       const { container } = render(
         <MemoryBudget {...budget({ groupAvailableMB: 22_880, group: group() })} />
       );
@@ -111,15 +111,15 @@ describe("MemoryBudget", () => {
       expect(text).toContain("estimated"); // bootstrap hardcode tag (SC10 hardcodes)
       expect(text).toContain("192.0 GB / 240.0 GB"); // group total / group mem
       expect(text).toContain("96.0 GB"); // per-spark shard
-      expect(text).toContain("Per-spark breakdown");
-      expect(text).toContain("gx10-102c");
-      expect(text).toContain("(head)");
-      expect(text).toContain("gx10-25ed");
-      expect(text).toContain("make-room: image-sd");
-      expect(text).toContain("4.5 GB free after"); // feasible spark
-      expect(text).toContain("−36.3 GB free after"); // infeasible spark shows the shortfall
       expect(text).toContain("Available here for shard");
       expect(text).toContain("22.3 GB"); // groupAvailableMB
+      // SC9: individual members are not listed on the group view — they live
+      // on their own pages. Group-level facts (totals, fit, shard) stay.
+      expect(text).not.toContain("Per-spark breakdown");
+      expect(text).not.toContain("gx10-102c");
+      expect(text).not.toContain("gx10-25ed");
+      expect(text).not.toContain("(head)");
+      expect(text).not.toContain("free after");
     });
 
     it("fits group without estimates renders fits badge and no estimated tag or availability bar", async () => {
@@ -133,14 +133,6 @@ describe("MemoryBudget", () => {
       expect(text).not.toContain("estimated");
       // No groupAvailableMB threaded → no shard-availability row.
       expect(text).not.toContain("Available here for shard");
-    });
-
-    it("formats a negative projected-free with the minus sign and absolute value", async () => {
-      const { container } = render(
-        <MemoryBudget {...budget({ group: group({ sparks: [group().sparks[1]] }) })} />
-      );
-      await flush();
-      expect(container.textContent ?? "").toContain("−36.3 GB free after");
     });
   });
 });

@@ -7,6 +7,7 @@ import { Panel } from "../ui/Panel";
 import { MetricBar } from "../ui/MetricBar";
 import { MemoryIcon } from "../ui/icons";
 
+
 export interface MemoryBudgetProps {
   totalMB: number;
   usedMB: number;
@@ -45,8 +46,9 @@ export interface GroupPlanForNode {
   groupFreeMemMB: number;
   /**
    * Full per-spark breakdown (GroupResourcePlan.sparks, in sparkIds
-   * order). The parent assembles it from Fleet memory.byNode budgets so
-   * every member row carries its own live totals.
+   * order). Threaded by the parent for callers that need it, but SC9: the
+   * group view presents group-level facts only and no longer lists
+   * individual members — per-machine detail lives on each member's own page.
    */
   sparks: GroupSparkEntry[];
   /** true when the estimate is a bootstrap hardcode (basis "estimated"). */
@@ -72,10 +74,11 @@ function safePct(value: number, max: number): number {
  * wanted model). Panel/bar style mirrors RamPanel.
  *
  * SC3: the multi-spark/TP section is UNLOCKED — when a group plan is
- * threaded (props.group) the panel renders the group total line, the
- * per-spark breakdown, and the shard-availability bar, tagging bootstrap
- * estimates ("estimated") so they are visibly provisional until history
- * replaces them with measured averages.
+ * threaded (props.group) the panel renders the group total line and the
+ * shard-availability bar, tagging bootstrap estimates ("estimated") so they
+ * are visibly provisional until history replaces them with measured
+ * averages. SC9: group views present group-level facts only — the old
+ * per-spark member breakdown is gone; individuals live on their own pages.
  */
 export function MemoryBudget({
   totalMB,
@@ -197,31 +200,6 @@ export function MemoryBudget({
               </div>
             </div>
           )}
-          <div className="text-[10px] uppercase tracking-wide text-muted">Per-spark breakdown</div>
-          {group.sparks.map((sp) => (
-            <div key={sp.nodeId} className="flex items-center justify-between gap-2 text-xs">
-              <div className="flex min-w-0 items-baseline gap-1.5">
-                <span className="min-w-0 truncate text-text" title={sp.nodeId}>
-                  {sp.nodeId}
-                </span>
-                {sp.head && <span className="shrink-0 text-muted">(head)</span>}
-                {sp.makeRoom.length > 0 && (
-                  <span className="shrink-0 text-muted">
-                    make-room: {sp.makeRoom.map((m) => m.serviceName).join(", ")}
-                  </span>
-                )}
-              </div>
-              <span
-                className={`shrink-0 font-tabular ${
-                  sp.feasible ? "text-text" : "text-danger"
-                }`}
-                title={`free ${formatMb(sp.freeMB)} + make-room − shard ${formatMb(sp.plannedMB)}`}
-              >
-                {sp.feasible ? "" : "−"}
-                {formatMb(Math.abs(sp.projectedFreeMB))} free after
-              </span>
-            </div>
-          ))}
         </div>
       )}
       {svcs.length > 0 && (
