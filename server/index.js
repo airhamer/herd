@@ -631,7 +631,19 @@ app.use(createAuthMiddleware());
 
 // ─── Bench results store (BENCH1) ─────────────────────────
 const benchResultsStore = new BenchResultsStore();
-const benchResultsRecorder = createResultsRecorder({ store: benchResultsStore });
+/** Fleet energy tracker read over a bench run window (BENCH6 run cost). */
+const benchEnergyWindow = (nodeId, startMs, endMs) => fleetEnergyTracker.windowEnergy(nodeId, startMs, endMs);
+/** Unified-memory headroom of a monitored node right now, in MB (BENCH6 run cost). */
+function benchMemoryNow(nodeId) {
+  const mem = monitors.get(nodeId)?.snapshot()?.metrics?.unifiedMemory;
+  if (!mem || !(mem.available > 0) || !(mem.total > 0)) return null;
+  return { available_mb: mem.available, total_mb: mem.total };
+}
+const benchResultsRecorder = createResultsRecorder({
+  store: benchResultsStore,
+  energyWindow: benchEnergyWindow,
+  memoryNow: benchMemoryNow,
+});
 decodeBenchManager.resultSink = benchResultsRecorder.sinkFor("DecodeBench");
 prefillBenchManager.resultSink = benchResultsRecorder.sinkFor("PrefillBench");
 showcaseManager.resultSink = benchResultsRecorder.sinkFor("Showcase");
@@ -663,7 +675,7 @@ try {
 } catch (err) {
   console.warn(`[bench-results] reference registry: ${err.message}`);
 }
-registerBenchResultsRoutes(app, { store: benchResultsStore, registry: referenceRegistry });
+registerBenchResultsRoutes(app, { store: benchResultsStore, registry: referenceRegistry, energyWindow: benchEnergyWindow });
 
 /** Host + lane provenance for a bench run starting now (null on failure). */
 function benchProvenance(spark, monitor, port, ports, customHost = false) {

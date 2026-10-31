@@ -57,6 +57,8 @@ import type {
   BenchResult,
   BenchResultsFilter,
   BenchResultsListResponse,
+  BenchUpgradeResponse,
+  BenchUpgradeRunsResponse,
 } from "../../shared/types";
 
 const BASE = "";
@@ -898,6 +900,22 @@ export function getBenchResult(id: string): Promise<BenchResult> {
 export function compareBenchResults(baseline: string, candidate: string): Promise<BenchCompareResponse> {
   const q = new URLSearchParams({ baseline, candidate }).toString();
   return apiFetch(`/api/bench-results/compare?${q}`);
+}
+
+/** Runs the "Upgrade worth it?" view can pick, newest first (BENCH6). */
+export function listUpgradeRuns(filter: { node_id?: string; hw_bucket?: string; bench?: string; limit?: number } = {}): Promise<BenchUpgradeRunsResponse> {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filter)) {
+    if (v !== undefined && v !== null && v !== "") params.set(k, String(v));
+  }
+  const q = params.toString();
+  return apiFetch(`/api/bench-results/upgrade/runs${q ? `?${q}` : ""}`);
+}
+
+/** Baseline vs candidate run(s) → verdict; a refusal is `verdict.code: "refused"` with reasons. */
+export function compareUpgrade(baseline: string[], candidate: string[]): Promise<BenchUpgradeResponse> {
+  const q = new URLSearchParams({ baseline: baseline.join(","), candidate: candidate.join(",") }).toString();
+  return apiFetch(`/api/bench-results/upgrade?${q}`);
 }
 
 /** The published reference registry (origin "reference" rows, never Herd results). */
