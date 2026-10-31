@@ -176,23 +176,26 @@ export function FleetCard(props: FleetCardProps) {
   const memUsed = mem?.usedMB ?? 0;
   const memTotal = mem?.totalMB ?? 0;
 
-  // Issue #26: one pool split Hasso-style. On a GB10 the GPU draws from this
-  // same pool, so it replaces the separate VRAM and Mem bars (which measured
-  // the same 128 GB twice); a discrete GPU keeps its own VRAM bar.
-  const unified = isUnifiedGpu(gpu, memTotal);
-  const pool = mem
-    ? memoryPool({
-        totalMB: mem.totalMB,
-        availableMB: mem.availableMB,
-        cachedMB: mem.cachedMB,
-        swapTotalMB: mem.swapTotalMB,
-        swapFreeMB: mem.swapFreeMB,
-        gpuMB: gpu?.gpuAllocMB ?? (gpu?.processes ?? []).reduce((n, p) => n + (p.vramMB || 0), 0),
-        unified,
-      })
-    : null;
-  // Mem Budget reads off the same pool as the bar (#26), not memory.freeMB.
-  const memBudget = memory ? memBudgetStat(pool, memory) : null;
+  // Issue #26: on a positively identified unified-memory host (GB10) the GPU
+  // draws from the OS pool, so one Hasso-style pool bar replaces the separate
+  // VRAM and Mem bars (which measured the same 128 GB twice). Every other host
+  // (discrete GPU, CPU-only, older agent) keeps the original separate VRAM and
+  // Mem bars and the system-RAM Mem Budget: RAM and VRAM are never merged.
+  const unified = isUnifiedGpu(gpu);
+  const pool =
+    unified && mem
+      ? memoryPool({
+          totalMB: mem.totalMB,
+          availableMB: mem.availableMB,
+          cachedMB: mem.cachedMB,
+          swapTotalMB: mem.swapTotalMB,
+          swapFreeMB: mem.swapFreeMB,
+          gpuMB: gpu?.gpuAllocMB ?? (gpu?.processes ?? []).reduce((n, p) => n + (p.vramMB || 0), 0),
+          unified: true,
+        })
+      : null;
+  // Unified: Mem Budget reads off the same pool as the bar (#26).
+  const memBudget = memory ? memBudgetStat(pool, memory, unified) : null;
 
   const runningContainers = containers.filter((c) => c.status === "running").length;
   const stoppedContainers = containers.length - runningContainers;
@@ -296,22 +299,24 @@ export function FleetCard(props: FleetCardProps) {
           <div className="flex flex-col gap-3.5">
             {pool ? (
               <MemoryPoolBar pool={pool} holder={gpuHolder} />
-            ) : mem ? (
-              <MetricBar
-                label="Mem"
-                value={memUsed}
-                max={memTotal}
-                caption={memTotal > 0 ? `${formatMb(memUsed).replace(/ (GB|MB)$/, "")} / ${formatMb(memTotal)}` : "—"}
-              />
-            ) : null}
-            {!(pool && unified) && (
-              <MetricBar
-                label="VRAM"
-                value={vramUsed}
-                max={vramTotal}
-                color={vramBarColor}
-                caption={vramTotal > 0 ? `${formatMb(vramUsed).replace(/ (GB|MB)$/, "")} / ${formatMb(vramTotal)}` : "—"}
-              />
+            ) : (
+              <>
+                <MetricBar
+                  label="VRAM"
+                  value={vramUsed}
+                  max={vramTotal}
+                  color={vramBarColor}
+                  caption={vramTotal > 0 ? `${formatMb(vramUsed).replace(/ (GB|MB)$/, "")} / ${formatMb(vramTotal)}` : "—"}
+                />
+                {mem && (
+                  <MetricBar
+                    label="Mem"
+                    value={memUsed}
+                    max={memTotal}
+                    caption={memTotal > 0 ? `${formatMb(memUsed).replace(/ (GB|MB)$/, "")} / ${formatMb(memTotal)}` : "—"}
+                  />
+                )}
+              </>
             )}
             <MetricBar
               label="GPU"
@@ -404,9 +409,19 @@ export function FleetCard(props: FleetCardProps) {
               value={`q${queued} · r${running} · f${finished}`}
               title="queued · running · finished"
             />
-            {memory && memBudget && (
-              <MiniStat label="Mem Budget" testId="fleet-card-mem-budget" value={memBudget.value} tone={memBudget.tone} title={memBudget.title} />
-            )}
+            {memory &&
+              (memBudget ? (
+                <MiniStat label="Mem Budget" testId="fleet-card-mem-budget" value={memBudget.value} tone={memBudget.tone} title={memBudget.title} />
+              ) : (
+                // Not unified: system RAM only, exactly as before #26.
+                <MiniStat
+                  label="Mem Budget"
+                  testId="fleet-card-mem-budget"
+                  value={`${formatMb(memory.freeMB)} free`}
+                  tone={memory.needMakeRoom ? "danger" : memory.freeMB < 8192 ? "warning" : "success"}
+                  title={`total ${formatMb(memory.totalMB)} · used ${formatMb(memory.usedMB)}`}
+                />
+              ))}
             {memory?.needMakeRoom && (
               <div
                 className="col-span-2 rounded border border-danger/40 bg-danger/10 px-2 py-1 text-[11px] font-medium text-danger"

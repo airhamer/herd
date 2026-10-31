@@ -96,18 +96,31 @@ export function gib(mb: number): string {
 }
 
 /**
- * Whether a GPU shares the OS pool. Prefers the agent's explicit flag (#26);
- * for older snapshots, a GPU whose "VRAM total" equals MemTotal (the GB10
- * fallback) is unified.
+ * Whether a GPU shares the OS pool. Only a positive identification counts:
+ * the agent's `unifiedMemory` flag, which it sets for GB10 alone. Missing
+ * data, an older agent, "[N/A]" memory or a VRAM total that happens to equal
+ * MemTotal are NOT evidence: those hosts keep the separate RAM and VRAM
+ * presentation, so system RAM and GPU memory are never merged into one pool.
  */
-export function isUnifiedGpu(
-  gpu: { unifiedMemory?: boolean; vramTotalMB?: number } | null | undefined,
-  memTotalMB: number,
-): boolean {
-  if (!gpu) return false;
-  if (typeof gpu.unifiedMemory === "boolean") return gpu.unifiedMemory;
-  const v = nn(gpu.vramTotalMB);
-  return v > 0 && memTotalMB > 0 && Math.abs(v - memTotalMB) / memTotalMB < 0.02;
+export function isUnifiedGpu(gpu: { unifiedMemory?: boolean } | null | undefined): boolean {
+  return gpu?.unifiedMemory === true;
+}
+
+/**
+ * Whether a server-side Spark snapshot is a unified-memory DGX Spark (GB10):
+ * not a "host" unit (the app's explicit marker for discrete-GPU / non-Spark
+ * Linux boxes), with GB10 hardware and a unified-memory reading.
+ */
+export function isUnifiedSpark(spark: {
+  kind?: string;
+  hardware?: { gpuChip?: string | null } | null;
+  metrics?: { unifiedMemory?: { total?: number } | null };
+}): boolean {
+  return (
+    spark.kind !== "host" &&
+    /\bGB10\b/i.test(spark.hardware?.gpuChip ?? "") &&
+    nn(spark.metrics?.unifiedMemory?.total) > 0
+  );
 }
 
 /**
@@ -153,16 +166,22 @@ export function poolScaleGiB(totalMB: number): number[] {
 export type MemBudgetTone = "success" | "warning" | "danger";
 
 /**
- * The Fleet card's "Mem Budget" stat, kept consistent with the pool bar
- * (#26): headroom above the floor = available − floor (clamped at 0) in GiB,
- * toned on available with the bar's thresholds, danger whenever the budget
- * needs a make-room plan. Prefers the pool; falls back to the budget's own
- * freeMB/totalMB only when there is no pool breakdown.
+ * The Fleet card's "Mem Budget" stat on a UNIFIED-memory host, kept
+ * consistent with the pool bar (#26): headroom above the floor = available −
+ * floor (clamped at 0) in GiB, toned on available with the bar's thresholds,
+ * danger whenever the budget needs a make-room plan. Prefers the pool; falls
+ * back to the budget's own freeMB/totalMB only when there is no pool.
+ *
+ * Returns null on a host that is not unified (discrete GPU, CPU-only) or for a
+ * non-unified pool: the floor is a GB10 OOM-livelock concept, so those hosts
+ * keep the original system-RAM "X free" stat.
  */
 export function memBudgetStat(
   pool: MemoryPool | null,
   budget: { freeMB: number; totalMB: number; needMakeRoom?: boolean } | null,
+  unified = true,
 ): { value: string; tone: MemBudgetTone; title: string } | null {
+  if (!unified || (pool && !pool.unified)) return null;
   const src = pool
     ? { availableMB: pool.availableMB, totalMB: pool.totalMB, floorMB: pool.floorMB }
     : budget

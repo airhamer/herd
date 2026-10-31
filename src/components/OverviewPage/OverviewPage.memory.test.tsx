@@ -64,3 +64,77 @@ describe("OverviewPage spark card memory (#26)", () => {
     expect(container.textContent).toContain("RAM");
   });
 });
+
+// A discrete-GPU "host" unit: 64 GiB of system RAM, one 24 GiB card. The server
+// still fills unifiedMemory from /proc/meminfo (system RAM) on such hosts.
+function discreteHost(): SparkSnapshot {
+  const s = makeSpark("x86-4090");
+  s.kind = "host";
+  s.hardware = { ...s.hardware, device: "Linux GPU host", gpuChip: "NVIDIA GeForce RTX 4090", totalMemoryGB: 64 };
+  s.metrics.gpu = { ...s.metrics.gpu!, vram: { used: 8192, total: 24576, available: 16384, percentage: 33 } };
+  s.metrics.ram = { used: 24576, total: 65536, available: 40960, percentage: 38 } as SparkSnapshot["metrics"]["ram"];
+  s.metrics.unifiedMemory = {
+    total: 65536, gpuUsed: 8000, cpuUsed: 16576, used: 24576, available: 40960,
+    percentage: 38, oomRisk: "low", bandwidth: { current: 0, peak: 400 },
+    cached: 10240, swapTotal: 8192, swapFree: 0,
+  };
+  return s;
+}
+
+describe("OverviewPage cards on hosts without unified memory (#26)", () => {
+  it("discrete GPU host: separate VRAM and RAM bars, VRAM Available from the card, no pool", () => {
+    const { container } = render(<OverviewPage sparks={[discreteHost()]} />);
+    const text = container.textContent ?? "";
+    expect(q(container, "memory-pool")).toBeNull();
+    expect(text).not.toContain("Unified memory");
+    expect(text).not.toContain("Swap in use");
+    expect(text).toMatch(/VRAM8(\.0)?\s*\/\s*24(\.0)? ?GB/);
+    expect(text).toMatch(/RAM24(\.0)?\s*\/\s*64(\.0)? ?GB/);
+    expect(text).toContain("Available16.0 GB"); // VRAM free, not the 40 GB of system RAM
+  });
+
+  it("CPU-only host: the server's zeroed GPU reading shows no VRAM and system RAM stays on the RAM bar", () => {
+    const s = discreteHost();
+    s.hardware = { ...s.hardware, gpuChip: null };
+    // SystemCollector._defaultGpu() when nvidia-smi is absent.
+    s.metrics.gpu = { ...s.metrics.gpu!, usage: 0, temperature: 0, vram: { used: 0, total: 0, available: 0, percentage: 0 } };
+    const { container } = render(<OverviewPage sparks={[s]} />);
+    const text = container.textContent ?? "";
+    expect(q(container, "memory-pool")).toBeNull();
+    expect(text).toContain("VRAM—");
+    expect(text).toMatch(/RAM24(\.0)?\s*\/\s*64(\.0)? ?GB/);
+    expect(text).not.toContain("Available");
+  });
+
+  it("CPU-only host: a GPU reading without vram never borrows the meminfo pool as VRAM", () => {
+    const s = discreteHost();
+    s.metrics.gpu = { ...s.metrics.gpu!, vram: undefined } as unknown as SparkSnapshot["metrics"]["gpu"];
+    const { container } = render(<OverviewPage sparks={[s]} />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("VRAM—");
+    expect(text).not.toContain("Available");
+  });
+
+  it("CPU-only host with no GPU object renders the waiting placeholder without errors (as on main)", () => {
+    const s = discreteHost();
+    s.metrics.gpu = null;
+    const { container } = render(<OverviewPage sparks={[s]} />);
+    expect(container.textContent).toContain("Waiting for metrics");
+    expect(q(container, "memory-pool")).toBeNull();
+  });
+
+  it("a Spark-kind unit whose hardware is not GB10 is not drawn as a unified pool", () => {
+    const s = gb10Spark();
+    s.hardware = { ...s.hardware, gpuChip: "NVIDIA H100 80GB HBM3" };
+    const { container } = render(<OverviewPage sparks={[s]} />);
+    expect(q(container, "memory-pool")).toBeNull();
+    expect(container.textContent).toContain("VRAM");
+  });
+
+  it("mixed fleet: each card picks its own presentation", () => {
+    const { container } = render(<OverviewPage sparks={[gb10Spark(), discreteHost()]} />);
+    expect(container.querySelectorAll('[data-testid="memory-pool"]').length).toBe(1);
+    expect(container.textContent).toContain("109.9");
+    expect(container.textContent).toMatch(/VRAM8(\.0)?\s*\/\s*24(\.0)? ?GB/);
+  });
+});

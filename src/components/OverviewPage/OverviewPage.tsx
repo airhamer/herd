@@ -5,7 +5,7 @@ import { shutdownAllSparks, updateAllHermes, wakeAllSparks } from "../../api/cli
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { MetricBar } from "../ui/MetricBar";
 import { MemoryPoolBar } from "../ui/MemoryPoolBar";
-import { gpuHolderLabel, memoryPool } from "../../lib/memoryPool";
+import { gpuHolderLabel, isUnifiedSpark, memoryPool } from "../../lib/memoryPool";
 import { HealthChips } from "../ui/HealthFindings";
 import { Tag } from "../ui/Tag";
 import { FleetEnergyCard } from "./FleetEnergyCard";
@@ -106,16 +106,21 @@ function SparkCard({
   const tempRaw = gpu?.temperature ?? 0;
   const displayTemp = temperatureUnit === "fahrenheit" ? celsiusToFahrenheit(tempRaw) : tempRaw;
   const tempLabel = temperatureUnit === "fahrenheit" ? `${displayTemp}°F` : `${displayTemp}°C`;
-  const vramPct = gpu?.vram?.percentage ?? um?.percentage ?? 0;
-  const vramUsed = gpu?.vram?.used ?? um?.used ?? 0;
-  const vramTotal = gpu?.vram?.total ?? um?.total ?? 0;
-  const vramAvail = gpu?.vram?.available ?? um?.available ?? 0;
+  // The unified-memory reading stands in for VRAM only on a Spark (shared
+  // pool). On a "host" unit it is system RAM, so it must never fill the VRAM
+  // bar or the VRAM "Available" stat (e.g. a CPU-only host with no GPU).
+  const vramFallback = spark.kind === "host" ? null : um;
+  const vramPct = gpu?.vram?.percentage ?? vramFallback?.percentage ?? 0;
+  const vramUsed = gpu?.vram?.used ?? vramFallback?.used ?? 0;
+  const vramTotal = gpu?.vram?.total ?? vramFallback?.total ?? 0;
+  const vramAvail = gpu?.vram?.available ?? vramFallback?.available ?? 0;
 
-  // Issue #26: a Spark's GPU draws from the unified pool, so one Hasso-style
-  // pool bar (model / system and apps / page cache / free, floor, swap)
-  // replaces the VRAM bar. Non-Spark hosts keep VRAM + RAM bars.
+  // Issue #26: a DGX Spark's (GB10) GPU draws from the unified pool, so one
+  // Hasso-style pool bar (model / system and apps / page cache / free, floor,
+  // swap) replaces the VRAM bar. Non-Spark hosts (discrete GPU, CPU-only) keep
+  // their separate VRAM + RAM bars and the VRAM "Available" stat.
   const pool =
-    spark.kind !== "host" && um && um.total > 0
+    isUnifiedSpark(spark) && um
       ? memoryPool({
           totalMB: um.total,
           availableMB: um.available,

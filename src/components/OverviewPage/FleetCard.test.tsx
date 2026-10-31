@@ -185,10 +185,9 @@ describe("FleetCard", () => {
     // CPU
     expect(text).toContain("25% · 55°C");
 
-    // Unified memory pool (#26): GB10 → one pool bar instead of VRAM + Mem
-    expect(text).toContain("Unified memory");
-    expect(text).toContain("39.1 / 125.0 GiB in use"); // MemTotal − MemAvailable
-    expect(text).not.toContain("VRAM");
+    // Mem (no unified flag → the original separate VRAM and Mem bars, as on main)
+    expect(text).toContain("Mem");
+    expect(text).toContain("39.1 / 125.0 GB"); // used / total in GB
 
     // Containers: 3 total, 2 running
     expect(text).toContain("3 (2 running)");
@@ -199,11 +198,8 @@ describe("FleetCard", () => {
     // Requests
     expect(text).toContain("q1 · r2 · f10");
 
-    // Memory budget (#26): headroom above the 3 GiB floor off the same pool as the bar
-    const budget = container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
-    expect(budget.textContent).toBe("82.9 GiB above floor"); // 88000 − 3072 MB
-    expect(budget.className).toContain("text-success");
-    expect(budget.getAttribute("title")).toBe("available 85.9 GiB · floor 3 GiB · total 125.0 GiB");
+    // Memory budget
+    expect(text).toContain("31.3 GB free");
 
     // PolledAt
     expect(container.querySelector('[data-testid="fleet-card-polledat"]')?.textContent).toContain("1m ago");
@@ -234,20 +230,73 @@ describe("FleetCard", () => {
     );
   });
 
-  it("memory pool (#26): a discrete GPU keeps its VRAM bar and the pool has no GPU segment", () => {
+  it("unified GB10 (#26): one pool bar replaces VRAM + Mem; Mem Budget reads above the floor", () => {
+    const { container } = render(<FleetCard {...makeCard({ gpu: { ...gpu(), unifiedMemory: true } })} />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("Unified memory");
+    expect(text).toContain("39.1 / 125.0 GiB in use"); // MemTotal − MemAvailable
+    expect(text).not.toContain("VRAM");
+    const budget = container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
+    expect(budget.textContent).toBe("82.9 GiB above floor"); // 88000 − 3072 MB
+    expect(budget.className).toContain("text-success");
+    expect(budget.getAttribute("title")).toBe("available 85.9 GiB · floor 3 GiB · total 125.0 GiB");
+  });
+
+  it("discrete GPU (#26): separate VRAM and Mem bars exactly as on main, no pool, RAM-only Mem Budget", () => {
+    // 64 GiB x86 host + one 24 GiB card.
     const { container } = render(
       <FleetCard
         {...makeCard({
-          gpu: { ...gpu(), vramTotalMB: 24576, vramUsedMB: 8192, unifiedMemory: false },
+          gpu: { ...gpu(), vramTotalMB: 24576, vramUsedMB: 8192, vramAvailableMB: 16384, gpuAllocMB: 8000, unifiedMemory: false },
+          mem: { usedMB: 24576, totalMB: 65536, availableMB: 40960, percentage: 38, cachedMB: 10240, swapTotalMB: 8192, swapFreeMB: 0 },
+          memory: memoryBudget({ totalMB: 65536, usedMB: 24576, freeMB: 40960 }),
         })}
       />
     );
     const text = container.textContent ?? "";
-    expect(text).toContain("VRAM");
-    expect(text).toContain("8.0 / 24.0 GB");
-    expect(container.querySelector('[data-testid="memory-pool"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="memory-pool-seg-gpu"]')).toBeNull();
+    expect(container.querySelector('[data-testid="memory-pool"]')).toBeNull();
     expect(text).not.toContain("Unified memory");
+    expect(text).not.toContain("above floor");
+    expect(text).not.toContain("Swap in use");
+    expect(text).toContain("VRAM");
+    expect(text).toContain("8.0 / 24.0 GB"); // VRAM from nvidia-smi
+    expect(text).toContain("24.0 / 64.0 GB"); // system RAM, separate
+    const budget = container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
+    expect(budget.textContent).toBe("40.0 GB free"); // system RAM free, not RAM + VRAM
+    expect(budget.className).toContain("text-success");
+    expect(budget.getAttribute("title")).toBe("total 64.0 GB · used 24.0 GB");
+    // VRAM label precedes Mem, as on main.
+    expect(text.indexOf("VRAM")).toBeLessThan(text.indexOf("24.0 / 64.0 GB"));
+  });
+
+  it("discrete GPU (#26): VRAM total == MemTotal is NOT taken as unified without the agent flag", () => {
+    const { container } = render(
+      <FleetCard {...makeCard({ gpu: { ...gpu(), vramTotalMB: 128000, unifiedMemory: undefined } })} />
+    );
+    expect(container.querySelector('[data-testid="memory-pool"]')).toBeNull();
+    expect(container.textContent).toContain("VRAM");
+    expect(container.textContent).toContain("31.3 GB free");
+  });
+
+  it("CPU-only host (#26): no GPU renders the Mem bar and RAM Mem Budget without errors", () => {
+    const { container } = render(
+      <FleetCard
+        {...makeCard({
+          gpu: null,
+          mem: { usedMB: 6144, totalMB: 16384, availableMB: 10240, percentage: 38 },
+          memory: memoryBudget({ totalMB: 16384, usedMB: 6144, freeMB: 6000 }),
+          services: [],
+          containers: [],
+          requests: null,
+        })}
+      />
+    );
+    const text = container.textContent ?? "";
+    expect(container.querySelector('[data-testid="memory-pool"]')).toBeNull();
+    expect(text).toContain("6.0 / 16.0 GB");
+    const budget = container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
+    expect(budget.textContent).toBe("5.9 GB free");
+    expect(budget.className).toContain("text-warning"); // < 8192 MB, as on main
   });
 
   it("shows offline status and unreachable placeholder", () => {
@@ -304,10 +353,8 @@ describe("FleetCard", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("Make room needed");
     expect(text).toContain("stop: comfy");
-    // Value still comes off the pool; tone is danger whenever make-room is needed.
-    const budget = container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
-    expect(budget.textContent).toBe("82.9 GiB above floor");
-    expect(budget.className).toContain("text-danger");
+    expect(text).toContain("1000 MB free"); // non-unified fixture: main's stat
+    expect(container.querySelector('[data-testid="fleet-card-mem-budget"]')!.className).toContain("text-danger");
   });
 
   it("Mem Budget (#26): matches the bar on Hasso's numbers and tones on available", () => {
@@ -337,9 +384,11 @@ describe("FleetCard", () => {
     expect(critStat.className).toContain("text-danger");
   });
 
-  it("Mem Budget (#26): falls back to the budget's freeMB when there is no pool", () => {
+  it("Mem Budget (#26): on a unified host without mem metrics, falls back to the budget's freeMB", () => {
     const { container } = render(
-      <FleetCard {...makeCard({ mem: null, memory: memoryBudget({ freeMB: 32000, totalMB: 128000 }) })} />
+      <FleetCard
+        {...makeCard({ gpu: { ...gpu(), unifiedMemory: true }, mem: null, memory: memoryBudget({ freeMB: 32000, totalMB: 128000 }) })}
+      />
     );
     const stat = container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
     expect(stat.textContent).toBe("28.3 GiB above floor"); // 32000 − 3072 MB

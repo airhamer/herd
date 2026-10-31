@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gib, gpuHolderLabel, isUnifiedGpu, memBudgetStat, memoryPool, poolClassGB, poolScaleGiB, shortModel } from "./memoryPool";
+import { gib, gpuHolderLabel, isUnifiedGpu, isUnifiedSpark, memBudgetStat, memoryPool, poolClassGB, poolScaleGiB, shortModel } from "./memoryPool";
 
 // Hasso's reference screenshot (ASUS Ascent GX10): 109.9 of 121.6 GiB in use,
 // 11.8 available, 8.8 above the 3 GiB floor; model 99.2, system 10.7,
@@ -86,14 +86,48 @@ describe("memoryPool", () => {
 });
 
 describe("isUnifiedGpu", () => {
-  it("prefers the agent flag", () => {
-    expect(isUnifiedGpu({ unifiedMemory: true, vramTotalMB: 16000 }, 128000)).toBe(true);
-    expect(isUnifiedGpu({ unifiedMemory: false, vramTotalMB: 128000 }, 128000)).toBe(false);
+  it("is true only on the agent's positive GB10 flag", () => {
+    expect(isUnifiedGpu({ unifiedMemory: true })).toBe(true);
+    expect(isUnifiedGpu({ unifiedMemory: false })).toBe(false);
   });
-  it("falls back to VRAM total == MemTotal (the GB10 fallback) for older agents", () => {
-    expect(isUnifiedGpu({ vramTotalMB: 124546 }, 124546)).toBe(true);
-    expect(isUnifiedGpu({ vramTotalMB: 24576 }, 65536)).toBe(false);
-    expect(isUnifiedGpu(null, 128000)).toBe(false);
+  it("never guesses: no flag, no GPU, or VRAM total == MemTotal is not unified", () => {
+    expect(isUnifiedGpu({})).toBe(false);
+    expect(isUnifiedGpu({ unifiedMemory: undefined })).toBe(false);
+    expect(isUnifiedGpu(null)).toBe(false);
+    expect(isUnifiedGpu(undefined)).toBe(false);
+  });
+});
+
+describe("isUnifiedSpark", () => {
+  const um = { total: 124560 };
+  it("is a GB10 Spark with a unified-memory reading", () => {
+    expect(isUnifiedSpark({ hardware: { gpuChip: "GB10" }, metrics: { unifiedMemory: um } })).toBe(true);
+    expect(isUnifiedSpark({ kind: "spark", hardware: { gpuChip: "NVIDIA GB10" }, metrics: { unifiedMemory: um } })).toBe(true);
+  });
+  it("is false for discrete-GPU / CPU-only hosts and for missing data", () => {
+    expect(isUnifiedSpark({ kind: "host", hardware: { gpuChip: "GB10" }, metrics: { unifiedMemory: um } })).toBe(false);
+    expect(isUnifiedSpark({ hardware: { gpuChip: "NVIDIA GeForce RTX 4090" }, metrics: { unifiedMemory: um } })).toBe(false);
+    expect(isUnifiedSpark({ hardware: { gpuChip: null }, metrics: { unifiedMemory: um } })).toBe(false);
+    expect(isUnifiedSpark({ hardware: { gpuChip: "GB10" }, metrics: { unifiedMemory: null } })).toBe(false);
+    expect(isUnifiedSpark({ hardware: { gpuChip: "GB10" }, metrics: { unifiedMemory: { total: 0 } } })).toBe(false);
+  });
+});
+
+describe("discrete and CPU-only hosts", () => {
+  it("a non-unified pool never subtracts GPU process memory from system RAM", () => {
+    // 64 GiB host, 24 GiB card with 18 GiB allocated: none of it belongs to RAM.
+    const p = memoryPool({ totalMB: 65536, availableMB: 40960, cachedMB: 10240, gpuMB: 18432, unified: false })!;
+    expect(p.gpuMB).toBe(0);
+    expect(p.otherMB).toBe(24576); // all of RAM in use is system and apps
+    expect(p.inUseMB + p.availableMB).toBe(65536);
+  });
+  it("memBudgetStat is null off a unified host, so the card keeps the RAM-only stat", () => {
+    const budget = { freeMB: 40960, totalMB: 65536, needMakeRoom: false };
+    const discretePool = memoryPool({ totalMB: 65536, availableMB: 40960, unified: false });
+    expect(memBudgetStat(discretePool, budget, false)).toBeNull();
+    expect(memBudgetStat(discretePool, budget)).toBeNull(); // a non-unified pool is never read as one
+    expect(memBudgetStat(null, budget, false)).toBeNull(); // CPU-only / no GPU
+    expect(memBudgetStat(null, null, false)).toBeNull();
   });
 });
 

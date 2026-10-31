@@ -1,5 +1,5 @@
 import type { SparkSnapshot } from "../../api/types";
-import { gib, gpuHolderLabel, memoryPool, poolClassGB, SWAP_SHOWN_MB } from "../../lib/memoryPool";
+import { gib, gpuHolderLabel, isUnifiedSpark, memoryPool, poolClassGB, SWAP_SHOWN_MB } from "../../lib/memoryPool";
 import { MemoryPoolReservoir, poolSegments, SWAP_HATCH, TONE_CLASS } from "../ui/MemoryPoolBar";
 import { Panel } from "../ui/Panel";
 import { MemoryIcon } from "../ui/icons";
@@ -13,8 +13,9 @@ import { MemoryIcon } from "../ui/icons";
  */
 export function UnifiedMemoryPanel({ spark, className }: { spark: SparkSnapshot; className?: string }) {
   const um = spark.metrics.unifiedMemory;
+  // Only a positively identified DGX Spark (GB10): never on a discrete-GPU or CPU-only host.
   const pool =
-    um && um.total > 0
+    isUnifiedSpark(spark) && um
       ? memoryPool({
           totalMB: um.total,
           availableMB: um.available,

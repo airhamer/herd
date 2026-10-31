@@ -93,4 +93,13 @@ describe("UnifiedMemoryPanel (#26)", () => {
     const { container } = render(<UnifiedMemoryPanel spark={s} />);
     expect(container.textContent).toBe("");
   });
+
+  it("renders nothing on a discrete-GPU host or non-GB10 hardware, even with a meminfo reading", () => {
+    const host = gx10();
+    host.kind = "host";
+    expect(render(<UnifiedMemoryPanel spark={host} />).container.textContent).toBe("");
+    const h100 = gx10();
+    h100.hardware = { ...h100.hardware, gpuChip: "NVIDIA H100 80GB HBM3" };
+    expect(render(<UnifiedMemoryPanel spark={h100} />).container.textContent).toBe("");
+  });
 });

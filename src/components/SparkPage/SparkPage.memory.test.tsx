@@ -56,4 +56,33 @@ describe("SparkPage unified memory panel (#26)", () => {
     expect(host.container.querySelector(".panel-unified-memory")).toBeNull();
     expect(host.container.querySelector('[data-testid="ram-panel"]')).toBeTruthy();
   });
+
+  it("discrete-GPU host: separate GPU and RAM panels, never the unified panel", async () => {
+    const s = withPool("host");
+    s.hardware = { ...s.hardware, device: "Linux GPU host", gpuChip: "NVIDIA GeForce RTX 4090", totalMemoryGB: 64 };
+    const { container } = render(<SparkPage spark={s} temperatureUnit="celsius" />);
+    await flush();
+    expect(container.querySelector(".panel-unified-memory")).toBeNull();
+    expect(container.querySelector('[data-testid="gpu-panel"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="ram-panel"]')).toBeTruthy();
+  });
+
+  it("CPU-only host: renders without the unified panel or errors", async () => {
+    const s = withPool("host");
+    s.hardware = { ...s.hardware, gpuChip: null };
+    s.metrics.gpu = null;
+    const { container } = render(<SparkPage spark={s} temperatureUnit="celsius" />);
+    await flush();
+    expect(container.querySelector(".panel-unified-memory")).toBeNull();
+    expect(container.querySelector('[data-testid="ram-panel"]')).toBeTruthy();
+  });
+
+  it("a Spark-kind unit with non-GB10 hardware gets no unified panel", async () => {
+    const s = withPool();
+    s.hardware = { ...s.hardware, gpuChip: "NVIDIA H100 80GB HBM3" };
+    const { container } = render(<SparkPage spark={s} temperatureUnit="celsius" />);
+    await flush();
+    expect(container.querySelector(".panel-unified-memory")).toBeNull();
+    expect(container.querySelector('[data-testid="gpu-panel"]')).toBeTruthy();
+  });
 });
