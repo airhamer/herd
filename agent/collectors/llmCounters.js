@@ -92,7 +92,7 @@ export function counterStamp(clock = {}) {
 
 /**
  * Meta for a counter read.
- * @param {"prometheus"|"json"} source page the counters came from
+ * @param {"prometheus"|"json"|"proxy"} source page the counters came from ("proxy": metered by the agent's usage relay, STAT4)
  * @param {Parameters<typeof counterStamp>[0]} [clock]
  */
 export function counterMeta(source, clock) {

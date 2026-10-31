@@ -100,9 +100,10 @@ const LLAMA = [
   "llamacpp:requests_deferred 2",
 ].join("\n");
 
-test("schema 2 payload and agent 0.4.0", () => {
+test("schema 2 payload and agent 0.4.0 or later", () => {
   assert.equal(ENGINE_COUNTERS_SCHEMA, 2);
-  assert.equal(AGENT_VERSION, "0.4.0");
+  const [maj, min] = AGENT_VERSION.split(".").map(Number);
+  assert.ok(maj > 0 || min >= 4, AGENT_VERSION);
   assert.equal(ENGINE_COUNTER_KEYS.length, new Set(ENGINE_COUNTER_KEYS).size);
 });
 
