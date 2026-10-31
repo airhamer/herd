@@ -340,7 +340,14 @@ export class SystemCollector {
     return {
       temperature: gpu.temperature,
       usage: gpu.usage,
-      power: { draw: gpu.powerDraw, limit: gpu.powerLimit, systemDraw },
+      power: {
+        draw: gpu.powerDraw,
+        limit: gpu.powerLimit,
+        systemDraw,
+        // All GPUs on the host (issue #33); `draw` stays the first GPU's.
+        drawTotal: gpu.powerDrawTotal ?? gpu.powerDraw,
+        gpuCount: gpu.gpuCount ?? 1,
+      },
       vram,
       processes,
       throttle: gpu.throttle,
@@ -486,6 +493,12 @@ export class SystemCollector {
       };
     }
     const parts = lines[0].split(",").map((s) => s.trim());
+    // Multi-GPU hosts print one line per GPU: sum their draw for energy (#33).
+    let powerDrawTotal = 0;
+    for (const line of lines) {
+      const draw = this._parseSmiNumber(line.split(",")[2]);
+      if (draw !== null && draw >= 0) powerDrawTotal += draw;
+    }
     const temperature = parseFloat(parts[0]) || 0;
     const usage = parseFloat(parts[1]) || 0;
     const powerDraw = parseFloat(parts[2]) || 0;
@@ -500,6 +513,8 @@ export class SystemCollector {
       temperature,
       usage,
       powerDraw,
+      powerDrawTotal: Math.round(powerDrawTotal * 100) / 100,
+      gpuCount: lines.length,
       powerLimit,
       throttle: this._buildThrottle({
         hwThermal,
@@ -1204,7 +1219,14 @@ export class SystemCollector {
       return {
         temperature: gpu.temperature,
         usage: gpu.usage,
-        power: { draw: gpu.powerDraw, limit: gpu.powerLimit, systemDraw },
+        power: {
+        draw: gpu.powerDraw,
+        limit: gpu.powerLimit,
+        systemDraw,
+        // All GPUs on the host (issue #33); `draw` stays the first GPU's.
+        drawTotal: gpu.powerDrawTotal ?? gpu.powerDraw,
+        gpuCount: gpu.gpuCount ?? 1,
+      },
         vram: { used: usedMB, total: totalMB, percentage, available: availableMB },
         processes,
         throttle: gpu.throttle,

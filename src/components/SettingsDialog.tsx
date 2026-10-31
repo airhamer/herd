@@ -287,12 +287,64 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
                   />
                 </button>
                 <span>
-                  <span className="block text-text">Show Fleet Energy</span>
+                  <span className="block text-text">Show Fleet energy</span>
                   <span className="mt-0.5 block text-[10px] leading-snug text-muted">
-                    Overview card with rolling fleet power estimates. Off by default.
+                    Fleet tab card with per-host power estimates for Sparks and agent nodes
+                    (estimated, not wall-metered). On by default.
                   </span>
                 </span>
               </label>
+              {settings.showFleetEnergy ? (
+                <div className="mt-2 grid grid-cols-3 gap-2 pl-12">
+                  <label className="text-[10px] text-muted">
+                    Price / kWh
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step={0.01}
+                      aria-label="Electricity price per kWh"
+                      value={settings.electricityPricePerKwh ?? 0.17}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (Number.isFinite(val) && val >= 0) update({ electricityPricePerKwh: val });
+                      }}
+                      className="mt-0.5 w-full rounded border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-accent"
+                    />
+                  </label>
+                  <label className="text-[10px] text-muted">
+                    Currency
+                    <input
+                      type="text"
+                      maxLength={3}
+                      aria-label="Electricity currency"
+                      value={settings.electricityCurrency ?? "USD"}
+                      onChange={(e) => update({ electricityCurrency: e.target.value.toUpperCase() })}
+                      className="mt-0.5 w-full rounded border border-border bg-surface-elevated px-2 py-1 text-xs uppercase text-text outline-none focus:border-accent"
+                    />
+                  </label>
+                  <label className="text-[10px] text-muted">
+                    Idle W
+                    <input
+                      type="number"
+                      min={0}
+                      max={2000}
+                      step={1}
+                      aria-label="Idle baseline watts per host"
+                      value={settings.energyIdleBaselineW ?? 40}
+                      onChange={(e) => {
+                        const val = parseFloat(e.target.value);
+                        if (Number.isFinite(val) && val >= 0) update({ energyIdleBaselineW: val });
+                      }}
+                      className="mt-0.5 w-full rounded border border-border bg-surface-elevated px-2 py-1 text-xs text-text outline-none focus:border-accent"
+                    />
+                  </label>
+                  <p className="col-span-3 text-[10px] leading-snug text-muted">
+                    Price 0 hides cost. Idle W is added to non-GB10 hosts for board, fans and disks
+                    the sensors miss; per-host values go in <code>energyHostBaselines</code>.
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             {/* Metrics history */}
