@@ -554,6 +554,15 @@ Each configured LLM port gets its own `LlmProbe` instance running in parallel. P
 - **EXL3** (ExLlamaV3 `tools/serve_openai.py`) — `/v1/models` (`owned_by: exl3`) or `/health` `{ok, busy}`; live tok/s from `/health` cumulative counters
 - **q27** (signalnine/q27 engine) — `/v1/models` (`owned_by: q27`) or Prometheus `q27_*` series; live tok/s from `q27_*_processed` counter diffs (completion-based totals as fallback), exact computed-only prefill with the cached/uncached split doubling as the prefix-cache hit rate, TTFT/E2E/ITL p95 histograms, and constant-0 preemptions (FIFO admission, no wait queue)
 - **vLLM / sglang** — `/v1/models`; sglang via `/server_info` (`last_gen_throughput` when metrics off; `/get_server_info` fallback), vLLM via Prometheus `/metrics` counters (scientific notation supported)
+- **TensorFold** — `owned_by: tensorfold`; CUDA `/health` JSON totals or the native build's `tensorfold:*` Prometheus series; decode from finished + running generation, computed-only prefill over a one-minute finished-request window
+- **FreeToken** — `owned_by: FreeToken` or `/v1/stats`; the engine's own 5 s decode/prefill tok/s, token totals and KV pages (p95 is end-to-end, not TTFT)
+- **Strata** — `/health` `service: "strata"` (read before `/slots`); JSON `/metrics` live tok/s, active-slot fallback marked approximate, lifetime totals
+- **Locals** — `owned_by: locals`; `/stats` per-engine counters (a restart re-seeds instead of producing a negative rate)
+- **Splash** — `owned_by: splash` or `splash_*` series; counter deltas (the lifetime `*_tokens_per_second` gauges are ignored)
+- **LM Studio / Ollama** — `/api/v0/models` (checked before the SGLang/vLLM heuristics, since LM Studio answers every path) / `/api/tags` + `/api/ps`; loaded model and context only — passive tok/s is `null`, not 0
+- **TabbyAPI** — `owned_by: tabbyAPI`, label only
+
+Every snapshot also carries `totalPromptTokens` / `totalCachedTokens` (null when the engine does not expose them), engine-native decode/prefill tok/s and mean queue time on vLLM and SGLang (formulas from hasso5703's MIT-licensed dashboard), and `valueSources`: the source tier (`counter` / `native` / `proxy` / `client`), window and approximate flag of each non-null value. Unmeasured values are `null`, never 0.
 
 Rates are derived from per-probe cumulative counter diffs (or SGLang sticky throughput while it moves). Multiple ports can be added or removed at runtime without restarting the monitor.
 

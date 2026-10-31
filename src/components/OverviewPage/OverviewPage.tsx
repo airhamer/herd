@@ -6,6 +6,7 @@ import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { MetricBar } from "../ui/MetricBar";
 import { MemoryPoolBar } from "../ui/MemoryPoolBar";
 import { gpuHolderLabel, memoryPool } from "../../lib/memoryPool";
+import { formatTps, llmBackendLabel } from "../../lib/llmBackend";
 import { HealthChips } from "../ui/HealthFindings";
 import { Tag } from "../ui/Tag";
 import { FleetAlertStrip } from "./FleetAlertStrip";
@@ -374,19 +375,7 @@ function SparkCard({
               if (!llm) return null;
               return (
                 <MiniStat
-                  label={
-                    llm.backend === "vllm"
-                      ? "vLLM"
-                      : llm.backend === "ds4"
-                        ? "ds4"
-                        : llm.backend === "sglang"
-                          ? "sgLang"
-                          : llm.backend === "exl3"
-                            ? "EXL3"
-                            : llm.backend === "q27"
-                              ? "q27"
-                              : llm.backend ?? "LLM"
-                  }
+                  label={llmBackendLabel(llm.backend)}
                   value={llm.modelId ?? "unknown"}
                   tone="accent"
                   title={llm.modelId ?? undefined}
@@ -406,13 +395,13 @@ function SparkCard({
               <div className="mt-3.5 grid grid-cols-2 gap-2 border-t border-border pt-3">
                 <div className="text-center">
                   <span className="font-tabular text-[28px] font-bold leading-none text-text-strong">
-                    {llm.generationTps.toFixed(0)}
+                    {formatTps(llm.generationTps, 0)}
                   </span>
                   <span className="text-sm font-normal text-muted"> tok/s</span>
                 </div>
                 <div className="border-l border-border text-center">
                   <span className="font-tabular text-[28px] font-bold leading-none text-text-strong">
-                    {llm.prefillTps.toFixed(0)}
+                    {formatTps(llm.prefillTps, 0)}
                   </span>
                   <span className="text-sm font-normal text-muted"> prefill</span>
                 </div>
