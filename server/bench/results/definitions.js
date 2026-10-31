@@ -162,6 +162,35 @@ const LIST = [
       "AEON wave_peak_concurrent_window (aeon-perf-v1 agg_decode_tps): requests run in waves of `concurrency`; a wave's rate is Σ output tokens / (max t_last_token − min t_first_token); the cell reports the peak wave, and a one-request wave reports that request's decode rate. Level overall = best category cell.",
     url: "https://github.com/AEON-7/Aeon-Bench-Pod/blob/main/mvp/pod/perf_grid.py",
   },
+  // ── Aggregate decode: published-only definitions (BENCH5 reference registry) ──
+  // Each sits in a group of its own: Herd measures nothing under them.
+  {
+    name: "hasso.vllm_bench_serve_output.v1",
+    metric: "agg_window_tps",
+    owner: "Hasso (vllm bench serve)",
+    comparable: "vllm_bench_serve_output_throughput",
+    formula:
+      "vLLM's `vllm bench serve` output token throughput at a fixed number of concurrent streams: total output tokens / total benchmark duration. The duration runs from the first request sent to the last response done, so prefill and TTFT are inside it.",
+    url: "https://github.com/hasso5703/dgx-spark-qwen38/blob/main/docs/kolibri-lane.md",
+  },
+  {
+    name: "hasso.real_jobs_in_all.v1",
+    metric: "agg_window_tps",
+    owner: "Hasso",
+    comparable: "hasso_real_jobs_in_all",
+    formula:
+      "Hasso's tok/s 'in all' on five real jobs at N concurrent requests, with the checkpoint's own sampling (reasoning tokens included): tokens produced by all the requests / the time they took together. The source does not say whether the clock starts at send or at first token, so it compares with nothing else.",
+    url: "https://github.com/hasso5703/dgx-spark-qwen38/blob/main/docs/ornith-lane.md",
+  },
+  {
+    name: "aeon.agg_tokens_per_cell_wall.v1",
+    metric: "agg_window_tps",
+    owner: "AEON",
+    comparable: "tokens_per_cell_wall",
+    formula:
+      "AEON's legacy board aggregate (agg_decode_tps before the fix): Σ output tokens of a category cell / the cell's wall clock (TTFT + decode + drain). Not a decode rate; AEON's locked definition is aeon.wave_peak_concurrent_window.v1.",
+    url: "https://github.com/AEON-7/Aeon-Bench-Pod/blob/main/docs/spark-perf-180-vs-74.md",
+  },
   // ── Aggregate decode: sum of per-stream rates ──────────────────────
   {
     name: "herd.decode.agg_sum.v1",
@@ -186,7 +215,7 @@ const LIST = [
     owner: "MiaAI-Lab",
     comparable: "agg_sum_of_stream_rates",
     formula: "Sum of per-request decode speeds of the concurrent requests.",
-    url: null,
+    url: "https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold#performance",
   },
   // ── Prefill ────────────────────────────────────────────────────────
   {
@@ -213,6 +242,15 @@ const LIST = [
     comparable: "prefill_per_request_mean",
     formula: "AEON aeon-perf-v1 prefill_tps_mean: mean over requests of prompt_tokens / TTFT (s), every prompt cache-busted.",
     url: "https://github.com/AEON-7/Aeon-Bench-Pod/blob/main/mvp/pod/perf_grid.py",
+  },
+  {
+    name: "mia.sparkdash_prefill.v1",
+    metric: "prefill_tps",
+    owner: "MiaAI-Lab sparkDash",
+    comparable: "mia_sparkdash_prefill",
+    formula:
+      "Prefill rate published by MiaAI-Lab's sparkDash Prefill benchmark for one prompt of the stated size. The formula is not stated (prompt tokens / TTFT reproduces one published row but not another), so it compares with nothing else.",
+    url: "https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold#performance",
   },
   // ── Engine counters ────────────────────────────────────────────────
   {

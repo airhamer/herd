@@ -52,6 +52,8 @@ import type {
 } from "./types";
 import type {
   BenchCompareResponse,
+  BenchNearestReferencesResponse,
+  BenchReferencesResponse,
   BenchResult,
   BenchResultsFilter,
   BenchResultsListResponse,
@@ -896,4 +898,15 @@ export function getBenchResult(id: string): Promise<BenchResult> {
 export function compareBenchResults(baseline: string, candidate: string): Promise<BenchCompareResponse> {
   const q = new URLSearchParams({ baseline, candidate }).toString();
   return apiFetch(`/api/bench-results/compare?${q}`);
+}
+
+/** The published reference registry (origin "reference" rows, never Herd results). */
+export function listBenchReferences(): Promise<BenchReferencesResponse> {
+  return apiFetch("/api/bench-results/references");
+}
+
+/** Nearest published figures for a stored result, same definition group only. */
+export function nearestBenchReferences(id: string, limit?: number): Promise<BenchNearestReferencesResponse> {
+  const q = limit ? `?limit=${limit}` : "";
+  return apiFetch(`/api/bench-results/${encodeURIComponent(id)}/references${q}`);
 }
