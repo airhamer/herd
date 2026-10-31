@@ -27,6 +27,8 @@ export interface FleetPageProps {
   };
   /** When set, node cards become clickable and open the node detail view. */
   onSelectNode?: (nodeId: string) => void;
+  /** Rendered under the node cards (the Fleet energy card, issue #33). */
+  energy?: ReactNode;
   /** Rendered under the node cards (the Recent activity card, issue #32). */
   activity?: ReactNode;
 }
@@ -67,9 +69,9 @@ function sumRequests(byMachine: Record<string, RequestStat[]>) {
 
 /**
  * Fleet overview page: summary strip + one FleetCard per node, then the
- * optional activity slot.
+ * optional energy and activity slots.
  */
-export function FleetPage({ nodes, topology, requests, memory, onSelectNode, activity }: FleetPageProps) {
+export function FleetPage({ nodes, topology, requests, memory, onSelectNode, energy, activity }: FleetPageProps) {
   const onlineCount = nodes.filter((n) => n.online).length;
   const offlineCount = nodes.length - onlineCount;
   const reqs = sumRequests(requests.byMachine);
@@ -173,6 +175,7 @@ export function FleetPage({ nodes, topology, requests, memory, onSelectNode, act
         </div>
       )}
 
+      {energy}
       {activity}
     </div>
   );

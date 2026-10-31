@@ -53,6 +53,8 @@ import {
   createFleetEnergyRuntime,
   registerFleetEnergyRoute,
 } from "./energy/FleetEnergyRuntime.js";
+import { createEnergyInputCollector, energyScopeIds } from "./energy/inputs.js";
+import { buildFleetEnergyView } from "./energy/view.js";
 import { testSparkConnectivity } from "./connectivity.js";
 import { inspectStartupPreflight, logStartupPreflight } from "./startupPreflight.js";
 import { randomUUID } from "node:crypto";
@@ -272,8 +274,12 @@ function consumeBenchStartQuota(req, res) {
 // ─── Spark registry ──────────────────────────────────────
 const registry = new SparkRegistry();
 
+// Fleet energy (issue #33) covers SSH Sparks and agent nodes, keyed on the
+// fleet-wide unit id; a node on a Spark's LAN IP is the same box, counted once.
+const currentEnergyScope = () => energyScopeIds(registry.sparks, loadNodes());
+
 const fleetEnergyTracker = new FleetEnergyTracker({
-  nodeIds: registry.sparkIds,
+  nodeIds: currentEnergyScope(),
   filePath: FLEET_ENERGY_JSON_PATH,
   monthlyFilePath: FLEET_ENERGY_MONTHLY_JSON_PATH,
 });
@@ -327,10 +333,28 @@ function orderedSnapshots() {
     .map((m) => m.snapshot());
 }
 
+const fleetEnergyInputs = createEnergyInputCollector({
+  orderedSnapshots,
+  monitors,
+  // Agent / agentless nodes, each with its registered LAN IP for de-duplication.
+  // buildFleetSnapshot() lists nodes in listNodes() order; key on the registry id.
+  fleetNodes: () => {
+    const records = listNodes();
+    return buildFleetSnapshot().nodes.map((node, index) => ({
+      ...node,
+      nodeId: records[index]?.id ?? node.nodeId,
+      registryLanIp: records[index]?.lanIp ?? null,
+    }));
+  },
+  sparkLanIps: () => new Map(registry.sparks.map((spark) => [spark.id, spark.lanIp])),
+  getSettings,
+});
+
 const fleetEnergyRuntime = createFleetEnergyRuntime({
   tracker: fleetEnergyTracker,
   orderedSnapshots,
   monitors,
+  collectInputs: (atMs) => fleetEnergyInputs.collect(atMs),
 });
 
 // ─── Unit history (docs/specs/unit-history.md) ──────────
@@ -616,7 +640,10 @@ function clientKey(req) {
 }
 
 // ─── REST API ────────────────────────────────────────────
-registerFleetEnergyRoute(app, fleetEnergyTracker);
+registerFleetEnergyRoute(app, fleetEnergyTracker, {
+  decorate: (snapshot) =>
+    buildFleetEnergyView(snapshot, { hosts: fleetEnergyInputs.hosts(), settings: getSettings() }),
+});
 registerAlertRoutes(app, alertsRuntime);
 
 // Never return SSH passwords in any response
@@ -683,7 +710,7 @@ app.post("/api/sparks", (req, res) => {
       return res.status(400).json({ error: validationError });
     }
     const spark = registry.addSpark(req.body);
-    fleetEnergyTracker.invalidateMembership(registry.sparkIds);
+    fleetEnergyTracker.setNodeIds(currentEnergyScope());
     startMonitor(spark);
     recordEvent(activity.sparkAdded(spark));
     res.json({ success: true, spark: registry.toPublic(spark) });
@@ -746,7 +773,7 @@ app.delete("/api/sparks/:id", (req, res) => {
   try {
     const removed = registry.removeSpark(req.params.id);
     if (!removed) return res.status(404).json({ error: "Spark not found" });
-    fleetEnergyTracker.invalidateMembership(registry.sparkIds);
+    fleetEnergyTracker.setNodeIds(currentEnergyScope());
     stopMonitor(req.params.id);
     unitHistory.remove(req.params.id);
     recordEvent(activity.sparkRemoved(removed));

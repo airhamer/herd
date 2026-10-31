@@ -758,6 +758,56 @@ export interface FleetEnergy {
   nodeCoverage24hMs: Record<string, number>;
   nodeCoverage31dMs: Record<string, number>;
   hourlyWatts24h: Array<number | null>;
+  /** Issue #33 view fields (server/energy/view.js). Always "estimated, not wall-metered". */
+  label?: string;
+  hosts?: FleetEnergyHost[];
+  coverage?: FleetEnergyCoverage;
+  /** null when the electricity price is 0 (cost hidden). */
+  cost?: FleetEnergyCost | null;
+}
+
+export type GpuPowerSource = "nvidia-smi" | "amd-hwmon";
+export type CpuPowerSource = "rapl" | "hwmon" | "thermal" | "estimated";
+
+/** One SSH Spark or agent node in the Fleet energy table. */
+export interface FleetEnergyHost {
+  id: string;
+  name: string;
+  kind: "spark" | "host" | "node";
+  online: boolean;
+  /** Counted right now (fresh power telemetry). */
+  reporting: boolean;
+  /** Set when this agent node is the same machine as an SSH Spark (counted once, under the Spark). */
+  duplicateOf: string | null;
+  /** "gb10" = calibrated GB10 formula; "measured" = sensors + idle baseline. */
+  model: "gb10" | "measured" | null;
+  watts: number | null;
+  measuredWatts: number | null;
+  gpuWatts: number | null;
+  cpuWatts: number | null;
+  baselineWatts: number | null;
+  gpuSource: GpuPowerSource | null;
+  cpuSource: CpuPowerSource | null;
+  gpuCount: number | null;
+}
+
+export interface FleetEnergyCoverage {
+  reportingHosts: number;
+  hostsInScope: number;
+  /** reportingHosts / hostsInScope, 0–100. */
+  percent: number;
+  /** Share of current watts that came from sensors rather than the model/baseline. */
+  measuredSharePct: number | null;
+  /** Mean per-host time covered over the last 24 h, 0–100. */
+  coverage24hPct: number;
+}
+
+export interface FleetEnergyCost {
+  currency: string;
+  pricePerKwh: number;
+  cost24h: number | null;
+  cost31d: number | null;
+  costPerDayAtCurrent: number | null;
 }
 
 /** Per-node share of a month in the long-run energy history. */
@@ -805,8 +855,16 @@ export interface Settings {
   benchDebugTraces: boolean;
   /** Layout density — compact (default) or comfortable. */
   density: "comfortable" | "compact";
-  /** Overview Fleet Energy card. Off by default. */
+  /** Fleet tab energy card (issue #33). On by default. */
   showFleetEnergy: boolean;
+  /** Electricity price per kWh for the energy cost estimate; 0 hides cost. Default 0.17. */
+  electricityPricePerKwh?: number;
+  /** ISO 4217 code for the cost estimate. Default "USD". */
+  electricityCurrency?: string;
+  /** Idle/board baseline added to measured (non-GB10) hosts, in watts. Default 40. */
+  energyIdleBaselineW?: number;
+  /** Per-host overrides of the idle baseline, keyed by Spark or node id. */
+  energyHostBaselines?: Record<string, number>;
   /** Overview active fleet exceptions strip. Off by default. */
   showFleetExceptions: boolean;
   /** Overview search field + status filter. Off by default. */

@@ -2,6 +2,13 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { atomicWrite } from "./util/atomicWrite.js";
+import {
+  DEFAULT_ELECTRICITY_PRICE_PER_KWH,
+  DEFAULT_ELECTRICITY_CURRENCY,
+  normalizePrice,
+  normalizeCurrency,
+} from "./energy/pricing.js";
+import { DEFAULT_IDLE_BASELINE_W, normalizeBaseline } from "./energy/powerModel.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,8 +28,21 @@ const DEFAULTS = Object.freeze({
   benchDebugTraces: false,
   /** Layout density — compact (default) or comfortable. */
   density: "compact",
-  /** Overview Fleet Energy card. Off by default. */
-  showFleetEnergy: false,
+  /** Fleet energy card on the Fleet tab (and Overview). On by default since #33. */
+  showFleetEnergy: true,
+  /** Electricity price per kWh for the energy cost estimate; 0 hides cost. */
+  electricityPricePerKwh: DEFAULT_ELECTRICITY_PRICE_PER_KWH,
+  /** ISO 4217 currency code for the cost estimate. */
+  electricityCurrency: DEFAULT_ELECTRICITY_CURRENCY,
+  /** Idle baseline (W) added to non-GB10 hosts: board, RAM, disks, fans, PSU loss. */
+  energyIdleBaselineW: DEFAULT_IDLE_BASELINE_W,
+  /** Per-host idle baseline overrides, keyed by Spark or node id. */
+  energyHostBaselines: {},
+  /**
+   * Settings-file revision. Files below 2 were written when Fleet energy
+   * defaulted off (and saved that default), so loading one turns it on once.
+   */
+  settingsRevision: 2,
   /** Overview active fleet exceptions strip. Off by default. */
   showFleetExceptions: false,
   /** Overview search + status filter row. Off by default. */
@@ -69,6 +89,11 @@ function _clampSettings(settings) {
   s.showFleetExceptions = Boolean(s.showFleetExceptions);
   s.showOverviewSearch = Boolean(s.showOverviewSearch);
   s.alertsEnabled = Boolean(s.alertsEnabled);
+  s.electricityPricePerKwh = normalizePrice(s.electricityPricePerKwh);
+  s.electricityCurrency = normalizeCurrency(s.electricityCurrency);
+  s.energyIdleBaselineW = normalizeBaseline(s.energyIdleBaselineW, DEFAULT_IDLE_BASELINE_W);
+  s.energyHostBaselines = normalizeHostBaselines(s.energyHostBaselines);
+  s.settingsRevision = DEFAULTS.settingsRevision;
   // Ensure temperatureUnit is valid
   if (s.temperatureUnit !== "celsius" && s.temperatureUnit !== "fahrenheit") {
     s.temperatureUnit = DEFAULTS.temperatureUnit;
@@ -80,11 +105,29 @@ function _clampSettings(settings) {
   return s;
 }
 
+/** Per-host baselines: `{ [unitId]: watts }`, invalid entries dropped. */
+function normalizeHostBaselines(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out = {};
+  for (const [id, watts] of Object.entries(value)) {
+    if (typeof id !== "string" || id.trim() === "" || id.length > 128) continue;
+    if (!Number.isFinite(watts) || watts < 0) continue;
+    out[id] = normalizeBaseline(watts);
+  }
+  return out;
+}
+
 /** Load settings from disk, falling back to defaults. */
 export function loadSettings() {
   try {
     const raw = fs.readFileSync(SETTINGS_PATH, "utf-8");
     const parsed = JSON.parse(raw);
+    // Issue #33: Fleet energy became default-on. A file from before that
+    // (settingsRevision < 2) is shown with it on; the file itself is only
+    // rewritten on the next save, which records revision 2 and from then on
+    // keeps whatever the user chose. Loading never writes.
+    const migrate = !(Number(parsed?.settingsRevision) >= 2);
+    if (migrate && parsed && typeof parsed === "object") parsed.showFleetEnergy = true;
     _settings = _clampSettings({ ...DEFAULTS, ...parsed });
   } catch (err) {
     if (err.code === "ENOENT") {

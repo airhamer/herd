@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { MonthlyEnergyArchive } from "./FleetEnergyMonthly.js";
 import { randomUUID } from "node:crypto";
+import { gb10Watts, MAX_HOST_WATTS } from "./powerModel.js";
 
 const FILE_VERSION = 1;
 const MINUTE_MS = 60_000;
@@ -13,8 +14,11 @@ const MAX_GAP_MS = 10_000;
 const CURRENT_WINDOW_MS = 30_000;
 const DEFAULT_FLUSH_INTERVAL_MS = 30_000;
 const MAX_RECENT_SAMPLES = 10_000;
-const MAX_NODE_WH_PER_MINUTE = 4;
-const MIN_NODE_WATTS = 28.2;
+// Per-host plausibility bounds for stored minutes. Hosts are no longer all
+// GB10 boxes (issue #33), so the ceiling is the generic per-host one and there
+// is no floor: an idle baseline can legitimately be configured down to 0 W.
+const MAX_NODE_WATTS = MAX_HOST_WATTS;
+const MAX_NODE_WH_PER_MINUTE = MAX_NODE_WATTS / 60;
 const PERSISTENCE_RELATIVE_TOLERANCE = 1e-9;
 const UNSUPPORTED_DIRECTORY_FSYNC_CODES = new Set(["EINVAL", "ENOTSUP", "EISDIR", "EBADF"]);
 
@@ -66,11 +70,6 @@ function exceedsWithFloatingTolerance(value, maximum) {
   return value > maximum + tolerance;
 }
 
-function fallsBelowWithFloatingTolerance(value, minimum) {
-  const tolerance = PERSISTENCE_RELATIVE_TOLERANCE * Math.max(1, Math.abs(minimum));
-  return value < minimum - tolerance;
-}
-
 function unaccountedInterval(previous, current, highWaterMs) {
   if (highWaterMs === null) return { previous, current };
   if (current.atMs <= highWaterMs) return null;
@@ -86,13 +85,23 @@ function unaccountedInterval(previous, current, highWaterMs) {
   };
 }
 
-function hasExactNodeKeys(value, nodeIds, nodeIdSet) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const keys = Object.keys(value);
-  return (
-    keys.length === nodeIds.length &&
-    keys.every((key) => nodeIdSet.has(key))
-  );
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * The unit ids a stored bucket carries: every id in scope, plus ids of units
+ * that left the fleet while their minutes were still inside the window.
+ * null when the two per-unit maps disagree or a scoped id is missing.
+ */
+function storedBucketIds(stored, nodeIds) {
+  if (!isPlainObject(stored?.nodeWh) || !isPlainObject(stored?.nodeCoverageMs)) return null;
+  const whKeys = Object.keys(stored.nodeWh);
+  const coverageKeys = new Set(Object.keys(stored.nodeCoverageMs));
+  if (whKeys.length !== coverageKeys.size || whKeys.some((key) => !coverageKeys.has(key))) return null;
+  const keySet = new Set(whKeys);
+  if (nodeIds.some((id) => !keySet.has(id))) return null;
+  return whKeys;
 }
 
 function tokenObservation(snapshots, atMs, nodeIdSet) {
@@ -197,19 +206,15 @@ function writeStateAtomically(filePath, contents, fileSystem) {
  * is insufficient because SparkMonitor can retain stale domain values.
  */
 export function estimateNodeWatts(snapshot) {
-  const gpuDraw = snapshot?.metrics?.gpu?.power?.draw;
-  const cpuUsage = snapshot?.metrics?.cpu?.usage;
-  if (
-    snapshot?.telemetryFresh !== true ||
-    !validNonnegative(gpuDraw) ||
-    !Number.isFinite(cpuUsage)
-  ) {
-    return null;
+  if (snapshot?.telemetryFresh !== true) return null;
+  // Issue #33: inputs built by server/energy/inputs.js carry a per-host
+  // estimate (GB10 formula, or measured GPU + CPU + idle baseline).
+  if (Object.prototype.hasOwnProperty.call(snapshot, "power")) {
+    const watts = snapshot.power?.watts;
+    return validNonnegative(watts) ? clamp(watts, 0, MAX_NODE_WATTS) : null;
   }
-
-  const boundedCpuUsage = clamp(cpuUsage, 0, 100);
-  const cpuWatts = 5.2 + ((65 - 5.2) * boundedCpuUsage) / 100;
-  return clamp(gpuDraw + cpuWatts + 23, 0, 240);
+  // Bare SparkMonitor snapshot: the GB10 whole-system formula.
+  return gb10Watts(snapshot?.metrics?.gpu?.power?.draw, snapshot?.metrics?.cpu?.usage);
 }
 
 /**
@@ -218,15 +223,10 @@ export function estimateNodeWatts(snapshot) {
  * figure is outside what real hardware could have produced. Shared by the
  * normal load and the monthly roll-up of a file from an earlier fleet scope.
  */
-function plausibleStoredBucket(stored, minuteStartMs, ids, idSet = new Set(ids)) {
-  if (
-    !hasExactNodeKeys(stored?.nodeWh, ids, idSet) ||
-    !hasExactNodeKeys(stored?.nodeCoverageMs, ids, idSet)
-  ) {
-    return null;
-  }
-  const fleetFloorWatts = MIN_NODE_WATTS * ids.length;
-  const fleetCeilingWatts = 240 * ids.length;
+function plausibleStoredBucket(stored, minuteStartMs, scopeIds) {
+  const ids = storedBucketIds(stored, scopeIds);
+  if (!ids) return null;
+  const fleetCeilingWatts = MAX_NODE_WATTS * Math.max(1, scopeIds.length);
   const bucket = emptyBucket(minuteStartMs, ids);
   for (const id of ids) {
     const nodeWh = stored?.nodeWh?.[id];
@@ -238,11 +238,7 @@ function plausibleStoredBucket(stored, minuteStartMs, ids, idSet = new Set(ids))
       nodeCoverageMs > MINUTE_MS ||
       exceedsWithFloatingTolerance(
         nodeWh,
-        (240 * nodeCoverageMs) / 3_600_000
-      ) ||
-      fallsBelowWithFloatingTolerance(
-        nodeWh,
-        (MIN_NODE_WATTS * nodeCoverageMs) / 3_600_000
+        (MAX_NODE_WATTS * nodeCoverageMs) / 3_600_000
       )
     ) {
       return null;
@@ -259,20 +255,22 @@ function plausibleStoredBucket(stored, minuteStartMs, ids, idSet = new Set(ids))
       stored.fleetWattMs,
       fleetCeilingWatts * stored.fleetCoverageMs
     ) ||
-    fallsBelowWithFloatingTolerance(
-      stored.fleetWattMs,
-      fleetFloorWatts * stored.fleetCoverageMs
-    ) ||
     exceedsWithFloatingTolerance(
       stored.fleetWattMs,
       Object.values(bucket.nodeWh).reduce((sum, nodeWh) => sum + nodeWh, 0) *
         3_600_000
     ) ||
-    ids.some((id) =>
-      exceedsWithFloatingTolerance(
-        stored.fleetCoverageMs,
-        bucket.nodeCoverageMs[id]
-      )
+    // Full-fleet time cannot exceed any unit that reported in the minute. A
+    // unit with no coverage at all may have joined the scope after the minute
+    // was written, so it does not bound the old fleet (#33 live re-scope).
+    exceedsWithFloatingTolerance(
+      stored.fleetCoverageMs,
+      Math.max(0, ...Object.values(bucket.nodeCoverageMs))
+    ) ||
+    Object.values(bucket.nodeCoverageMs).some(
+      (coverageMs) =>
+        coverageMs > 0 &&
+        exceedsWithFloatingTolerance(stored.fleetCoverageMs, coverageMs)
     ) ||
     !validNonnegativeSafeInteger(stored.outputTokens) ||
     (stored.coveredOutputTokens != null &&
@@ -303,8 +301,6 @@ export class FleetEnergyTracker {
   } = {}) {
     this.nodeIds = Object.freeze(normalizeNodeIds(nodeIds));
     this._nodeIdSet = new Set(this.nodeIds);
-    this._minimumFleetWatts = MIN_NODE_WATTS * this.nodeIds.length;
-    this._maximumFleetWatts = 240 * this.nodeIds.length;
     this.filePath = filePath;
     this._now = typeof now === "function" ? now : () => Date.now();
     this._setInterval = setIntervalFn;
@@ -319,10 +315,10 @@ export class FleetEnergyTracker {
     this._integrationHighWaterMs = null;
     this._tokenCounter = null;
     this._tokenNeedsRebase = false;
-    this._recentFullFleetSamples = [];
+    /** Recent per-tick sums over the units that reported, for "current W". */
+    this._recentSamples = [];
     this._latestFreshNodeCount = 0;
     this._latestRecordAt = null;
-    this._membershipChanged = false;
     this._currentNodeIds = [...this.nodeIds];
     this._dirty = false;
     // First minute in which output tokens were observed; persisted so the monthly
@@ -358,19 +354,45 @@ export class FleetEnergyTracker {
     return atMs === undefined ? this._now() : atMs;
   }
 
-  /** Invalidate aggregates when the visible registry no longer matches this tracker's scope. */
-  invalidateMembership(currentNodeIds) {
-    const normalized = normalizeNodeIds(currentNodeIds);
+  /**
+   * Re-scope the tracker to the fleet's current units (issue #33: Sparks and
+   * agent nodes come and go at runtime, so no restart is needed any more).
+   * New units start at zero; units that left keep their minutes in the window
+   * (they still count toward the 24 h / 31 d totals) until those age out.
+   * Returns true when the scope changed.
+   */
+  setNodeIds(nextNodeIds) {
+    const normalized = normalizeNodeIds(nextNodeIds);
+    this._currentNodeIds = normalized;
     const unchanged =
       normalized.length === this.nodeIds.length &&
       normalized.every((id) => this._nodeIdSet.has(id));
-    this._currentNodeIds = normalized;
-    this._membershipChanged = !unchanged;
-    if (this._membershipChanged) {
-      this._recentFullFleetSamples = [];
-      this._latestFreshNodeCount = 0;
+    if (unchanged) return false;
+    this.nodeIds = Object.freeze(normalized);
+    this._nodeIdSet = new Set(normalized);
+    for (const bucket of this._buckets.values()) {
+      for (const id of normalized) {
+        if (!(id in bucket.nodeWh)) {
+          bucket.nodeWh[id] = 0;
+          bucket.nodeCoverageMs[id] = 0;
+        }
+      }
     }
-    return this._membershipChanged;
+    for (const id of [...this._nodeBaselines.keys()]) {
+      if (!this._nodeIdSet.has(id)) this._nodeBaselines.delete(id);
+    }
+    // A different unit set is a different full-fleet sum: no ramp across it.
+    this._fleetBaseline = null;
+    this._recentSamples = [];
+    this._latestFreshNodeCount = 0;
+    this._dirty = true;
+    return true;
+  }
+
+  /** Kept for callers from before #33; membership changes no longer need a restart. */
+  invalidateMembership(currentNodeIds) {
+    this.setNodeIds(currentNodeIds);
+    return false;
   }
 
   _bucket(minuteStartMs) {
@@ -464,11 +486,11 @@ export class FleetEnergyTracker {
 
   _pruneRecentSamples(atMs) {
     const cutoff = atMs - CURRENT_WINDOW_MS;
-    this._recentFullFleetSamples = this._recentFullFleetSamples.filter(
+    this._recentSamples = this._recentSamples.filter(
       (sample) => sample.atMs >= cutoff && sample.atMs <= atMs
     );
-    if (this._recentFullFleetSamples.length > MAX_RECENT_SAMPLES) {
-      this._recentFullFleetSamples = this._recentFullFleetSamples.slice(-MAX_RECENT_SAMPLES);
+    if (this._recentSamples.length > MAX_RECENT_SAMPLES) {
+      this._recentSamples = this._recentSamples.slice(-MAX_RECENT_SAMPLES);
     }
   }
 
@@ -511,7 +533,7 @@ export class FleetEnergyTracker {
       this._tokenNeedsRebase = true;
       this._nodeBaselines.clear();
       this._fleetBaseline = null;
-      this._recentFullFleetSamples = [];
+      this._recentSamples = [];
       this._latestFreshNodeCount = 0;
     }
 
@@ -567,9 +589,17 @@ export class FleetEnergyTracker {
         integratedAtTimestamp = true;
       }
       this._fleetBaseline = { atMs: timestamp, watts: fleetWatts };
-      this._recentFullFleetSamples.push({ atMs: timestamp, watts: fleetWatts });
     } else {
       this._fleetBaseline = null;
+    }
+    if (validNodes.size > 0) {
+      // "Current W" sums whichever units reported this tick; the card shows
+      // how many that was. Only samples over the same unit set are averaged.
+      this._recentSamples.push({
+        atMs: timestamp,
+        watts: [...validNodes.values()].reduce((sum, watts) => sum + watts, 0),
+        units: [...validNodes.keys()].sort().join("\u0000"),
+      });
     }
 
     if (integratedAtTimestamp && validAccountingHighWater(timestamp)) {
@@ -619,6 +649,7 @@ export class FleetEnergyTracker {
     const cutoff = alignedWindowCutoff(atMs, windowMs);
     const nodeWh = nodeValues(this.nodeIds);
     const nodeCoverageMs = nodeValues(this.nodeIds);
+    let formerUnitsWh = 0;
     let fleetCoverageMs = 0;
     let fleetWattMs = 0;
     let outputTokens = 0;
@@ -626,9 +657,14 @@ export class FleetEnergyTracker {
 
     for (const bucket of this._buckets.values()) {
       if (bucket.minuteStartMs < cutoff || bucket.minuteStartMs > atMs) continue;
-      for (const id of this.nodeIds) {
-        nodeWh[id] += bucket.nodeWh[id];
-        nodeCoverageMs[id] += bucket.nodeCoverageMs[id];
+      for (const [id, wh] of Object.entries(bucket.nodeWh)) {
+        if (this._nodeIdSet.has(id)) {
+          nodeWh[id] += wh;
+          nodeCoverageMs[id] += bucket.nodeCoverageMs[id];
+        } else {
+          // A unit that has since left the fleet still used this energy.
+          formerUnitsWh += wh;
+        }
       }
       fleetCoverageMs += bucket.fleetCoverageMs;
       fleetWattMs += bucket.fleetWattMs;
@@ -636,8 +672,10 @@ export class FleetEnergyTracker {
       coveredOutputTokens += bucket.coveredOutputTokens;
     }
 
-    const energyWh = Object.values(nodeWh).reduce((sum, value) => sum + value, 0);
-    const hasObservedEnergy = Object.values(nodeCoverageMs).some((coverageMs) => coverageMs > 0);
+    const energyWh =
+      Object.values(nodeWh).reduce((sum, value) => sum + value, 0) + formerUnitsWh;
+    const hasObservedEnergy =
+      formerUnitsWh > 0 || Object.values(nodeCoverageMs).some((coverageMs) => coverageMs > 0);
     return {
       energyWh,
       hasObservedEnergy,
@@ -652,20 +690,29 @@ export class FleetEnergyTracker {
   _hourly(atMs) {
     const graphEnd = Math.floor(atMs / MINUTE_MS) * MINUTE_MS;
     const graphStart = graphEnd - DAY_MS;
-    const aggregates = Array.from({ length: 24 }, () => ({
-      fleetWattMs: 0,
-      fleetCoverageMs: 0,
-    }));
+    // Per hour: each unit's mean draw over the time it reported, summed over
+    // the units that reported at all. Units with gaps do not drag the bar
+    // down; units that never reported in that hour are simply not in it.
+    const hours = Array.from({ length: 24 }, () => new Map());
     for (const bucket of this._buckets.values()) {
       if (bucket.minuteStartMs < graphStart || bucket.minuteStartMs >= graphEnd) continue;
-      const index = Math.floor((bucket.minuteStartMs - graphStart) / HOUR_MS);
-      aggregates[index].fleetWattMs += bucket.fleetWattMs;
-      aggregates[index].fleetCoverageMs += bucket.fleetCoverageMs;
+      const units = hours[Math.floor((bucket.minuteStartMs - graphStart) / HOUR_MS)];
+      for (const [id, wh] of Object.entries(bucket.nodeWh)) {
+        const coverageMs = bucket.nodeCoverageMs[id];
+        if (!(coverageMs > 0)) continue;
+        const unit = units.get(id) ?? { wh: 0, coverageMs: 0 };
+        unit.wh += wh;
+        unit.coverageMs += coverageMs;
+        units.set(id, unit);
+      }
     }
 
-    return aggregates.map(({ fleetWattMs, fleetCoverageMs }) =>
-      fleetCoverageMs > 0 ? fleetWattMs / fleetCoverageMs : null
-    );
+    return hours.map((units) => {
+      if (units.size === 0) return null;
+      let watts = 0;
+      for (const { wh, coverageMs } of units.values()) watts += (wh * 3_600_000) / coverageMs;
+      return watts;
+    });
   }
 
   snapshot(atMs = undefined) {
@@ -678,9 +725,11 @@ export class FleetEnergyTracker {
     this._prune(safeTimestamp);
     const last24h = this._window(safeTimestamp, DAY_MS);
     const last31d = this._window(safeTimestamp, RETENTION_MS);
-    const sampleCount = this._recentFullFleetSamples.length;
+    const latestUnits = this._recentSamples.at(-1)?.units;
+    const currentSamples = this._recentSamples.filter((sample) => sample.units === latestUnits);
+    const sampleCount = currentSamples.length;
     const currentWatts30s = sampleCount > 0
-      ? this._recentFullFleetSamples.reduce((sum, sample) => sum + sample.watts, 0) / sampleCount
+      ? currentSamples.reduce((sum, sample) => sum + sample.watts, 0) / sampleCount
       : null;
     const latestRecordAgeMs =
       this._latestRecordAt === null ? null : safeTimestamp - this._latestRecordAt;
@@ -691,18 +740,17 @@ export class FleetEnergyTracker {
 
     return {
       estimated: true,
-      membershipChanged: this._membershipChanged,
-      restartRequired: this._membershipChanged,
+      // Membership changes re-scope live since #33; both stay false.
+      membershipChanged: false,
+      restartRequired: false,
       trackedNodeIds: [...this.nodeIds],
       currentNodeIds: [...this._currentNodeIds],
-      freshNodeCount: this._membershipChanged ? 0 : freshNodeCount,
-      currentWatts30s: this._membershipChanged ? null : currentWatts30s,
-      energy24hKwh:
-        !this._membershipChanged && last24h.hasObservedEnergy ? last24h.energyWh / 1000 : null,
-      energy31dKwh:
-        !this._membershipChanged && last31d.hasObservedEnergy ? last31d.energyWh / 1000 : null,
+      freshNodeCount,
+      currentWatts30s: freshNodeCount > 0 ? currentWatts30s : null,
+      energy24hKwh: last24h.hasObservedEnergy ? last24h.energyWh / 1000 : null,
+      energy31dKwh: last31d.hasObservedEnergy ? last31d.energyWh / 1000 : null,
       whPerOutputToken24h:
-        !this._membershipChanged && last24h.fleetEnergyWh > 0 && last24h.coveredOutputTokens > 0
+        last24h.fleetEnergyWh > 0 && last24h.coveredOutputTokens > 0
           ? last24h.fleetEnergyWh / last24h.coveredOutputTokens
           : null,
       outputTokens24h: last24h.outputTokens,
@@ -710,9 +758,7 @@ export class FleetEnergyTracker {
       coverage31dMs: last31d.fleetCoverageMs,
       nodeCoverage24hMs: last24h.nodeCoverageMs,
       nodeCoverage31dMs: last31d.nodeCoverageMs,
-      hourlyWatts24h: this._membershipChanged
-        ? Array(24).fill(null)
-        : this._hourly(safeTimestamp),
+      hourlyWatts24h: this._hourly(safeTimestamp),
     };
   }
 
@@ -749,7 +795,7 @@ export class FleetEnergyTracker {
           continue;
         }
         seenMinuteStarts.add(minuteStartMs);
-        const bucket = plausibleStoredBucket(candidate, minuteStartMs, this.nodeIds, this._nodeIdSet);
+        const bucket = plausibleStoredBucket(candidate, minuteStartMs, this.nodeIds);
         if (!bucket) {
           rejectedBucket = true;
           continue;
@@ -831,13 +877,12 @@ export class FleetEnergyTracker {
   _retireForeignScopeFile(raw) {
     if (!this.filePath) return;
     const fileNodeIds = normalizeNodeIds(raw?.nodeIds);
-    const fileNodeSet = new Set(fileNodeIds);
     const accepted = new Map();
     if (fileNodeIds.length > 0 && Array.isArray(raw?.buckets)) {
       for (const candidate of raw.buckets) {
         const start = candidate?.minuteStartMs;
         if (!validNonnegativeSafeInteger(start) || start % MINUTE_MS !== 0 || accepted.has(start)) continue;
-        const clean = plausibleStoredBucket(candidate, start, fileNodeIds, fileNodeSet);
+        const clean = plausibleStoredBucket(candidate, start, fileNodeIds);
         // The first copy of a minute decides, believable or not.
         accepted.set(start, clean);
       }
