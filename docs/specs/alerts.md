@@ -277,3 +277,25 @@ unparseable file is quarantined (`<file>.corrupt-<ts>`).
   notifications" as `.set-row`s; permission requested on click only; denied
   → "Notifications are blocked for this site"; insecure context → switch
   disabled and a `role="note"` mentioning "HTTPS or localhost".
+
+### 10.1 UI details (behaviour the rewrite keeps)
+
+- Alerts dialog: title "Alert notifications"; loads `GET /api/alerts/config`
+  and polls `GET /api/alerts` every 10 s while open ("Firing now · N" list
+  when on; "Recent" list of the latest 50 transitions, "Resolved" /
+  "Critical" / "Warning" · unit label · age). Channel rows: "Channel name",
+  "Channel type" (ntfy, Discord, Slack, Webhook (JSON)), "Minimum severity"
+  ("Warning and up" / "Critical only"), switch "Channel <name|n> enabled",
+  "Channel URL"; "Add channel", "Remove". A test sends the draft with
+  `enabled: true` and `name` defaulting to "Test"; success reads "Sent".
+  Reminder select "Remind while still firing" (Off, 1 h, 4 h, 12 h, 1 day,
+  or the stored custom value). Footer status "Unsaved changes" / "Saved";
+  errors in `role="alert"`; a non-numeric wait blocks Save with an error.
+  Escape is captured and stopped so only this dialog closes.
+- `SettingRows.tsx`: `SettingRow`, `ToggleRow` (switch name = `label` or
+  title; children before the switch) and `Switch`.
+- Tab badge: the base title is the current title without a leading "(N) ";
+  the favicon (first `link[rel~=icon]`) is redrawn as a PNG with the dot and
+  restored (href and type) when the badge goes away or the app unmounts.
+- Desktop notification body: `label`, or `label — detail`; `tag` = row key;
+  clicking focuses the window.

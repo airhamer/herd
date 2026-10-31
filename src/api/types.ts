@@ -602,51 +602,45 @@ export interface WsSnapshot {
   generatedAt?: number;
   sparks: SparkSnapshot[];
   refreshInterval: number;
-  /** Alert notifications' firing set — present only while `alertsEnabled` is on. */
+  /** Server-side alerts currently firing; sent only when alertsEnabled is true. */
   alerts?: { active: AlertInstance[] };
 }
 
-// ─── Alert notifications (server/alerts) ───
+// ─── Alerts API (server/alerts, /api/alerts*) ───
 export type AlertSeverity = "warning" | "critical";
+export type AlertChannelType = "ntfy" | "discord" | "slack" | "webhook";
+type RuleValues = { enabled?: boolean; forSec?: number };
 
-/**
- * One pending or firing alert (GET /api/alerts, WS `alerts.active`). The
- * condition is a Health finding or an Overview strip exception; `ruleId` is the
- * finding id (thermal, memory, …) or the strip's (offline, throttle, disk, llm, tailnet).
- */
-export interface AlertInstance {
-  /** `${unitId}:${ruleId}` — the same key the Overview strip uses. */
+/** Fields shared by a live alert and a logged transition. */
+interface AlertSubject {
+  /** unitId + ":" + ruleId; identical to the FleetAlertStrip row key. */
   key: string;
+  /** A Health finding id or a strip exception id (offline, throttle, disk, llm, tailnet). */
   ruleId: string;
   ruleName: string;
   unitId: string;
   unitName: string;
   severity: AlertSeverity;
-  /** Highest severity reached while firing (a resolved alert is routed by it). */
-  peakSeverity?: AlertSeverity;
-  state: "pending" | "firing";
-  /** Short predicate after the unit name ("GPU is running hot"). */
+  /** Phrase that follows the unit name in a sentence. */
   label: string;
   summary: string;
-  /** Epoch ms the condition first held — survives a server restart. */
+  /** When the condition was first seen (epoch ms); kept across restarts. */
   startsAt: number;
-  firingAt: number | null;
 }
 
-/** One firing / resolved transition (newest first in `recent`). */
-export interface AlertEvent {
+/** A tracked alert, either still waiting out its `for` time or firing. */
+export interface AlertInstance extends AlertSubject {
+  state: "pending" | "firing";
+  firingAt: number | null;
+  /** Worst severity seen while firing; decides routing of the resolve message. */
+  peakSeverity?: AlertSeverity;
+}
+
+/** An entry of `recent`: an alert started or stopped firing. */
+export interface AlertEvent extends AlertSubject {
   id: number;
   at: number;
   status: "firing" | "resolved";
-  key: string;
-  ruleId: string;
-  ruleName: string;
-  unitId: string;
-  unitName: string;
-  severity: AlertSeverity;
-  label: string;
-  summary: string;
-  startsAt: number;
   endsAt: number | null;
 }
 
@@ -657,47 +651,45 @@ export interface AlertsResponse {
   recent: AlertEvent[];
 }
 
-/** A rule as GET /api/alerts/config describes it: where it comes from, on/off and `for`. */
+/** One rule from GET /api/alerts/config. */
 export interface AlertRule {
   id: string;
   name: string;
   description: string;
   source: "health" | "strip";
   defaults: { enabled: boolean; forSec: number };
-  /** Only the values the user changed. */
-  overrides: { enabled?: boolean; forSec?: number };
+  /** Values differing from `defaults`; empty when untouched. */
+  overrides: RuleValues;
 }
 
-export type AlertChannelType = "ntfy" | "discord" | "slack" | "webhook";
-
 export interface AlertChannel {
-  /** Absent on a channel added in the dialog and not yet saved. */
+  /** Missing until the server has stored the channel. */
   id?: string;
   name: string;
   type: AlertChannelType;
-  /** Masked by the server (`https://ntfy.sh…ab12`); send it back unchanged to keep it. */
-  url: string;
-  /** The server has a URL for this channel (in its encrypted secrets store). */
-  hasUrl?: boolean;
   enabled: boolean;
   minSeverity: AlertSeverity;
-  /** `lastError` is a status code or a fixed reason, never a server's answer. */
+  /** As returned the URL is masked; sending the masked text back keeps the stored one. */
+  url: string;
+  /** False when the server has no stored URL for this channel. */
+  hasUrl?: boolean;
+  /** Delivery bookkeeping; `lastError` holds a status code or a fixed phrase only. */
   status?: { lastSentAt: number | null; lastError: string | null; lastErrorAt: number | null };
 }
 
 export interface AlertsConfig {
   enabled: boolean;
-  /** 0 = no reminders while an alert keeps firing. */
-  repeatIntervalMin: number;
   rules: AlertRule[];
   channels: AlertChannel[];
+  /** Minutes between reminders for a still-firing alert; 0 disables them. */
+  repeatIntervalMin: number;
 }
 
-export interface AlertsConfigUpdate {
-  repeatIntervalMin?: number;
-  rules?: Record<string, { enabled?: boolean; forSec?: number }>;
-  channels?: AlertChannel[];
-}
+export type AlertsConfigUpdate = Partial<{
+  rules: Record<string, RuleValues>;
+  channels: AlertChannel[];
+  repeatIntervalMin: number;
+}>;
 
 export interface AlertTestResult {
   ok: boolean;
@@ -777,7 +769,7 @@ export interface Settings {
   showOverviewSearch: boolean;
   /** Benchmark dialogs offer "Copy image" — a PNG share card of the results. */
   benchShareImage: boolean;
-  /** Alert notifications (Settings → Alerts). Off by default; while off nothing is evaluated or sent. */
+  /** Master switch for server alerts (default off). Off means no evaluation and no sends. */
   alertsEnabled?: boolean;
   /** Opt-in dense 48 h GPU/unit history + bucketed day/week tiers. Off by default (saves disk + CPU). */
   metricsHistory: boolean;
