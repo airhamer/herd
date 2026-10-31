@@ -1,11 +1,14 @@
 /**
  * stacks.js — Stack category calculation and helpers (new 2026-10-29).
  *
- * Terminology:
- * - Component = a loadable serving "lane" (llm recipe with .lane slot).
+ * Terminology (SC1 alignment):
+ * - Component = a loadable serving unit (UI term; internally still a "lane":
+ *   llm recipe with a .lane slot).
+ * - Subcomponent = an individual library artifact (checkpoint, drafter, image).
  * - Stack = user-selected group of Components.
  *
- * Categories (computed when user selects Components in the UI):
+ * Categories (computed when user selects Components in the UI; UI labels:
+ * Proven / Calculated / Not recommended / Blocked):
  *   proven          - history shows they ran together successfully (no OOM).
  *   calculated      - current resource math says they should fit comfortably.
  *   not_recommended - math says tight / close to the edge.
@@ -20,6 +23,9 @@
 import { MemoryBudget } from '../../shared/types'; // for reference, not runtime dep
 
 export type StackCategory = 'proven' | 'calculated' | 'not_recommended' | 'blocked';
+// SC1: the seam contract (shared/types.ts STACK_CATEGORY_LABELS) is the source
+// of truth for the UI labels of these four categories (Proven / Calculated /
+// Not recommended / Blocked).
 
 /**
  * Minimal view of a Component for stack calculations.

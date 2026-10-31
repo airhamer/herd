@@ -53,11 +53,14 @@ function withFootprints(
 }
 
 /**
- * Lane coexistence / budget panel (S3.2b): per pool, how much of the GPU the
- * running lane(s) hold, the headroom left, and whether each stopped lane
- * would fit if started in its turn. All math lives in the pure
- * computeLaneBudgets (src/lib/laneCoexistence.ts); this component only
+ * Component (lane) coexistence / budget panel (S3.2b): per pool, how much of
+ * the GPU the running component(s) hold, the headroom left, and whether each
+ * stopped component would fit if started in its turn. All math lives in the
+ * pure computeLaneBudgets (src/lib/laneCoexistence.ts); this component only
  * renders. Zero fetches, zero fs, deterministic.
+ *
+ * SC1 terminology: the UI calls these Components (former "Lanes"); internal
+ * identifiers keep "lane" for wire/seam compatibility (shared/types.ts).
  */
 export function LaneBudgetPanel({
   lanes,
@@ -73,7 +76,7 @@ export function LaneBudgetPanel({
 
   return (
     <Panel
-      title="Lanes"
+      title="Components"
       icon={<RotateIcon />}
       actions={
         overPools.length > 0 ? (
@@ -86,7 +89,7 @@ export function LaneBudgetPanel({
       bodyClassName="space-y-3"
     >
       {!budgets.available || budgets.pools.length === 0 ? (
-        <p className="text-xs text-muted">No lane data</p>
+        <p className="text-xs text-muted">No component data</p>
       ) : (
         budgets.pools.map((pool) => (
           <div key={pool.id} className="space-y-1.5">
@@ -112,7 +115,7 @@ export function LaneBudgetPanel({
               <p className="text-[10px] text-muted">Unknown footprints — estimates only</p>
             )}
             {pool.lanes.length === 0 ? (
-              <p className="text-xs text-muted">No lanes in this pool</p>
+              <p className="text-xs text-muted">No components in this pool</p>
             ) : (
               pool.lanes.map((lane) => {
                 const known = isKnownFootprint(recipeFootprints?.[lane.recipe]);

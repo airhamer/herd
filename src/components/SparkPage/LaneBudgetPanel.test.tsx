@@ -24,16 +24,16 @@ describe("LaneBudgetPanel", () => {
   it("renders a not-present state when lanes is null, without hiding the panel", () => {
     const { container } = render(<LaneBudgetPanel lanes={null} poolTotalMB={TOTAL} />);
     const text = container.textContent ?? "";
-    expect(text).toContain("Lanes");
-    expect(text).toContain("No lane data");
+    expect(text).toContain("Components");
+    expect(text).toContain("No component data");
   });
 
   it("renders a not-present state when the pool total is unknown", () => {
     const l = lanes(["gpu0", [lane({ recipe: "a", running: true, state: "running" })]]);
     const { container } = render(<LaneBudgetPanel lanes={l} poolTotalMB={null} />);
     const text = container.textContent ?? "";
-    expect(text).toContain("Lanes");
-    expect(text).toContain("No lane data");
+    expect(text).toContain("Components");
+    expect(text).toContain("No component data");
     expect(text).not.toContain("gpu0");
   });
 
@@ -119,7 +119,7 @@ describe("LaneBudgetPanel", () => {
   it("keeps a present-but-empty lane view visible with an empty note", () => {
     const { container } = render(<LaneBudgetPanel lanes={lanes()} poolTotalMB={TOTAL} />);
     const text = container.textContent ?? "";
-    expect(text).toContain("Lanes");
-    expect(text).toContain("No lane data");
+    expect(text).toContain("Components");
+    expect(text).toContain("No component data");
   });
 });

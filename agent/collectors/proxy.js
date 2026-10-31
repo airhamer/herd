@@ -7,7 +7,7 @@
  *   - Basic traffic / requests if /metrics or /proxy/status is present.
  *
  * The proxy fronts :30001 (or configured), keeps streams alive for agent clients,
- * refuses prompts the active lane cannot serve, aborts generations for departed clients.
+ * refuses prompts the active component (lane) cannot serve, aborts generations for departed clients.
  *
  * Seam: adds ProxyStatus to telemetry / NodeAgentSnapshot (additive).
  */

@@ -1,10 +1,15 @@
 import React, { useState } from 'react';
+import type { StackCategory } from "../../../shared/types";
+import { STACK_CATEGORY_LABELS } from "../../../shared/types";
 
-// Basic stub for Stack builder / selector
-// Will be wired to live component list from telemetry + calculator
-// Categories: proven | calculated | not_recommended | blocked
+// Stack builder / selector stub.
+// Will be wired to live component list from telemetry + calculator.
+// SC1 terminology: Stack = group of Components; categories are
+// Proven / Calculated / Not recommended / Blocked (labels from
+// shared/types STACK_CATEGORY_LABELS). StackBuilder is a stub, unwired
+// until SC5 — its UI copy is the only consumer of the labels today.
 
-export type StackCategory = 'proven' | 'calculated' | 'not_recommended' | 'blocked';
+export type { StackCategory };
 
 interface ComponentItem {
   name: string;
@@ -52,10 +57,13 @@ export const StackBuilder: React.FC<StackBuilderProps> = ({ availableComponents,
         ))}
       </div>
       <div className="mb-2">
-        Category: <span className="font-mono">{currentCategory}</span> (live calc coming)
+        Category: <span className="font-mono">{STACK_CATEGORY_LABELS[currentCategory]}</span> (live calc coming)
       </div>
       <button onClick={save} className="btn">Save Stack</button>
-      <div className="text-xs text-muted mt-2">Proven = history success • Calculated = resource math • etc.</div>
+      <div className="text-xs text-muted mt-2">
+        {STACK_CATEGORY_LABELS.proven} = history success • {STACK_CATEGORY_LABELS.calculated} = resource math •
+        {' '}{STACK_CATEGORY_LABELS.not_recommended} = tight fit • {STACK_CATEGORY_LABELS.blocked} = insufficient resources
+      </div>
     </div>
   );
 };
