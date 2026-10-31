@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { compareBenchResults, getBenchResult, listBenchReferences, listBenchResults, nearestBenchReferences } from "./client";
+import {
+  compareBenchResults,
+  compareUpgrade,
+  getBenchResult,
+  listBenchReferences,
+  listBenchResults,
+  listUpgradeRuns,
+  nearestBenchReferences,
+} from "./client";
 
 function stubFetch(payload: unknown = {}) {
   const fn = vi.fn(async (_input: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => payload }));
@@ -47,5 +55,15 @@ describe("bench results client", () => {
     expect(fn.mock.calls[1][0]).toBe("/api/bench-results/decode%3Aabc%3Ac8/references?limit=2");
     await nearestBenchReferences("decode:abc:c8");
     expect(fn.mock.calls[2][0]).toBe("/api/bench-results/decode%3Aabc%3Ac8/references");
+  });
+
+  it("lists upgrade runs and asks for an upgrade verdict (BENCH6)", async () => {
+    const fn = stubFetch({ total: 0, runs: [] });
+    await listUpgradeRuns();
+    expect(fn.mock.calls[0][0]).toBe("/api/bench-results/upgrade/runs");
+    await listUpgradeRuns({ node_id: "spark-a", bench: "", limit: 50 });
+    expect(fn.mock.calls[1][0]).toBe("/api/bench-results/upgrade/runs?node_id=spark-a&limit=50");
+    await compareUpgrade(["decode:b1", "quality:q1"], ["decode:b2"]);
+    expect(fn.mock.calls[2][0]).toBe("/api/bench-results/upgrade?baseline=decode%3Ab1%2Cquality%3Aq1&candidate=decode%3Ab2");
   });
 });

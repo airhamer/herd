@@ -53,6 +53,7 @@ Names are append-only (`owner.what.vN`). Only definitions in the same
 | Latency | `herd.ttft.client_first_token.v1` (p50), `…_p95.v1`, `herd.tpot.client_stream.v1`; AEON ladder p95s `aeon.ttft_p95_linear.v1`, `aeon.tpot_p95_linear.v1` |
 | Engine counter | `herd.engine.generation_tps_counter.v1` |
 | Quality / energy | `herd.quality.item_pass_rate.v1`, `reference.accuracy_published.v1`, `herd.energy.gpu_power_wave.v1` |
+| Energy over a run window | `herd.energy.node_tracker_run.v1` (fleet energy tracker estimate for the node over the whole run ÷ the run's output tokens; own group; BENCH6) |
 | Quality, mean of categories | `herd.quality.category_mean.v1` (Quality bench overall, see [QUALITY-BENCH.md](./QUALITY-BENCH.md)) |
 
 The AEON ladder (DecodeBench `protocol: "aeon-perf-v1"`) stores one record per
@@ -88,6 +89,8 @@ one `hasso.matrix.<workload>` per battery workload, with suite
 | GET | `/api/bench-results/definitions` | metrics, sources and tiers, origins, definitions |
 | GET | `/api/bench-results/compare` | see above |
 | GET | `/api/bench-results/references` | the reference registry: entries, `not_seeded`, and its stored rows |
+| GET | `/api/bench-results/upgrade/runs` | runs grouped from records (`herd`, `aeon-pod`), newest first; filters `node_id, hw_bucket, bench, limit` (≤500) |
+| GET | `/api/bench-results/upgrade` | `baseline=<run_id>[,<run_id>]&candidate=…`: "Upgrade worth it?" verdict, see below |
 | GET | `/api/bench-results/:id` | |
 | GET | `/api/bench-results/:id/references` | nearest published figures, same definition group only, `limit` 1–50 (default 3) |
 | POST | `/api/bench-results` | reference / aeon-pod results only. Missing fields become `null`; `id` defaults to `<origin>:<run_id>`. 201 created, 200 replaced, 400 with `errors[]` |
@@ -142,6 +145,66 @@ leaderboard. Neither has been read; the registry lists both under
 definition (add a new definition first if none fits). Then run
 `node --test server/bench/references/__tests__/*.test.js`.
 
+## Upgrade worth it? (BENCH6, #46)
+
+`GET /api/bench-results/upgrade?baseline=<run_id>[,<run_id>]&candidate=<run_id>[,<run_id>]`,
+code in `server/bench/upgrade/`, UI **Upgrade worth it?** in the Spark LLM
+panel and in a fleet node's **LLM benchmarks** panel
+(`src/components/UpgradeCompare/`).
+
+- **Sides.** Each side is one or more runs, at most one per bench (typically a
+  decode, AEON or Hasso run, plus an optional quality run). Runs pair by
+  bench; a bench on one side only is refused. Cells pair by the id suffix
+  after the run id (`c4`, `perf.direct.overall.c8`, a quality category).
+  Cells without a partner are listed under `unpaired` and left out.
+- **Refusal.** Every paired cell must pass the compare rules above:
+  `hw_bucket`, suite and suite version, and every condition. The headline
+  metric's definitions must share a group. A single mismatch refuses the
+  whole view: `200 { comparable: false, verdict.code: "refused", reasons }`.
+  Unknown runs give 404. Two runs of one bench on a side, the same run on both
+  sides, or a reference id give 400.
+- **Throughput.** The headline metric per cell is the first of
+  `agg_window_tps`, `decode_tps_stream`, `agg_sum_tps`, `prefill_tps`.
+  Δ% = (candidate − baseline) ÷ baseline. AEON per-category cells are shown
+  as detail and do not vote; the level's `overall` cell votes.
+- **Noise band.** The spread of repeated runs is (max − min) ÷ mean, using
+  one value per run of the same cell on the same lane. The other side's run
+  is never counted as a repeat. The band is the larger of the two sides'
+  spreads, floored at 3%. With no repeats on either side it is **15%**
+  (MiaAI-Lab's single-stream spread on one Spark, cited in #46). A cell is a
+  gain above +band, a loss below −band, and noise otherwise.
+- **Quality.** Each category (and the overall record) is compared with an
+  exact McNemar test on the item vectors. p ≥ 0.05 is within noise; p < 0.05
+  is better or worse by the discordant counts.
+- **Verdict:**
+  - **refused:** any mismatch, or nothing to compare.
+  - **regression:** a quality category is significantly worse, or a voting
+    throughput cell is a loss.
+  - **worth it:** at least one voting cell is a gain, and there is no loss or
+    quality regression. Without quality runs on both sides the reasons say
+    quality was not measured.
+  - **within noise:** otherwise.
+  - Cost is shown but does not vote.
+- **Cost.**
+  - Energy is `settings.run_energy` and a `wh_per_1k_tokens` row
+    (`herd.energy.node_tracker_run.v1`, approximate), written by the recorder
+    when a run finishes:
+    - It comes from `FleetEnergyTracker.windowEnergy(node, start, end)`, which
+      prorates the edge minutes, then scales up by sample coverage and divides
+      by the run's output tokens (decode waves, AEON overall levels).
+    - The figure is skipped under 50% coverage, and for nodes that the
+      tracker does not cover (agent nodes, custom hosts).
+    - For older runs, the view reads the tracker for the run window on demand
+      (31-day retention, `from: "tracker_now"`).
+  - Memory headroom (`settings.run_memory`) is the lower of the unified-memory
+    `available` readings at run start and end. It is not a minimum over the
+    run.
+- **Reference.** The nearest published figure (BENCH5) for the candidate's
+  voting cells is shown beside the verdict, ranked by score. It is never
+  diffed.
+- **Open:** a quality run is ~755 requests per side. Pick an existing
+  quality run, or run one only when throughput says the upgrade is worth it.
+
 ## Writers
 
 - **DecodeBench, PrefillBench, Showcase and QualityBench:**
@@ -149,6 +212,9 @@ definition (add a new definition first if none fits). Then run
     snapshot (`provenance.js`).
   - The managers call `resultSink` when the run reaches history
     (`recorder.js`).
+  - The recorder adds the run's energy (fleet energy tracker over the run
+    window) and memory headroom (read at start and finish) to every record of
+    the run (BENCH6).
   - A failing sink never affects a bench.
 - **Legacy history:**
   - At startup, Herd imports `bench-history.json`,

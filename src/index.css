@@ -2841,3 +2841,64 @@ html {
   color: var(--color-accent);
   font-variant-numeric: tabular-nums;
 }
+
+/* "Upgrade worth it?" compare view (BENCH6, #46) */
+.upgrade-picks {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 0.75rem;
+}
+.upgrade-pick {
+  display: grid;
+  gap: 0.35rem;
+}
+.upgrade-pick__label {
+  width: 5rem;
+  flex-shrink: 0;
+}
+.upgrade-verdict {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.75rem 1.25rem;
+  padding: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+}
+.upgrade-verdict__value {
+  display: block;
+  font-size: 1.5rem;
+  font-weight: 650;
+}
+.upgrade-verdict--worth_it {
+  border-color: var(--color-success);
+}
+.upgrade-verdict--worth_it .upgrade-verdict__value {
+  color: var(--color-success);
+}
+.upgrade-verdict--regression {
+  border-color: var(--color-danger);
+}
+.upgrade-verdict--regression .upgrade-verdict__value {
+  color: var(--color-danger);
+}
+.upgrade-verdict--refused .upgrade-verdict__value,
+.upgrade-verdict--within_noise .upgrade-verdict__value {
+  color: var(--color-muted-strong);
+}
+.upgrade-reference {
+  display: grid;
+  gap: 0.15rem;
+  max-width: 18rem;
+  font-size: 0.75rem;
+}
+.upgrade-reference a {
+  color: var(--color-accent);
+}
+.upgrade-reference__value {
+  font-variant-numeric: tabular-nums;
+}
+.upgrade-muted,
+.upgrade-detail {
+  color: var(--color-muted);
+}
