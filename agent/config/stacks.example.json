@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "stacks": [
+    {
+      "id": "hasso-27b-stock",
+      "name": "Hasso 27B stock (SGLang, native window)",
+      "componentNames": ["qwen38-27b-stock-sglang-tp1-gx10"],
+      "category": "calculated",
+      "notes": "Bootstrap pre-defined stack (POC step 1). Sourced from hasso5703/dgx-spark-qwen38 builtin `stock`; see agent/catalog/components/qwen38-27b-stock-sglang-tp1-gx10.json for pins and provenance."
+    },
+    {
+      "id": "hasso-flash-next",
+      "name": "Hasso Flash-Next (SGLang, file-backed PLE)",
+      "componentNames": ["qwen38-flash-next-sglang-tp1-gx10"],
+      "category": "calculated",
+      "notes": "Bootstrap pre-defined stack (POC step 1). Sourced from hasso5703/dgx-spark-qwen38 builtin `flash` (concurrency tier); single-spark GB10 only — see the component definition for the PLE mechanism and provenance."
+    }
+  ]
+}

@@ -528,6 +528,19 @@ export interface StackDraft {
   componentNames: string[];
 }
 
+/**
+ * SC2 storage shape: the on-disk `agent/config/stacks.json` file
+ * (produced and consumed by agent/catalog/stacks-catalog.js; imported by
+ * the setup menu for merge/export/import). `category` on load is a hint
+ * only — the store recomputes it live (stacks.js calculator + history).
+ */
+export interface StacksFile {
+  /** File-format version. Currently 1. */
+  version: 1;
+  /** Stack definitions, unique by id (merge dedup key). */
+  stacks: Stack[];
+}
+
 // ─── Node agent snapshot (full telemetry) ──────────────────────────────────────────────────────────
 
 /**
