@@ -860,8 +860,8 @@ export type AgentEngineCounterKey =
 export interface AgentEngineCountersMeta {
   /** Payload schema: 2 = STAT3 (schema 1, STAT2, sent no meta). */
   schema: number;
-  /** Page the counters came from. */
-  source: "prometheus" | "json";
+  /** Page the counters came from; "proxy" = metered by the agent's usage relay (STAT4). */
+  source: "prometheus" | "json" | "proxy";
   /** Agent monotonic clock (performance.now() ms); only comparable within one bootId. */
   monoMs: number;
   /** Agent wall clock at the read (ms epoch). */
@@ -889,8 +889,52 @@ export interface AgentLlmEntry {
   engineCounters?: Partial<Record<AgentEngineCounterKey, number | null>> | null;
   /** STAT3 (agent 0.4+): when and how engineCounters were read. */
   engineCountersMeta?: AgentEngineCountersMeta | null;
+  /**
+   * STAT4 (agent 0.5+): per-request usage the agent's opt-in relay metered
+   * for this port, as cumulative counters (same keys). Windowed as the
+   * "proxy" source tier; engine counters win per field.
+   */
+  proxyCounters?: Partial<Record<AgentEngineCounterKey, number | null>> | null;
+  proxyCountersMeta?: AgentEngineCountersMeta | null;
+  /** STAT4: metered requests in flight through the relay. */
+  proxyInFlight?: number | null;
   /** STAT2: added by the dashboard server's fleet poller. */
   normalized?: NormalizedEngineWindows | null;
+}
+
+/** STAT4: one metered request through the agent's usage relay. */
+export interface AgentRelayRequest {
+  wallMs: number;
+  client: string;
+  path: string | null;
+  model: string | null;
+  status: number;
+  aborted: boolean;
+  stream: boolean;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  cachedTokens: number | null;
+  /** No usage in the stream: completion counted from content events. */
+  completionEstimated: boolean;
+  ttftS: number | null;
+  decodeS: number | null;
+  /** "engine" (Ollama eval_duration, llama.cpp timings) or "stream" (first → last content event). */
+  decodeFrom: "engine" | "stream" | null;
+  e2eS: number;
+}
+
+/** STAT4: one opt-in usage relay of the node agent (LLM_PROXY). */
+export interface AgentUsageRelay {
+  listenPort: number | null;
+  upstreamPort: number | null;
+  counters: Partial<Record<AgentEngineCounterKey, number | null>> | null;
+  meta: AgentEngineCountersMeta | null;
+  inFlight: number;
+  requests: number;
+  errors: number;
+  estimatedRequests: number;
+  clients: { client: string; requests: number; errors: number; prompt: number; generated: number; lastSeenMs: number }[];
+  recent: AgentRelayRequest[];
 }
 
 export interface NodeAgentSnapshot {
@@ -963,6 +1007,8 @@ export interface NodeAgentSnapshot {
    * STAT2: the dashboard server adds `normalized` to each entry.
    */
   llm?: AgentLlmEntry[];
+  /** STAT4: the agent's opt-in usage relays; null / absent when none run. */
+  llmProxy?: AgentUsageRelay[] | null;
   /** Last time this snapshot was polled (ms epoch). */
   polledAt: number;
 }
