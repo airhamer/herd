@@ -4,6 +4,8 @@ import { isWorkerSpark, resolveSparkRole } from "../../api/sparkRole";
 import { shutdownAllSparks, updateAllHermes, wakeAllSparks } from "../../api/client";
 import { ConfirmShutdownDialog } from "../ConfirmShutdownDialog";
 import { MetricBar } from "../ui/MetricBar";
+import { MemoryPoolBar } from "../ui/MemoryPoolBar";
+import { gpuHolderLabel, memoryPool } from "../../lib/memoryPool";
 import { HealthChips } from "../ui/HealthFindings";
 import { Tag } from "../ui/Tag";
 import { FleetEnergyCard } from "./FleetEnergyCard";
@@ -108,6 +110,26 @@ function SparkCard({
   const vramUsed = gpu?.vram?.used ?? um?.used ?? 0;
   const vramTotal = gpu?.vram?.total ?? um?.total ?? 0;
   const vramAvail = gpu?.vram?.available ?? um?.available ?? 0;
+
+  // Issue #26: a Spark's GPU draws from the unified pool, so one Hasso-style
+  // pool bar (model / system and apps / page cache / free, floor, swap)
+  // replaces the VRAM bar. Non-Spark hosts keep VRAM + RAM bars.
+  const pool =
+    spark.kind !== "host" && um && um.total > 0
+      ? memoryPool({
+          totalMB: um.total,
+          availableMB: um.available,
+          cachedMB: um.cached,
+          swapTotalMB: um.swapTotal,
+          swapFreeMB: um.swapFree,
+          gpuMB: um.gpuUsed,
+          unified: true,
+        })
+      : null;
+  const gpuHolder = gpuHolderLabel(
+    (spark.metrics.llm ?? []).filter((l) => l.available).map((l) => l.modelId),
+    gpu?.processes?.[0]?.name,
+  );
 
   // Temperature bar: cool → success, warm → warning, hot → danger
   const tempBarColor =
@@ -221,13 +243,17 @@ function SparkCard({
         <>
           {/* Three headline bars: GPU alloc, Temp, Usage */}
           <div className="flex flex-col gap-3.5">
-            <MetricBar
-              label="VRAM"
-              value={vramUsed}
-              max={vramTotal}
-              color={vramBarColor}
-              caption={vramTotal > 0 ? `${fmtStorage(vramUsed, false)} / ${fmtStorage(vramTotal, true)}` : "—"}
-            />
+            {pool ? (
+              <MemoryPoolBar pool={pool} holder={gpuHolder} />
+            ) : (
+              <MetricBar
+                label="VRAM"
+                value={vramUsed}
+                max={vramTotal}
+                color={vramBarColor}
+                caption={vramTotal > 0 ? `${fmtStorage(vramUsed, false)} / ${fmtStorage(vramTotal, true)}` : "—"}
+              />
+            )}
             {spark.kind === "host" && (() => {
               // Non-Spark hosts: system RAM is separate from discrete VRAM.
               const ram = spark.metrics.ram;
@@ -297,7 +323,7 @@ function SparkCard({
               label="GPU Power"
               value={`${gpu?.power?.draw ?? 0}W / ${gpu?.power?.limit ?? 0}W`}
             />
-            {vramAvail > 0 && (
+            {!pool && vramAvail > 0 && (
               <MiniStat
                 label="Available"
                 value={formatMb(vramAvail)}

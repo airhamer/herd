@@ -7,6 +7,7 @@ import { HealthList } from "../ui/HealthFindings";
 import { SparkActions } from "./SparkActions";
 import { GpuPanel } from "./GpuPanel";
 import { RamPanel } from "./RamPanel";
+import { UnifiedMemoryPanel } from "./UnifiedMemoryPanel";
 import { StoragePanel } from "./StoragePanel";
 import { NetworkPanel } from "./NetworkPanel";
 import { RocePanel } from "./RocePanel";
@@ -275,8 +276,9 @@ export function SparkPage({
                 {tailscaleOn && <TailscalePanel tailscale={metrics.tailscale ?? null} />}
               </>
             ) : (
-              /* Resources layout: GPU spans the full left column; Storage + Network [+ Tailnet] stack in the right column */
+              /* Resources layout: unified memory full width (#26); GPU spans the left column; Storage + Network [+ Tailnet] stack in the right column */
               <>
+                <UnifiedMemoryPanel spark={spark} className="md:col-span-2" />
                 <GpuPanel
                   gpu={metrics.gpu}
                   cpu={metrics.cpu}

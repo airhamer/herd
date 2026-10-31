@@ -38,7 +38,9 @@
         "vramTotalMB": { "type": "number" },
         "vramPercentage": { "type": "number", "minimum": 0, "maximum": 100 },
         "vramAvailableMB": { "type": "number" },
-        "processes": { "type": "array", "maxItems": 5, "items": { "type": "object", "required": ["pid", "name", "vramMB"], "properties": { "pid": { "type": "number" }, "name": { "type": "string" }, "vramMB": { "type": "number" } } } }
+        "processes": { "type": "array", "maxItems": 5, "items": { "type": "object", "required": ["pid", "name", "vramMB"], "properties": { "pid": { "type": "number" }, "name": { "type": "string" }, "vramMB": { "type": "number" } } } },
+        "gpuAllocMB": { "type": "number", "description": "Sum of all compute-apps GPU memory (not capped at 5). Optional (issue #26)." },
+        "unifiedMemory": { "type": "boolean", "description": "true when the GPU draws from the OS pool (GB10: nvidia-smi memory.total is N/A). Optional (issue #26)." }
       }
     },
     "CpuMetrics": {
@@ -58,7 +60,10 @@
         "usedMB": { "type": "number" },
         "totalMB": { "type": "number" },
         "availableMB": { "type": "number" },
-        "percentage": { "type": "number", "minimum": 0, "maximum": 100 }
+        "percentage": { "type": "number", "minimum": 0, "maximum": 100 },
+        "cachedMB": { "type": "number", "description": "/proc/meminfo Cached (reclaimable page cache). Optional (issue #26)." },
+        "swapTotalMB": { "type": "number", "description": "/proc/meminfo SwapTotal. Optional (issue #26)." },
+        "swapFreeMB": { "type": "number", "description": "/proc/meminfo SwapFree. Optional (issue #26)." }
       }
     },
     "DiskMetrics": {
