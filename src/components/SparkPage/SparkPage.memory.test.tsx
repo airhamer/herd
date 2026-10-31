@@ -3,24 +3,26 @@ import { flush, render } from "../../testing/render";
 import { makeSpark } from "../../testing/fixtures";
 
 // Only the unified-memory panel's placement is under test (#26).
+// Stand-ins: the two memory-adjacent panels render a marker, the rest nothing.
+const { blank, stubs } = vi.hoisted(() => ({
+  blank: () => null,
+  stubs: (names: string[]) => Object.fromEntries(names.map((n) => [n, vi.fn()])),
+}));
 vi.mock("./GpuPanel", () => ({ GpuPanel: () => <section data-testid="gpu-panel" /> }));
 vi.mock("./RamPanel", () => ({ RamPanel: () => <section data-testid="ram-panel" /> }));
-vi.mock("./StoragePanel", () => ({ StoragePanel: () => null }));
-vi.mock("./NetworkPanel", () => ({ NetworkPanel: () => null }));
-vi.mock("./RocePanel", () => ({ RocePanel: () => null }));
-vi.mock("./TailscalePanel", () => ({ TailscalePanel: () => null }));
-vi.mock("./LlmPanel", () => ({ LlmPanel: () => null }));
-vi.mock("./ComfyPanel", () => ({ ComfyPanel: () => null }));
-vi.mock("./SparkHeader", () => ({ SparkHeader: () => null }));
-vi.mock("./SparkActions", () => ({ SparkActions: () => null }));
-vi.mock("./HistoryPanel", () => ({ HistoryPanel: () => null }));
-vi.mock("../ui/HealthFindings", () => ({ HealthList: () => null }));
+vi.mock("../ui/HealthFindings", () => ({ HealthList: blank }));
+vi.mock("./SparkHeader", () => ({ SparkHeader: blank }));
+vi.mock("./SparkActions", () => ({ SparkActions: blank }));
+vi.mock("./HistoryPanel", () => ({ HistoryPanel: blank }));
+vi.mock("./StoragePanel", () => ({ StoragePanel: blank }));
+vi.mock("./NetworkPanel", () => ({ NetworkPanel: blank }));
+vi.mock("./RocePanel", () => ({ RocePanel: blank }));
+vi.mock("./TailscalePanel", () => ({ TailscalePanel: blank }));
+vi.mock("./LlmPanel", () => ({ LlmPanel: blank }));
+vi.mock("./ComfyPanel", () => ({ ComfyPanel: blank }));
 vi.mock("../../api/client", () => ({
-  getUnitHistory: vi.fn(() => Promise.resolve({ enabled: false })),
-  updateSpark: vi.fn(),
-  refreshSparkMetric: vi.fn(),
-  addLlmPort: vi.fn(),
-  removeLlmPort: vi.fn(),
+  ...stubs(["addLlmPort", "refreshSparkMetric", "removeLlmPort", "updateSpark"]),
+  getUnitHistory: vi.fn(async () => ({ enabled: false })),
 }));
 
 import { SparkPage } from "./SparkPage";

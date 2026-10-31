@@ -29,6 +29,11 @@
  *   LLM_AUTH_TOKENS   — "port:token,port:token" bearer tokens for LLM servers
  *                       that gate their info endpoints behind an api-key
  *                       (sglang --api-key, vllm --api-key); empty = no auth
+ *   LLM_PROXY         — STAT4 opt-in usage relays, "listen:upstream,…" (e.g.
+ *                       "18434:11434"): the agent forwards each listen port
+ *                       to the local engine port unchanged and meters token
+ *                       usage and stream timing (empty = off)
+ *   LLM_PROXY_BIND    — relay bind address (default 127.0.0.1)
  *   NODE_AGENT_AUDIT_PATH — audit log path (default: <agent>/config/audit.log,
  *                       inside the mounted config volume)
  *   RECIPES_PATH      — path to recipes.json (default: <agent>/config/recipes.json,
@@ -58,6 +63,7 @@ import { collectTelemetry, AGENT_VERSION } from "./telemetry.js";
 import { parseLlmAuthTokens } from "./collectors/llm.js";
 import { createDgxUpdates } from "./updates/dgx.js";
 import { createUpdateScheduler } from "./updates/scheduler.js";
+import { createUsageRelays } from "./proxy/usageRelay.js";
 
 // Catalog seam — re-exported so Worker 1A (telemetry) and 2A/2B (actions) can
 // import from agent/main.js or the catalog modules directly (same code).
@@ -465,6 +471,8 @@ export function createNodeAgent(opts = {}) {
     fireSchedule: (id) => scheduler.fireSchedule(id),
     fullView: () => scheduler.fullView(),
   };
+  // STAT4 (#37): opt-in usage relays; none unless LLM_PROXY is set.
+  const usageRelay = createUsageRelays(opts.env ?? process.env);
   const httpServer = createHttpServer(
     () =>
       collectTelemetry(
@@ -473,7 +481,7 @@ export function createNodeAgent(opts = {}) {
         identity.lanIp,
         identity.llmPorts,
         identity.comfyPort,
-        { llmAuthTokens: identity.llmAuthTokens }
+        { llmAuthTokens: identity.llmAuthTokens, usageRelay }
       ).then((snap) =>
         enrichSnapshot(snap, {
           nodeId: identity.nodeId,
@@ -519,7 +527,7 @@ export function createNodeAgent(opts = {}) {
       // the hourly DGX prober. Timers fire; nothing polls between them.
       scheduler.start();
       dgx.startProber();
-      return httpServer.start().then((addr) => {
+      return usageRelay.start().then((relays) => httpServer.start().then((addr) => {
         console.log(
           JSON.stringify(
             {
@@ -532,6 +540,7 @@ export function createNodeAgent(opts = {}) {
               bind: identity.bind,
               llmPorts: identity.llmPorts,
               comfyPort: identity.comfyPort,
+              llmProxy: relays.map((r) => `${r.address}:${r.port} -> :${r.upstreamPort}`),
               catalogPath: catalog.path,
               recipeCount: catalog.recipes.length,
             },
@@ -540,10 +549,10 @@ export function createNodeAgent(opts = {}) {
           )
         );
         return addr;
-      });
+      }));
     },
     stop() {
-      return httpServer.stop();
+      return Promise.all([httpServer.stop(), usageRelay.stop()]).then(() => undefined);
     },
   };
 }

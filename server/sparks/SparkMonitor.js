@@ -29,22 +29,57 @@ import {
 
 const ONLINE_GRACE_MS = 10000;
 
+// LIC2 clean-room rewrite (docs/specs/unit-history.md §6, docs/specs/roce.md §3):
+// the freshness accessors and the RoCE hook below were re-implemented from spec.
+
+/** How often start() polls each domain (ram rides the CPU timer, memory the bandwidth one). */
+const POLL_CADENCE = new Map([
+  ["gpu", POLL_INTERVAL_GPU],
+  ["cpu", POLL_INTERVAL_CPU],
+  ["ram", POLL_INTERVAL_CPU],
+  ["network", POLL_INTERVAL_NETWORK],
+  ["storage", POLL_INTERVAL_STORAGE],
+  ["memory", POLL_INTERVAL_BANDWIDTH],
+  ["llm", POLL_INTERVAL_LLM],
+  ["comfy", POLL_INTERVAL_COMFY],
+  ["tailscale", POLL_INTERVAL_TAILSCALE],
+  ["hermes", POLL_INTERVAL_HERMES],
+]);
+
+/** Longest the network poll waits for a RoCE read before going on without it. */
+const ROCE_WAIT_MS = 3000;
+
 /**
- * Cadence per polled domain, mirroring this fork's start() scheduling. Kept as a map so
- * pollIntervalMs() and the UnitHistory freshness rule see one source of truth.
+ * True when a poll result is a real reading rather than the collector's
+ * stand-in (zero-filled GPU/CPU, empty RAM/pool, no interfaces, no disks).
+ * An LLM probe list counts even when every engine is down.
  */
-const DOMAIN_POLL_INTERVAL_MS = {
-  gpu: POLL_INTERVAL_GPU,
-  cpu: POLL_INTERVAL_CPU,
-  ram: POLL_INTERVAL_CPU,
-  network: POLL_INTERVAL_NETWORK,
-  storage: POLL_INTERVAL_STORAGE,
-  memory: POLL_INTERVAL_BANDWIDTH,
-  llm: POLL_INTERVAL_LLM,
-  comfy: POLL_INTERVAL_COMFY,
-  tailscale: POLL_INTERVAL_TAILSCALE,
-  hermes: POLL_INTERVAL_HERMES,
-};
+function isRealReading(domain, result) {
+  if (domain === "gpu" || domain === "cpu") return collectionWasSuccessful(result);
+  if (domain === "ram" || domain === "memory") return Number(result?.total) > 0;
+  if (domain === "network") return (result?.interfaces?.length ?? 0) > 0;
+  if (domain === "storage") return Array.isArray(result) && result.length > 0;
+  if (domain === "llm") return Array.isArray(result);
+  return false;
+}
+
+/**
+ * The RoCE reading for this network tick, or undefined when it failed or did
+ * not answer within ROCE_WAIT_MS (a stuck NIC can hang ethtool). The sampler
+ * throttles itself, so calling it every tick is cheap.
+ */
+async function roceWithin(collector, ms) {
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(resolve, ms, undefined);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([collector.collectRoce().then((v) => v, () => undefined), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /**
  * SparkMonitor — one per Spark. Owns collectors + rate state + poll loop.
@@ -126,8 +161,8 @@ export class SparkMonitor {
       tailscale: null,
     };
     this._lastUpdate = {};
-    /** Per domain: timestamp of the last poll that returned real data (UnitHistory freshness). */
-    this._lastSuccess = {};
+    /** domain → when a poll last brought back a real reading (see lastCollectedAt). */
+    this._realAt = Object.create(null);
     this._metricCollectionSuccessful = { gpu: false, cpu: false };
     /** Health rules + their sample-streak state; findings go out in snapshot().health. */
     this._healthEval = new HealthEvaluator();
@@ -488,50 +523,35 @@ export class SparkMonitor {
     }
   }
 
-  /** Whether a poll result carries real data for its domain (not a default/zero-filled stub). */
-  _domainSucceeded(domain, result) {
-    switch (domain) {
-      case "gpu":
-      case "cpu":
-        return collectionWasSuccessful(result);
-      case "ram":
-      case "memory":
-        return Number(result?.total) > 0;
-      case "network":
-        return Array.isArray(result?.interfaces) && result.interfaces.length > 0;
-      case "storage":
-        return Array.isArray(result) && result.length > 0;
-      case "llm":
-        return Array.isArray(result); // an engine that is down is still a successful probe
-      default:
-        return false;
-    }
+  _noteReading(domain, result) {
+    if (isRealReading(domain, result)) this._realAt[domain] = this._lastUpdate[domain];
   }
 
-  /** Epoch ms of the last poll of `domain` that returned real data, or null (never, or not polled). */
+  /** When `domain` last produced a real reading (epoch ms), or null if it never has. */
   lastCollectedAt(domain) {
-    const at = this._lastSuccess[domain];
+    const at = this._realAt[domain];
     return Number.isFinite(at) ? at : null;
   }
 
   /**
-   * Whether the latest completed poll of `domain` returned real data. A failed GPU/CPU read is
-   * zero-filled and every other domain keeps its previous value, so "the poll ran" is not enough.
+   * Did the most recent poll of `domain` produce a real reading? GPU/CPU use
+   * the collector's own success flag; for the rest, the latest poll must be
+   * the one that produced the last real reading (a failed poll keeps the old
+   * value, so "a value is there" proves nothing).
    */
   collectionOk(domain) {
     if (domain === "gpu" || domain === "cpu") return this._metricCollectionSuccessful[domain] === true;
-    const at = this._lastSuccess[domain];
-    return Number.isFinite(at) && at === this._lastUpdate[domain];
+    const at = this.lastCollectedAt(domain);
+    return at !== null && at === this._lastUpdate[domain];
   }
 
   /**
-   * Current cadence (ms) of a polled domain. Fork note: this fork schedules collectors on the
-   * fixed POLL_INTERVAL_* constants (no Settings → Poll interval plumbing yet), so this reads
-   * those; null for domains this monitor does not schedule.
+   * Poll cadence of `domain` in ms, or null for a domain start() does not
+   * schedule. This fork polls on fixed constants (no poll-interval setting).
    */
   pollIntervalMs(domain) {
-    const ms = DOMAIN_POLL_INTERVAL_MS[domain];
-    return Number.isFinite(ms) && ms > 0 ? ms : null;
+    const ms = POLL_CADENCE.get(domain);
+    return ms > 0 ? ms : null;
   }
 
   /** Return a full snapshot of this Spark's metrics. */
@@ -700,13 +720,7 @@ export class SparkMonitor {
           break;
         case "network":
           result = await this.collector.collectNetwork();
-          // RoCE rides the network tick: it throttles itself, never fails the poll and never
-          // holds the network result for more than a moment (a wedged NIC can stall ethtool).
-          // `undefined` = could not read this time: keep the previous value.
-          roce = await Promise.race([
-            this.collector.collectRoce().catch(() => undefined),
-            new Promise((resolve) => setTimeout(() => resolve(undefined), 3000).unref?.()),
-          ]);
+          roce = await roceWithin(this.collector, ROCE_WAIT_MS);
           break;
         case "storage":
           result = await this.collector.collectStorage();
@@ -751,6 +765,7 @@ export class SparkMonitor {
           break;
         case "network":
           this._metrics.network = result;
+          // No answer this tick: the last RoCE reading stays.
           if (roce !== undefined) this._metrics.roce = roce;
           this._updateHealth();
           if (result?.wolMac && this._onWolMac) {
@@ -790,8 +805,8 @@ export class SparkMonitor {
           break;
       }
       this._lastUpdate[domain] = Date.now();
-      if (this._domainSucceeded(domain, result)) this._lastSuccess[domain] = this._lastUpdate[domain];
-      if (domain === "network" && roce?.sampledAt) this._lastSuccess.roce = roce.sampledAt;
+      this._noteReading(domain, result);
+      if (Number.isFinite(roce?.sampledAt)) this._realAt.roce = roce.sampledAt;
     } catch (err) {
       if (
         this._running &&
@@ -820,7 +835,7 @@ export class SparkMonitor {
       if (!this._running || this._runGeneration !== runGeneration) return;
       this._metrics.storage = result;
       this._lastUpdate[domain] = Date.now();
-      if (this._domainSucceeded(domain, result)) this._lastSuccess[domain] = this._lastUpdate[domain];
+      this._noteReading(domain, result);
     } catch (err) {
       console.error(`[SparkMonitor] ${this.spark.id} ${domain} refresh error:`, err.message);
     } finally {

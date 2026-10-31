@@ -137,8 +137,13 @@ export function ingestSnapshots(sparks: SparkSnapshot[], at = Date.now()): void 
         const llm = m.llm[i];
         const port = ports[i];
         const portKey = port != null ? `:${port}` : `:${i}`;
-        pushHistory(`${s.id}:llm${portKey}.tps`, llm.generationTps, at);
-        pushHistory(`${s.id}:llm${portKey}.prefill`, llm.prefillTps, at);
+        // null = the engine does not measure it: leave a gap, never draw 0.
+        if (llm.generationTps != null) {
+          pushHistory(`${s.id}:llm${portKey}.tps`, llm.generationTps, at);
+        }
+        if (llm.prefillTps != null) {
+          pushHistory(`${s.id}:llm${portKey}.prefill`, llm.prefillTps, at);
+        }
         // TTFT is sparse: vLLM reports live TTFT only while serving. It is NOT
         // index-aligned with the tick-dense series above — that is fine because
         // the ttft series feeds only the busy-sample average badge, never the

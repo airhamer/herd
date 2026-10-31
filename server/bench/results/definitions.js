@@ -78,6 +78,35 @@ const LIST = [
       "Mean of Showcase per-stream decode rates; token counts may be estimated from streamed characters when the engine sends no usage, so not comparable with DecodeBench.",
     url: null,
   },
+  // ── Fleet Showcase (SHOW1) ─────────────────────────────────────────
+  {
+    name: "herd.showcase.agg_window_estimated.v1",
+    metric: "agg_window_tps",
+    owner: "herd",
+    comparable: "showcase_agg_window_estimated",
+    formula:
+      "Σ post-first-token tokens of one Showcase wave's ok streams (one Spark, or one fleet lane) / (max t_last_token − min t_first_token); tokens from usage.completion_tokens, else ~4 chars/token, so not comparable with DecodeBench.",
+    url: null,
+  },
+  // ── Showcase concurrent window, usage tokens only (SHOW2, #40) ─────
+  {
+    name: "herd.showcase.agg_window.v1",
+    metric: "agg_window_tps",
+    owner: "herd",
+    comparable: "agg_concurrent_window",
+    formula:
+      "Σ post-first-token tokens (usage.completion_tokens) of a Showcase wave's ok streams / (max t_last_token − min t_first_token); same definition as DecodeBench's concurrent window. Waves with any ~4 chars/token estimate use herd.showcase.agg_window_estimated.v1.",
+    url: null,
+  },
+  {
+    name: "herd.showcase.prefill_ttft.v1",
+    metric: "prefill_tps",
+    owner: "herd",
+    comparable: "showcase_prefill_ttft_mean",
+    formula:
+      "Mean over a lane's Showcase streams of prompt_tokens / TTFT (short prompts, prefix cache allowed; includes queueing), so not comparable with PrefillBench.",
+    url: null,
+  },
   {
     name: "aeon.decode_tps_mean.v1",
     metric: "decode_tps_stream",

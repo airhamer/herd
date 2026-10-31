@@ -225,6 +225,24 @@ export class PrefillBenchManager {
     return this.activeBySpark.size;
   }
 
+  /**
+   * Receive lifecycle notices (issue #32): `fn(job)` with the public job
+   * when a run starts and again when it settles. Pass null to detach.
+   * @param {((job: object) => void) | null} fn
+   */
+  setEventSink(fn) {
+    this._eventSink = typeof fn === "function" ? fn : null;
+  }
+
+  _emitLifecycle(job) {
+    if (!this._eventSink) return;
+    try {
+      this._eventSink(publicJob(job));
+    } catch {
+      /* a sink failure must not affect the run */
+    }
+  }
+
   getJob(benchId) {
     const job = this.jobs.get(benchId);
     if (job) return publicJob(job);
@@ -507,6 +525,7 @@ export class PrefillBenchManager {
     this.jobs.set(benchId, job);
     this.activeBySpark.set(sparkId, benchId);
     this._checkpointActive();
+    this._emitLifecycle(job);
 
     this._runJob(job, lanIp).catch(() => {
       /* errors recorded on job */
@@ -629,6 +648,7 @@ export class PrefillBenchManager {
       this.activeBySpark.delete(job.sparkId);
       this._pushHistory(job);
       this._checkpointActive();
+      this._emitLifecycle(job);
     }
   }
 

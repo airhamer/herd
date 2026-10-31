@@ -10,7 +10,10 @@
  *                                      → ollama (native API). MUST run before
  *      the OpenAI-compat check: ollama also serves /v1/models with
  *      owned_by=library, which would mis-detect as vllm.
- *   3. GET /v1/models (OpenAI-compat)  → vllm (owned_by signal / /metrics)
+ *   3. GET /v1/models (OpenAI-compat)  → vllm by default; STAT3 (#36) names
+ *      ds4, q27, TensorFold, Splash, llama.cpp, Strata, EXL3, FreeToken,
+ *      Locals and TabbyAPI from owned_by, their /metrics series, /health or
+ *      /v1/stats, and ships each engine's raw counters (llmCounters.js).
  * Ollama probe failure (no /api/version) falls through to the vllm path.
  * Unreachable port → entry with backend: null (one entry per port).
  *
@@ -19,6 +22,24 @@
  * Record<"port", token> and the probes for that port carry
  * `Authorization: Bearer <token>` (no token configured → no header).
  */
+
+import {
+  counterMeta,
+  countersFromJson,
+  countersFromPrometheus,
+  engineFromPrometheus,
+  getPromMetric,
+} from "./llmCounters.js";
+
+// STAT2 / STAT3: raw counter exports live in llmCounters.js.
+export {
+  ENGINE_COUNTER_KEYS,
+  ENGINE_COUNTERS_SCHEMA,
+  countersFromJson,
+  countersFromPrometheus,
+  engineCounters,
+  engineFromPrometheus,
+} from "./llmCounters.js";
 
 const TIMEOUT_MS = 1500;
 
@@ -124,6 +145,12 @@ function defaultLlm(port) {
     e2eP95Seconds: null,
     itlP95Seconds: null,
     mtpAcceptanceRate: null,
+    // STAT2 (#35) / STAT3 (#36): raw cumulative engine counters for the
+    // dashboard's windowed metrics (server/metrics/EngineWindow.js), every
+    // key of ENGINE_COUNTER_KEYS present; null when the engine publishes none.
+    engineCounters: null,
+    // STAT3: { schema, source, monoMs, wallMs, bootId } of that counter read.
+    engineCountersMeta: null,
   };
 }
 
@@ -224,28 +251,6 @@ async function fetchSglangLoad(fetchFn, base, headers) {
 }
 
 // ─── Prometheus helpers (ported from sparkDash LlmProbe) ──────────────────
-
-/**
- * Sum all Prometheus series matching `name` (optional label sets).
- * @param {string} body
- * @param {string} name
- * @returns {number | null}
- */
-function getPromMetric(body, name) {
-  const esc = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`^${esc}(?:\\{[^}]*\\})?\\s+([\\d.eE+-]+)\\s*$`, "gm");
-  let sum = 0;
-  let found = false;
-  let m;
-  while ((m = re.exec(body)) !== null) {
-    const v = parseFloat(m[1]);
-    if (Number.isFinite(v)) {
-      sum += v;
-      found = true;
-    }
-  }
-  return found ? sum : null;
-}
 
 /**
  * Parse a Prometheus histogram (cumulative buckets, summed across label sets).
@@ -377,13 +382,194 @@ function applyVllmModel(m, model) {
   m.contextLength = numOrNull(model?.max_model_len ?? model?.context_length);
 }
 
+// ─── STAT3: engine identification and raw counters ────────────────────────
+
+/** @param {unknown} v */
+function isObj(v) {
+  return v != null && typeof v === "object" && !Array.isArray(v);
+}
+
+/** owned_by values that name an engine (case-insensitive). */
+const OWNED_BY_ENGINE = Object.freeze({
+  tensorfold: "tensorfold",
+  freetoken: "freetoken",
+  locals: "locals",
+  splash: "splash",
+  strata: "strata",
+  tabbyapi: "tabbyapi",
+  llamacpp: "llama.cpp",
+  "llama.cpp": "llama.cpp",
+  q27: "q27",
+  exl3: "exl3",
+  "ds4.c": "ds4",
+  ds4: "ds4",
+  vllm: "vllm",
+});
+
+/**
+ * @param {unknown} ownedBy
+ * @returns {string | null}
+ */
+export function backendFromOwnedBy(ownedBy) {
+  if (typeof ownedBy !== "string") return null;
+  return OWNED_BY_ENGINE[ownedBy.trim().toLowerCase()] ?? null;
+}
+
+/** JSON body of a text page, or null when it is not a JSON object. */
+function parseJsonText(txt) {
+  if (typeof txt !== "string" || !/^\s*\{/.test(txt)) return null;
+  try {
+    const v = JSON.parse(txt);
+    return isObj(v) ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Strata JSON /metrics: { live: {...}, totals?: {...} }. */
+function isStrataMetrics(v) {
+  return isObj(v) && isObj(v.live);
+}
+
+/** FreeToken /v1/stats: throughput + requests objects. */
+function looksLikeFreeTokenStats(v) {
+  return isObj(v) && isObj(v.throughput) && isObj(v.requests);
+}
+
+/**
+ * @param {Record<string, any>} m
+ * @param {Record<string, number|null> | null} counters
+ * @param {"prometheus"|"json"} source
+ * @param {object} [clock]
+ */
+function setCounters(m, counters, source, clock) {
+  m.engineCounters = counters;
+  m.engineCountersMeta = counters ? counterMeta(source, clock) : null;
+}
+
+/**
+ * Raw counters (and the levels the same page carries) for an OpenAI-compatible
+ * engine. Pages already fetched for identification are reused.
+ * @param {Record<string, any>} m
+ * @param {{ txt: string|null, pageJson: object|null, health: unknown, stats: unknown,
+ *   fetchFn: Function, base: string, headers: Record<string,string>|null, clock?: object }} ctx
+ */
+async function applyEngineCounters(m, ctx) {
+  const { txt, pageJson, fetchFn, base, headers, clock } = ctx;
+  switch (m.backend) {
+    case "vllm":
+      if (txt) {
+        applyVllmMetrics(m, txt);
+        setCounters(m, countersFromPrometheus("vllm", txt), "prometheus", clock);
+      }
+      return;
+    case "ds4":
+    case "q27":
+    case "splash":
+    case "llama.cpp":
+      if (txt) {
+        applyPromLevels(m, txt);
+        setCounters(m, countersFromPrometheus(m.backend, txt), "prometheus", clock);
+      }
+      return;
+    case "tensorfold": {
+      // CUDA build: JSON totals on /health; native build: tensorfold:* series.
+      const fromHealth = countersFromJson("tensorfold", ctx.health);
+      if (fromHealth) setCounters(m, fromHealth, "json", clock);
+      else if (txt) setCounters(m, countersFromPrometheus("tensorfold", txt), "prometheus", clock);
+      if (txt) applyPromLevels(m, txt);
+      return;
+    }
+    case "exl3": {
+      const h = ctx.health;
+      if (isObj(h)) {
+        if (typeof h.busy === "boolean") m.requestsRunning = h.busy ? 1 : 0;
+        if (m.contextLength == null) m.contextLength = numOrNull(h.context_length);
+        setCounters(m, countersFromJson("exl3", h), "json", clock);
+      }
+      return;
+    }
+    case "strata": {
+      const met = isStrataMetrics(pageJson) ? pageJson : parseJsonText(await fetchText(fetchFn, `${base}/metrics`, headers));
+      if (isObj(met)) {
+        const live = isObj(met.live) ? met.live : {};
+        m.requestsRunning = numOrNull(live.running);
+        m.requestsWaiting = numOrNull(live.waiting) ?? numOrNull(live.queued);
+        setCounters(m, countersFromJson("strata", met), "json", clock);
+      }
+      return;
+    }
+    case "freetoken": {
+      const st = ctx.stats !== undefined ? ctx.stats : await fetchJson(fetchFn, `${base}/v1/stats`, headers);
+      if (looksLikeFreeTokenStats(st)) {
+        m.requestsRunning = numOrNull(st.requests.active);
+        const kv = isObj(st.kv) ? st.kv : {};
+        const used = numOrNull(kv.used_pages);
+        const total = numOrNull(kv.total_pages);
+        m.kvCacheUsage = used != null && total != null && total > 0 ? used / total : null;
+        setCounters(m, countersFromJson("freetoken", st), "json", clock);
+      }
+      return;
+    }
+    case "locals": {
+      const st = await fetchJson(fetchFn, `${base}/stats`, headers);
+      if (isObj(st)) {
+        if (Array.isArray(st.active)) m.requestsRunning = st.active.length;
+        setCounters(m, countersFromJson("locals", st), "json", clock);
+      }
+      return;
+    }
+    default:
+      // tabbyapi: totals need an admin key; label only.
+      return;
+  }
+}
+
+/**
+ * Running / waiting / KV gauges from the non-vLLM Prometheus engines.
+ * @param {Record<string, any>} m
+ * @param {string} txt
+ */
+function applyPromLevels(m, txt) {
+  const g = (n) => getPromMetric(txt, n);
+  switch (m.backend) {
+    case "ds4":
+      m.requestsRunning = g("ds4_requests_inflight");
+      return;
+    case "q27":
+      m.requestsRunning = g("q27_requests_inflight");
+      m.kvCacheUsage = g("q27_kv_usage_perc");
+      m.preemptionsTotal = g("q27_preemptions_total");
+      return;
+    case "splash": {
+      const pre = g("splash_scheduler_prefilling");
+      const dec = g("splash_scheduler_decoding");
+      m.requestsRunning = pre != null || dec != null ? (pre ?? 0) + (dec ?? 0) : null;
+      m.requestsWaiting = g("splash_scheduler_queued");
+      return;
+    }
+    case "llama.cpp":
+      m.requestsRunning = g("llamacpp:requests_processing");
+      m.requestsWaiting = g("llamacpp:requests_deferred");
+      m.kvCacheUsage = g("llamacpp:kv_cache_usage_ratio");
+      return;
+    case "tensorfold": {
+      m.requestsRunning = g("tensorfold:requests_running");
+      m.requestsWaiting = g("tensorfold:requests_waiting");
+      return;
+    }
+    default:
+      return;
+  }
+}
+
 /**
  * Probe one port; always resolves (backend: null when unreachable).
  * @param {number} port
  * @param {(url: string, opts?: object) => Promise<any>} fetchFn
  * @returns {Promise<Record<string, any>>}
  */
-async function probePort(port, fetchFn, headers) {
+async function probePort(port, fetchFn, headers, clock) {
   const base = `http://127.0.0.1:${port}`;
   const m = defaultLlm(port);
   try {
@@ -395,6 +581,13 @@ async function probePort(port, fetchFn, headers) {
       const load = await fetchSglangLoad(fetchFn, base, headers);
       m.requestsRunning = load?.running ?? null;
       m.requestsWaiting = load?.waiting ?? null;
+      // Prometheus is optional on SGLang (--enable-metrics).
+      const txt = await fetchText(fetchFn, `${base}/metrics`, headers);
+      if (txt) {
+        setCounters(m, countersFromPrometheus("sglang", txt), "prometheus", clock);
+        const kv = getPromMetric(txt, "sglang:token_usage") ?? getPromMetric(txt, "sglang_token_usage");
+        if (kv != null && m.kvCacheUsage == null) m.kvCacheUsage = kv;
+      }
       return m;
     }
 
@@ -424,14 +617,37 @@ async function probePort(port, fetchFn, headers) {
       return m;
     }
 
-    // 3. OpenAI-compatible (vLLM)
+    // 3. OpenAI-compatible: vLLM by default; STAT3 tells the other engines
+    //    apart (owned_by, then their /metrics series, then /health or
+    //    /v1/stats) so each ships its own raw counters.
     const models = await fetchJson(fetchFn, `${base}/v1/models`, headers);
     const model = models?.data?.[0];
     if (model && typeof model === "object") {
-      m.backend = "vllm";
       applyVllmModel(m, model);
-      const txt = await fetchText(fetchFn, `${base}/metrics`, headers);
-      if (txt) applyVllmMetrics(m, txt);
+      const page = await fetchText(fetchFn, `${base}/metrics`, headers);
+      const pageJson = parseJsonText(page);
+      const txt = pageJson == null ? page : null;
+      let backend = backendFromOwnedBy(model.owned_by) ?? engineFromPrometheus(txt);
+      if (backend == null && isStrataMetrics(pageJson)) backend = "strata";
+      /** @type {unknown} */
+      let health;
+      if (backend == null || backend === "exl3" || backend === "tensorfold") {
+        health = await fetchJson(fetchFn, `${base}/health`, headers);
+        if (backend == null) {
+          if (isObj(health) && health.service === "strata") backend = "strata";
+          else if (isObj(health) && (health.backend === "exl3" || (health.ok === true && typeof health.busy === "boolean"))) {
+            backend = "exl3";
+          }
+        }
+      }
+      /** @type {unknown} */
+      let stats;
+      if (backend == null || backend === "freetoken") {
+        stats = await fetchJson(fetchFn, `${base}/v1/stats`, headers);
+        if (backend == null && looksLikeFreeTokenStats(stats)) backend = "freetoken";
+      }
+      m.backend = backend ?? "vllm";
+      await applyEngineCounters(m, { txt, pageJson, health, stats, fetchFn, base, headers, clock });
       return m;
     }
 
@@ -446,12 +662,13 @@ async function probePort(port, fetchFn, headers) {
  * @param {number | string | Array<number | string>} ports
  * @param {{
  *   fetch?: (url: string, opts?: object) => Promise<any>,
- *   authTokens?: Record<string, string>
- * }} [opts]
+ *   authTokens?: Record<string, string>,
+ *   clock?: { monoNow?: () => number, wallNow?: () => number, bootId?: string }
+ * }} [opts]  `clock` is a test hook for engineCountersMeta.
  * @returns {Promise<Array<Record<string, any>>>} one entry per port; [] when no valid port
  */
-export async function collectLlm(ports, { fetch: fetchFn = fetch, authTokens = null } = {}) {
+export async function collectLlm(ports, { fetch: fetchFn = fetch, authTokens = null, clock = undefined } = {}) {
   const portList = normalizeLlmPorts(ports);
   if (portList.length === 0) return [];
-  return Promise.all(portList.map((port) => probePort(port, fetchFn, portHeaders(authTokens, port))));
+  return Promise.all(portList.map((port) => probePort(port, fetchFn, portHeaders(authTokens, port), clock)));
 }

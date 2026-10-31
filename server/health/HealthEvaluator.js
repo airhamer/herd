@@ -172,34 +172,49 @@ export class HealthEvaluator {
 }
 
 
-// RoCE rules (see collectors/roce.js). Kept out of the class body above for readability.
-const ROCE_LOSS_STREAK = 3;
-const ROCE_ETH_LOSS_STREAK = 2;
+// RoCE rules (docs/specs/roce.md §4; LIC2 clean-room rewrite). The sampler in
+// collectors/roce.js already tracks the streaks; these rules only threshold them.
+const ROCE_RDMA_LOSS_RUN = 3;
+const ROCE_PORT_LOSS_RUN = 2;
 
-HealthEvaluator.prototype._roce = function roce(roce, out) {
-  const devices = Array.isArray(roce?.devices) ? roce.devices : [];
-  // A port that was up and is not any more. Ports that never came up (uncabled) are not a finding.
-  const down = devices.filter((d) => d.everActive && !d.active);
-  if (down.length > 0) {
+const roceLabel = (d) => d.netdev ?? d.name;
+
+HealthEvaluator.prototype._roce = function evaluateRoce(roce, out) {
+  if (!Array.isArray(roce?.devices) || roce.devices.length === 0) return;
+
+  // Only a port seen ACTIVE before counts as "went down"; uncabled ports never were.
+  const lost = roce.devices.filter((d) => d.everActive && !d.active);
+  if (lost.length) {
+    const what = lost.map((d) => {
+      const phys = d.physState ? ` (${d.physState})` : "";
+      return `${roceLabel(d)}: ${d.state ?? "unknown"}${phys}`;
+    });
     out.push({
       id: "roce-link",
       severity: "critical",
-      title: down.length === 1 ? "A RoCE link went down" : `${down.length} RoCE links went down`,
-      detail: down.map((d) => `${d.netdev ?? d.name}: ${d.state ?? "unknown"}${d.physState ? ` (${d.physState})` : ""}`).join(", ") + ".",
-      hint: "Check the cable, the transceiver and the switch port. Tensor-parallel and NCCL traffic over this port stalls or falls back to another path.",
+      title: lost.length > 1 ? `${lost.length} RoCE links went down` : "A RoCE link went down",
+      detail: `${what.join(", ")}.`,
+      hint: "Look at the cable, the transceiver and the switch port. RDMA/NCCL traffic on this port stops or moves to a slower path until it is back.",
     });
   }
-  // Loss counters that keep rising across several samples in a row.
-  const lossy = devices.filter(
-    (d) => d.active && ((num(d.loss?.streak) ?? 0) >= ROCE_LOSS_STREAK || (num(d.loss?.ethStreak) ?? 0) >= ROCE_ETH_LOSS_STREAK)
-  );
-  if (lossy.length > 0) {
+
+  const dropping = roce.devices.filter((d) => {
+    if (!d.active) return false;
+    const rdmaRun = num(d.loss?.streak) ?? 0;
+    const portRun = num(d.loss?.ethStreak) ?? 0;
+    return rdmaRun >= ROCE_RDMA_LOSS_RUN || portRun >= ROCE_PORT_LOSS_RUN;
+  });
+  if (dropping.length) {
+    const what = dropping.map((d) => {
+      const counters = Array.isArray(d.loss?.rising) && d.loss.rising.length ? d.loss.rising.join(", ") : "counters rising";
+      return `${roceLabel(d)}: ${counters}`;
+    });
     out.push({
       id: "roce-loss",
       severity: "warn",
       title: "RoCE is dropping packets",
-      detail: lossy.map((d) => `${d.netdev ?? d.name}: ${(d.loss.rising ?? []).join(", ") || "counters rising"}`).join("; ") + ".",
-      hint: "Rising out_of_buffer, sequence or ack-timeout errors point at congestion or a lossless-network (PFC/ECN) misconfiguration. Compare the PFC and trust settings on every Spark and on the switch.",
+      detail: `${what.join("; ")}.`,
+      hint: "Loss counters that keep climbing usually mean congestion or a lossless-fabric setup that does not match (PFC, ECN, trust mode). Check those settings on each unit and on the switch.",
     });
   }
 };

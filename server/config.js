@@ -21,15 +21,20 @@ const LLM_DAILY_JSON_PATH =
 /** Rolling fleet energy estimates (gitignored; written atomically at mode 0600). */
 const FLEET_ENERGY_JSON_PATH =
   process.env.FLEET_ENERGY_JSON_PATH || path.join(ROOT, "config", "fleet-energy.json");
-/** Permanent monthly energy roll-up (gitignored; survives resets and fleet changes). */
-const FLEET_ENERGY_MONTHLY_JSON_PATH =
-  process.env.FLEET_ENERGY_MONTHLY_JSON_PATH ||
-  path.join(ROOT, "config", "fleet-energy-monthly.json");
-// Opt-in 48 h / 30 d unit history (Settings → metricsHistory); never written while it is off.
+// Long-run monthly energy totals; outlives the 31-day window (docs/specs/monthly-energy.md).
+const FLEET_ENERGY_MONTHLY_JSON_PATH = process.env.FLEET_ENERGY_MONTHLY_JSON_PATH || path.join(ROOT, "config", "fleet-energy-monthly.json");
+// FLEET3 (#38): LLM token ledger (hourly 72 h, daily 35 d, all-time per model and endpoint).
+const LLM_TOKEN_TOTALS_JSON_PATH =
+  process.env.LLM_TOKEN_TOTALS_JSON_PATH || path.join(ROOT, "config", "llm-token-totals.json");
+// Bucketed unit history; only written while settings.metricsHistory is on.
+/** SHOW1 (#39): finished fleet Prompt Showcase sessions (bounded). */
+const FLEET_SHOWCASE_HISTORY_PATH =
+  process.env.FLEET_SHOWCASE_HISTORY_PATH || path.join(ROOT, "config", "fleet-showcase-history.json");
+
 const METRICS_HISTORY_JSON_PATH =
   process.env.METRICS_HISTORY_JSON_PATH ||
   path.join(ROOT, "config", "metrics-history.json");
-/** Alert rule switches, channel settings (no URLs — those are in the secrets store) and the firing set; mode 0600. */
+/** Alert state (mode 0600): which rules are on, per-channel options and what is firing. Webhook URLs live in the secrets store instead. */
 const ALERTS_JSON_PATH =
   process.env.ALERTS_JSON_PATH || path.join(ROOT, "config", "alerts.json");
 
@@ -122,6 +127,8 @@ export {
   LLM_DAILY_JSON_PATH,
   FLEET_ENERGY_JSON_PATH,
   FLEET_ENERGY_MONTHLY_JSON_PATH,
+  LLM_TOKEN_TOTALS_JSON_PATH,
+  FLEET_SHOWCASE_HISTORY_PATH,
   METRICS_HISTORY_JSON_PATH,
   ALERTS_JSON_PATH,
   LLM_PROBE_TIMEOUT_MS,

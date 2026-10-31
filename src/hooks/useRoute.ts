@@ -1,14 +1,18 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { OVERVIEW_ID } from "../constants";
 
-export type RouteMode = "app" | "showcase";
+export type RouteMode = "app" | "showcase" | "fleet-showcase";
 export interface AppRoute {
   mode: RouteMode;
   /** Spark id for showcase mode */
   showcaseSparkId: string | null;
 }
 
-function parsePath(pathname: string): AppRoute {
+export function parsePath(pathname: string): AppRoute {
+  // SHOW1: fleet-wide showcase, full screen like the per-Spark one.
+  if (/^\/fleet\/showcase\/?$/.test(pathname)) {
+    return { mode: "fleet-showcase", showcaseSparkId: null };
+  }
   const showcase = pathname.match(/^\/showcase\/([^/]+)/);
   if (showcase) {
     return {
@@ -42,6 +46,7 @@ export function useAppRoute(): AppRoute {
  *   /             → Overview
  *   /spark/:id    → Spark detail page
  *   /showcase/:id → full-screen showcase (handled separately via useAppRoute)
+ *   /fleet/showcase → full-screen fleet showcase (also via useAppRoute)
  *
  * Call `navigate(id)` to switch views — it updates both the URL and
  * the internal activeId state. Back/forward buttons work via popstate.
@@ -57,7 +62,7 @@ export function useRoute(
     initialised.current = true;
 
     const path = window.location.pathname;
-    if (path.startsWith("/showcase/")) return;
+    if (path.startsWith("/showcase/") || path.startsWith("/fleet/showcase")) return;
 
     const match = path.match(/^\/spark\/([^/]+)/);
     if (match) {
@@ -71,7 +76,7 @@ export function useRoute(
   useEffect(() => {
     const handler = () => {
       const path = window.location.pathname;
-      if (path.startsWith("/showcase/")) return;
+      if (path.startsWith("/showcase/") || path.startsWith("/fleet/showcase")) return;
       const match = path.match(/^\/spark\/([^/]+)/);
       setActiveId(match ? match[1] : OVERVIEW_ID);
     };
@@ -97,6 +102,7 @@ export function useRoute(
 // URL scheme (independent of the spark tab bar):
 //   /fleet                → fleet overview
 //   /topology             → topology / RoCE diagram
+//   /activity             → fleet activity log
 //   /node/:id             → node detail
 //   /node/:id/services    → service manager (start/stop/switch)
 //   /node/:id/requests    → requests visualization
@@ -106,6 +112,7 @@ export type FleetView =
   | { page: "topology" }
   | { page: "updates" }
   | { page: "components" }
+  | { page: "activity" }
   | { page: "node"; nodeId: string }
   | { page: "node-services"; nodeId: string }
   | { page: "node-requests"; nodeId: string };
@@ -120,6 +127,8 @@ export function fleetViewToPath(v: FleetView): string {
       return "/updates";
     case "components":
       return "/components";
+    case "activity":
+      return "/activity";
     case "node":
       return `/node/${encodeURIComponent(v.nodeId)}`;
     case "node-services":
@@ -134,6 +143,7 @@ export function parseFleetPath(pathname: string): FleetView | null {
   if (pathname === "/topology") return { page: "topology" };
   if (pathname === "/updates") return { page: "updates" };
   if (pathname === "/components") return { page: "components" };
+  if (pathname === "/activity") return { page: "activity" };
   const m = pathname.match(/^\/node\/([^/]+)(?:\/(services|requests))?$/);
   if (!m) return null;
   const nodeId = decodeURIComponent(m[1]);

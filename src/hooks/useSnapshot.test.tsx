@@ -2,6 +2,7 @@ import { act } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { _resetStore, getMetricHistorySamples } from "./metricsStore";
 import { useSnapshot } from "./useSnapshot";
+import { subscribeActivity } from "./activityBus";
 import { makeSpark } from "../testing/fixtures";
 import { flush, render } from "../testing/render";
 
@@ -100,5 +101,25 @@ describe("useSnapshot connection lifecycle", () => {
     await flush();
     expect(readProbe()).toMatchObject({ connected: true, error: null });
     expect(readProbe().last).toBeGreaterThanOrEqual(50_000);
+  });
+
+  it("hands activity pushes to the activity bus without flagging the telemetry", async () => {
+    const seen: number[] = [];
+    const off = subscribeActivity((e) => seen.push(e.id));
+    render(<Probe />);
+    const socket = MockSocket.instances[0];
+    act(() => socket.open());
+    act(() => socket.emit({ type: "snapshot", generatedAt: 50_000, refreshInterval: 2000, sparks: [makeSpark("alpha")] }));
+    act(() =>
+      socket.emit({
+        type: "event",
+        event: { id: 9, ts: 50_000, type: "spark.offline", severity: "warn", sparkId: "alpha", sparkName: "alpha", message: "alpha went offline" },
+      }),
+    );
+    act(() => socket.emit({ type: "event", event: { id: "bogus" } }));
+    await flush();
+    off();
+    expect(seen).toEqual([9]);
+    expect(readProbe()).toMatchObject({ connected: true, error: null, count: 1 });
   });
 });
