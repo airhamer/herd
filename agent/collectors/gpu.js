@@ -31,12 +31,28 @@ const APPS_QUERY =
  * @param {{ exec?: (cmd: string) => Promise<string>, readFile?: (path: string) => Promise<string>, smiPath?: string }} [deps]
  * @returns {Promise<{temperature:number, usage:number, powerDraw:number, powerLimit:number, vramUsedMB:number, vramTotalMB:number, vramPercentage:number, vramAvailableMB:number, processes:Array<{pid:number, name:string, vramMB:number}>, gpuAllocMB:number, unifiedMemory:boolean} | null>}
  */
-export async function collectGpu({ exec = runShell, readFile = readTextFile, smiPath = "nvidia-smi" } = {}) {
+export async function collectGpu({
+  exec = runShell,
+  readFile = readTextFile,
+  smiPath = "nvidia-smi",
+  readDir = (dir) => fs.readdirSync(dir),
+} = {}) {
   // Try NVIDIA
   try {
     const out = await exec(`${smiPath} ${GPU_QUERY} 2>/dev/null`);
-    const line = out.split("\n").map((l) => l.trim()).filter(Boolean)[0] || "";
+    const gpuLines = out.split("\n").map((l) => l.trim()).filter(Boolean);
+    const line = gpuLines[0] || "";
     const p = line.split(",").map((s) => s.trim());
+    // Issue #33: one line per GPU; energy needs the whole host, not GPU 0.
+    let powerDrawTotal = 0;
+    let gpuCount = 0;
+    for (const l of gpuLines) {
+      const fields = l.split(",").map((s) => s.trim());
+      if (fields.length < 6) continue;
+      gpuCount += 1;
+      const draw = parseSmiNumber(fields[2]);
+      if (draw != null && draw >= 0) powerDrawTotal += draw;
+    }
     if (p.length >= 6) {
       const temperature = parseSmiNumber(p[0]);
       const usage = parseSmiNumber(p[1]);
@@ -105,6 +121,9 @@ export async function collectGpu({ exec = runShell, readFile = readTextFile, smi
           processes,
           gpuAllocMB: Math.round(appsSumMB),
           unifiedMemory: !(smiTotal != null && smiTotal > 0),
+          powerDrawTotal: Math.round(powerDrawTotal * 100) / 100,
+          gpuCount: Math.max(1, gpuCount),
+          powerSource: "nvidia-smi",
         };
       }
     }
@@ -172,7 +191,26 @@ export async function collectGpu({ exec = runShell, readFile = readTextFile, smi
           } catch {}
         }
 
-        cards.push({ card: i, usage: u, vramTotalMB, vramUsedMB, temperature });
+        // Board power (issue #33): amdgpu hwmon power1_average, else power1_input (µW).
+        let powerW = null;
+        try {
+          const hwmonBase = `/sys/class/drm/card${i}/device/hwmon`;
+          const names = readDir(hwmonBase);
+          for (const h of names) {
+            for (const file of ["power1_average", "power1_input"]) {
+              try {
+                const uw = parseInt((await readFile(`${hwmonBase}/${h}/${file}`)).trim(), 10);
+                if (Number.isFinite(uw) && uw >= 0) {
+                  powerW = uw / 1e6;
+                  break;
+                }
+              } catch {}
+            }
+            if (powerW != null) break;
+          }
+        } catch {}
+
+        cards.push({ card: i, usage: u, vramTotalMB, vramUsedMB, temperature, powerW });
       } catch {}
     }
     if (cards.length === 0) throw new Error("no amd cards");
@@ -180,6 +218,8 @@ export async function collectGpu({ exec = runShell, readFile = readTextFile, smi
     // Prefer largest VRAM (the RX9060xt discrete)
     cards.sort((a, b) => b.vramTotalMB - a.vramTotalMB);
     const best = cards[0];
+    const powered = cards.filter((c) => c.powerW != null);
+    const amdPowerTotal = powered.reduce((sum, c) => sum + c.powerW, 0);
 
     const vramPercentage = best.vramTotalMB > 0 ? Math.min(100, Math.round((best.vramUsedMB / best.vramTotalMB) * 100)) : 0;
     let memAvailMB = null;
@@ -193,8 +233,13 @@ export async function collectGpu({ exec = runShell, readFile = readTextFile, smi
     return {
       temperature: best.temperature,
       usage: Math.min(100, Math.max(0, best.usage)),
-      powerDraw: 0,
+      powerDraw: best.powerW != null ? Math.round(best.powerW * 10) / 10 : 0,
       powerLimit: 0,
+      // Issue #33: energy reads the sum over every card that reports power.
+      ...(powered.length
+        ? { powerDrawTotal: Math.round(amdPowerTotal * 100) / 100, powerSource: "amd-hwmon" }
+        : {}),
+      gpuCount: cards.length,
       vramUsedMB: best.vramUsedMB,
       vramTotalMB: best.vramTotalMB,
       vramPercentage,

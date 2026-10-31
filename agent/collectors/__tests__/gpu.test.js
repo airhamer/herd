@@ -43,6 +43,9 @@ test("gpu: parses nvidia-smi csv into GpuMetrics (ground truth)", async () => {
     ],
     gpuAllocMB: 5120,
     unifiedMemory: false, // nvidia-smi reports its own memory.total
+    powerDrawTotal: 12.5,
+    gpuCount: 1,
+    powerSource: "nvidia-smi",
   });
 });
 
@@ -115,4 +118,80 @@ test("gpu: [N/A] temperature still returns metrics when usage is valid", async (
   assert.notEqual(g, null);
   assert.equal(g.usage, 15);
   assert.equal(g.temperature, null);
+});
+
+// ─── Issue #33: per-host power for Fleet energy ─────────────────────────────
+
+test("gpu: multi-GPU nvidia-smi sums power across every GPU", async () => {
+  const g = await collectGpu({
+    exec: mockExec(
+      ["40, 10, 300.5, 450, 1000, 81920", "41, 20, 250, 450, 1000, 81920", "39, 0, 60.25, 450, 0, 81920"].join("\n"),
+      ""
+    ),
+    readFile,
+  });
+  assert.equal(g.powerDraw, 300.5, "headline stays GPU 0");
+  assert.equal(g.powerDrawTotal, 610.75);
+  assert.equal(g.gpuCount, 3);
+  assert.equal(g.powerSource, "nvidia-smi");
+});
+
+/** sysfs for two AMD cards; card1 has no power sensor. */
+function amdFs({ card0Average = "95000000", card1Power = null } = {}) {
+  const files = {
+    "/proc/meminfo": MEMINFO,
+    "/sys/class/drm/card0/device/gpu_busy_percent": "37\n",
+    "/sys/class/drm/card0/device/mem_info_vram_total": String(16 * 1024 * 1024 * 1024),
+    "/sys/class/drm/card0/device/mem_info_vram_used": String(4 * 1024 * 1024 * 1024),
+    "/sys/class/drm/card0/device/hwmon/hwmon3/temp1_input": "61000",
+    "/sys/class/drm/card1/device/gpu_busy_percent": "2\n",
+    "/sys/class/drm/card1/device/mem_info_vram_total": String(512 * 1024 * 1024),
+    "/sys/class/drm/card1/device/mem_info_vram_used": String(64 * 1024 * 1024),
+  };
+  if (card0Average != null) files["/sys/class/drm/card0/device/hwmon/hwmon3/power1_average"] = card0Average;
+  else files["/sys/class/drm/card0/device/hwmon/hwmon3/power1_input"] = "88000000";
+  if (card1Power != null) files["/sys/class/drm/card1/device/hwmon/hwmon4/power1_input"] = card1Power;
+  return {
+    readFile: async (p) => {
+      if (p in files) return files[p];
+      throw new Error(`ENOENT: ${p}`);
+    },
+    readDir: (dir) => {
+      if (dir === "/sys/class/drm/card0/device/hwmon") return ["hwmon3"];
+      if (dir === "/sys/class/drm/card1/device/hwmon") return ["hwmon4"];
+      throw new Error(`ENOENT: ${dir}`);
+    },
+  };
+}
+
+const noNvidia = async () => {
+  throw new Error("nvidia-smi: not found");
+};
+
+test("gpu: AMD hwmon power1_average (µW) becomes measured board power", async () => {
+  const g = await collectGpu({ exec: noNvidia, ...amdFs() });
+  assert.equal(g.usage, 37);
+  assert.equal(g.powerDraw, 95);
+  assert.equal(g.powerDrawTotal, 95);
+  assert.equal(g.powerSource, "amd-hwmon");
+  assert.equal(g.gpuCount, 2);
+});
+
+test("gpu: AMD falls back to power1_input and sums cards that report", async () => {
+  const g = await collectGpu({ exec: noNvidia, ...amdFs({ card0Average: null, card1Power: "7500000" }) });
+  assert.equal(g.powerDraw, 88);
+  assert.equal(g.powerDrawTotal, 95.5);
+  assert.equal(g.powerSource, "amd-hwmon");
+});
+
+test("gpu: AMD without any power sensor reports no power source", async () => {
+  const fsMock = amdFs();
+  const g = await collectGpu({
+    exec: noNvidia,
+    readFile: async (p) => (p.endsWith("power1_average") ? Promise.reject(new Error("ENOENT")) : fsMock.readFile(p)),
+    readDir: fsMock.readDir,
+  });
+  assert.equal(g.powerDraw, 0);
+  assert.equal(g.powerDrawTotal, undefined);
+  assert.equal(g.powerSource, undefined);
 });

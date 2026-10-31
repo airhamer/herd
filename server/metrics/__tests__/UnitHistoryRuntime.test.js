@@ -1,261 +1,239 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import express from "express";
+import { COLLECTION_SUCCESS } from "../../collectors/SystemCollector.js";
+import { SparkMonitor } from "../../sparks/SparkMonitor.js";
 import { UnitHistory } from "../UnitHistory.js";
 import {
   HISTORY_SAMPLE_INTERVAL_MS,
   createUnitHistoryRuntime,
   monitorFreshness,
+  recordGpuSample,
   registerUnitHistoryRoutes,
   staleWindowMs,
 } from "../UnitHistoryRuntime.js";
-import { SparkMonitor } from "../../sparks/SparkMonitor.js";
-import { COLLECTION_SUCCESS } from "../../collectors/SystemCollector.js";
 
-const T0 = Date.UTC(2026, 9, 1, 0, 0, 0);
+const S = 1_000;
+const H = 3_600 * S;
+const D = 24 * H;
+const START = Date.UTC(2026, 5, 1);
 
-function tmpDir(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sparkdash-unithist-rt-"));
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  return dir;
+const okTag = (obj) => Object.defineProperty(obj, COLLECTION_SUCCESS, { value: true, enumerable: false });
+
+/** A monitor double: one collection time / outcome / cadence for every domain. */
+function stubMonitor({ at = START, ok = true, cadence = 2 * S } = {}) {
+  return { lastCollectedAt: () => at, collectionOk: () => ok, pollIntervalMs: () => cadence };
 }
 
-function tagged(result) {
-  Object.defineProperty(result, COLLECTION_SUCCESS, { value: true, enumerable: false });
-  return result;
-}
-
-function snapshot(id, { online = true, usage = 50 } = {}) {
+function snapshot(id, extra = {}) {
   return {
     id,
     kind: "spark",
-    online,
+    online: true,
     llmPorts: [],
     metrics: {
-      gpu: tagged({ temperature: 45, usage, power: { draw: 20, limit: 100 }, vram: { used: 1, total: 100, available: 50 } }),
-      cpu: { usage: 10, temperature: 40, draw: 5, tdp: 65 },
-      network: { interfaces: [] },
-      llm: [],
+      gpu: okTag({ usage: 70, temperature: 60, power: { draw: 50, limit: 200 }, vram: { used: 1, total: 10, available: 9 } }),
+      cpu: { usage: 9, temperature: 45, draw: 4, tdp: 60 },
     },
+    ...extra,
   };
 }
 
-/**
- * A monitor exposing only SparkMonitor's public freshness accessors: every domain was
- * collected at `collectedAt` and succeeded, polled every `intervalMs`.
- */
-function fakeMonitor({ collectedAt, intervalMs = 2000, ok = true }) {
-  return {
-    lastCollectedAt: () => collectedAt,
-    collectionOk: () => ok,
-    pollIntervalMs: () => intervalMs,
-  };
-}
-
-/** Fake timers: collect the callbacks so a test can fire them by hand. */
-function fakeTimers() {
-  const timers = [];
-  return {
-    setIntervalFn: (fn, ms) => {
-      const timer = { fn, ms, cleared: false };
-      timers.push(timer);
-      return timer;
-    },
-    clearIntervalFn: (timer) => {
-      timer.cleared = true;
-    },
-    fire: () => timers.filter((t) => t.ms === HISTORY_SAMPLE_INTERVAL_MS && !t.cleared).forEach((t) => t.fn()),
-    timers,
-  };
-}
-
-function setup(t, { enabled = false, snapshots = [snapshot("a")], monitor } = {}) {
-  const dir = tmpDir(t);
-  let clock = T0;
-  const state = { enabled, snapshots };
-  const store = new UnitHistory({
-    file: path.join(dir, "gpu-history.json"),
-    tiersFile: path.join(dir, "metrics-history.json"),
-    now: () => clock,
-    logError: () => {},
-  });
-  t.after(() => store.stop());
-  const timers = fakeTimers();
+/** Runtime wired to a manual clock and a captured interval. */
+function rig({ enabled = false, snaps = [snapshot("u")], monitors } = {}) {
+  const clock = { at: START };
+  const flags = { enabled };
+  const store = new UnitHistory({ now: () => clock.at, logError: () => {} });
+  const intervals = [];
   const runtime = createUnitHistoryRuntime({
     store,
-    orderedSnapshots: () => state.snapshots,
-    monitors: { get: () => monitor ?? fakeMonitor({ collectedAt: clock }) },
-    isEnabled: () => state.enabled,
-    now: () => clock,
-    ...timers,
-    logError: () => {},
-  });
-  return {
-    dir,
-    state,
-    store,
-    runtime,
-    timers,
-    advance: (ms) => {
-      clock += ms;
+    orderedSnapshots: () => snaps,
+    monitors: monitors ?? new Map(snaps.map((s) => [s.id, stubMonitor({ at: START })])),
+    isEnabled: () => flags.enabled,
+    now: () => clock.at,
+    setIntervalFn: (fn, ms) => {
+      intervals.push({ fn, ms, cleared: false });
+      return intervals.at(-1);
     },
-  };
+    clearIntervalFn: (h) => {
+      h.cleared = true;
+    },
+  });
+  return { clock, flags, store, runtime, intervals };
 }
 
-test("the stale window follows the monitor's current poll interval, never under 15 s", () => {
-  assert.equal(staleWindowMs(fakeMonitor({ intervalMs: 2000 }), "gpu"), 15_000);
-  assert.equal(staleWindowMs(fakeMonitor({ intervalMs: 10_000 }), "gpu"), 30_000);
-  assert.equal(staleWindowMs(fakeMonitor({ intervalMs: 60_000 }), "gpu"), 180_000);
-  assert.equal(staleWindowMs(fakeMonitor({ intervalMs: null }), "storage"), 15_000);
-  assert.equal(staleWindowMs(null, "gpu"), 15_000);
+test("stale window: three poll intervals, never below 15 s", () => {
+  assert.equal(staleWindowMs(stubMonitor({ cadence: 1 * S }), "gpu"), 15 * S);
+  assert.equal(staleWindowMs(stubMonitor({ cadence: 20 * S }), "gpu"), 60 * S);
+  assert.equal(staleWindowMs(stubMonitor({ cadence: null }), "x"), 15 * S);
+  assert.equal(staleWindowMs(undefined, "gpu"), 15 * S);
 });
 
-test("freshness: recent real data only, judged by the user's poll interval", () => {
-  const at = T0 + 25_000;
-  // A 10 s poll interval: a reading 25 s old is within 3 × 10 s.
-  assert.equal(monitorFreshness(fakeMonitor({ collectedAt: T0, intervalMs: 10_000 }), at)("gpu"), true);
-  // At the default 2 s the same reading is stale (window floors at 15 s).
-  assert.equal(monitorFreshness(fakeMonitor({ collectedAt: T0, intervalMs: 2000 }), at)("gpu"), false);
-  assert.equal(monitorFreshness(fakeMonitor({ collectedAt: at, ok: false }), at)("gpu"), false, "failed poll");
-  assert.equal(monitorFreshness(fakeMonitor({ collectedAt: null }), at)("llm"), false, "never collected");
-  assert.equal(monitorFreshness(undefined, at)("gpu"), false);
+test("freshness needs an ok latest poll and a recent real reading", () => {
+  const fresh = (m, at) => monitorFreshness(m, at)("gpu");
+  assert.equal(fresh(stubMonitor({ cadence: 20 * S }), START + 50 * S), true);
+  assert.equal(fresh(stubMonitor({ cadence: 20 * S }), START + 61 * S), false);
+  assert.equal(fresh(stubMonitor({ cadence: 2 * S }), START + 16 * S), false);
+  assert.equal(fresh(stubMonitor({ ok: false }), START), false);
+  assert.equal(fresh(stubMonitor({ at: null }), START), false);
+  assert.equal(fresh(null, START), false);
 });
 
-test("freshness reads a real SparkMonitor through its public accessors (fork: fixed cadence)", async () => {
-  const monitor = new SparkMonitor({ id: "u", name: "u", lanIp: "127.0.0.1", isLocal: true, llmMonitoring: false });
-  monitor.collector.collectRam = async () => ({ used: 10, total: 100, percentage: 10 });
+test("freshness works against a real SparkMonitor", async () => {
+  const monitor = new SparkMonitor({ id: "m", name: "m", lanIp: "127.0.0.1", isLocal: true, llmMonitoring: false });
+  monitor.collector.collectRam = async () => ({ used: 2, total: 16, percentage: 12 });
   monitor._running = true;
   await monitor._pollDomain("ram");
   monitor._running = false;
   const at = monitor.lastCollectedAt("ram");
-  assert.equal(monitorFreshness(monitor, at + 14_000)("ram"), true);
-  assert.equal(monitorFreshness(monitor, at + 20_000)("ram"), false, "3 × 2 s floors at 15 s");
-  // Fork deviation: this fork schedules on the fixed POLL_INTERVAL_* constants (no
-  // setPollInterval / Settings → Poll interval plumbing), so the cadence is constant.
-  assert.equal(monitor.pollIntervalMs("ram"), 2000);
-  assert.equal(monitor.pollIntervalMs("bogus"), null);
-  assert.equal(monitor.collectionOk("ram"), true);
-  assert.equal(monitorFreshness(monitor, at)("gpu"), false, "never collected");
+  assert.equal(monitorFreshness(monitor, at + 10 * S)("ram"), true);
+  assert.equal(monitorFreshness(monitor, at + 16 * S)("ram"), false);
+  assert.equal(monitorFreshness(monitor, at)("storage"), false, "never polled");
 });
 
-test("off by default: the GPU tier is sampled as before, the bucketed tiers are not", (t) => {
-  const { store, runtime, timers, advance, dir } = setup(t);
-  runtime.start();
-  timers.fire();
-  advance(2_000);
-  timers.fire();
-  assert.equal(store.get("a").t.length, 2);
-  assert.deepEqual(store.query("a", "1h", T0 + 2_000).points, []);
-  runtime.stop();
-  assert.ok(fs.existsSync(path.join(dir, "gpu-history.json")));
-  assert.equal(fs.existsSync(path.join(dir, "metrics-history.json")), false, "never written while off");
+test("GPU readings need a successful collection and honour availability flags", () => {
+  const store = new UnitHistory({ now: () => START, minGapMs: 0, logError: () => {} });
+  const snap = snapshot("u");
+  assert.equal(recordGpuSample(store, snap, START), true);
+  assert.deepEqual(store.get("u"), { t: [START], u: [70], c: [60], p: [25], gpus: [] });
+  const untagged = snapshot("v", { metrics: { gpu: { usage: 1, temperature: 1, power: { draw: 1, limit: 1 } } } });
+  assert.equal(recordGpuSample(store, untagged, START), false);
+  assert.equal(recordGpuSample(store, { ...snap, online: false }, START + S), false);
+  const masked = snapshot("w");
+  masked.metrics.gpu.metricAvailability = { temperature: false, powerLimit: false };
+  recordGpuSample(store, masked, START);
+  assert.deepEqual(store.get("w"), { t: [START], u: [70], c: [null], p: [null], gpus: [] });
 });
 
-test("turning the setting on records from the next tick, and off stops it", (t) => {
-  const { state, store, runtime, timers, advance } = setup(t);
-  runtime.start();
-  timers.fire();
-  state.enabled = true;
-  advance(2_000);
-  timers.fire();
-  state.enabled = false;
-  advance(2_000);
-  timers.fire();
-  const points = store.query("a", "1h", T0 + 4_000).points;
-  assert.equal(points.length, 1);
-  assert.equal(points[0].gpuUtil.avg, 50);
-  assert.equal(store.get("a").t.length, 3, "GPU tier unaffected by the setting");
+test("by default only the GPU raw series is sampled", () => {
+  const { store, runtime, clock } = rig();
+  runtime.sample();
+  clock.at += 2 * S;
+  runtime.sample();
+  assert.equal(store.get("u").t.length, 2);
+  assert.deepEqual(store.query("u", "1h", clock.at).points, []);
 });
 
-test("an offline unit, or one whose collections went stale, records gaps", (t) => {
-  const stale = fakeMonitor({ collectedAt: T0 - 60_000 });
-  const { state, store, runtime, timers } = setup(t, { enabled: true, monitor: stale });
-  state.snapshots = [snapshot("a"), snapshot("b", { online: false })];
-  runtime.start();
-  timers.fire();
-  assert.deepEqual(store.query("a", "1h", T0).points, [], "stale for 60 s at a 2 s interval");
-  assert.deepEqual(store.query("b", "1h", T0).points, []);
-  assert.equal(store.get("b").t.length, 0, "offline: no GPU sample either");
+test("the setting is read every tick: on records, off stops", () => {
+  const { store, runtime, clock, flags } = rig();
+  runtime.sample();
+  flags.enabled = true;
+  clock.at += 2 * S;
+  runtime.sample();
+  flags.enabled = false;
+  clock.at += 2 * S;
+  runtime.sample();
+  const [point] = store.query("u", "1h", clock.at).points;
+  assert.equal(point.cpuUtil.avg, 9);
+  assert.equal(store.serializeTiers(clock.at).units.u["1m"].series.cpuUtil.n[0], 1);
 });
 
-test("stop() writes synchronously and stops sampling", (t) => {
-  const { store, runtime, timers, dir, state } = setup(t, { enabled: true });
-  runtime.start();
-  timers.fire();
-  runtime.stop();
-  assert.ok(timers.timers.every((x) => x.cleared));
-  const saved = JSON.parse(fs.readFileSync(path.join(dir, "metrics-history.json"), "utf8"));
-  assert.ok(saved.units.a);
-  state.snapshots = [snapshot("a", { usage: 99 })];
-  timers.timers[0].fn();
-  assert.equal(store.get("a").u.length, 1, "no sample after stop");
+test("offline units and stale collections leave gaps", () => {
+  const snaps = [snapshot("off", { online: false }), snapshot("stale")];
+  const monitors = new Map([["stale", stubMonitor({ at: START - H })]]);
+  const { store, runtime } = rig({ enabled: true, snaps, monitors });
+  runtime.sample();
+  assert.deepEqual(store.query("off", "1h", START).points, []);
+  assert.deepEqual(store.query("stale", "1h", START).points, []);
 });
 
-test("routes: GPU history unchanged, history validates the range and reports the setting", async (t) => {
-  const { state, store, runtime, timers, advance } = setup(t, { enabled: true });
-  runtime.start();
-  timers.fire();
-  advance(1_000);
-  const app = express();
-  registerUnitHistoryRoutes(app, {
-    store,
-    hasUnit: (id) => id === "a",
-    isEnabled: () => state.enabled,
-    now: () => T0 + 1_000,
-  });
-  const server = app.listen(0, "127.0.0.1");
-  t.after(() => server.close());
-  await new Promise((r) => server.once("listening", r));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const get = async (p) => {
-    const res = await fetch(base + p);
-    return { status: res.status, body: await res.json() };
+test("start/stop: one 2 s interval; stop is final, flushes and is idempotent", () => {
+  const { runtime, intervals, store } = rig({ enabled: true });
+  let flushed = 0;
+  const realStop = store.stop.bind(store);
+  store.stop = () => {
+    flushed++;
+    return realStop();
   };
-
-  const gpu = await get("/api/sparks/a/gpu-history?windowMs=60000");
-  assert.deepEqual(gpu, { status: 200, body: { t: [T0], u: [50], c: [45], p: [20], gpus: [] } });
-  assert.equal((await get("/api/sparks/nope/gpu-history")).status, 404);
-
-  const hist = await get("/api/sparks/a/history?range=6h");
-  assert.equal(hist.status, 200);
-  assert.equal(hist.body.enabled, true);
-  assert.equal(hist.body.range, "6h");
-  assert.deepEqual(hist.body.points[0].gpuUtil, { avg: 50, max: 50 });
-  assert.equal((await get("/api/sparks/a/history")).body.range, "1h", "default range");
-  for (const bad of ["2h", "__proto__", "toString"]) {
-    assert.equal((await get(`/api/sparks/a/history?range=${bad}`)).status, 400, bad);
-  }
-  assert.equal((await get("/api/sparks/a/history?range=1h&range=6h")).status, 400, "array query");
-  assert.equal((await get("/api/sparks/nope/history")).status, 404);
-  state.enabled = false;
-  assert.deepEqual((await get("/api/sparks/a/history?range=24h")).body, { enabled: false });
+  assert.equal(runtime.start(), true);
+  assert.equal(runtime.start(), true);
+  assert.equal(intervals.length, 1);
+  assert.equal(intervals[0].ms, HISTORY_SAMPLE_INTERVAL_MS);
+  runtime.stop();
+  runtime.stop();
+  assert.equal(flushed, 1);
+  assert.equal(intervals[0].cleared, true);
+  assert.equal(runtime.start(), false);
+  intervals[0].fn();
+  assert.deepEqual(store.get("u").t, [], "a late tick after stop records nothing");
 });
 
-test("gpu-history serves windows over 8 h from the long series, up to 7 days", async (t) => {
-  const dir = tmpDir(t);
-  const HOUR = 3600_000;
-  const DAY = 24 * HOUR;
-  const store = new UnitHistory({
-    file: path.join(dir, "gpu-history.json"),
-    longFile: path.join(dir, "gpu-history-long.json"),
-    now: () => T0,
-    logError: () => {},
+test("a store failure during stop is logged, not thrown", () => {
+  const errors = [];
+  const runtime = createUnitHistoryRuntime({
+    store: {
+      start() {},
+      stop() {
+        throw new Error("disk full");
+      },
+    },
+    orderedSnapshots: () => [],
+    monitors: new Map(),
+    logError: (msg, err) => errors.push(err.message),
   });
-  t.after(() => store.stop());
-  for (const [ago, temp] of [[9 * DAY, 30], [3 * DAY, 40], [2 * HOUR, 50], [0, 60]]) store.record("a", T0 - ago, 10, temp, 5);
-  const app = express();
-  registerUnitHistoryRoutes(app, { store, hasUnit: (id) => id === "a", isEnabled: () => false, now: () => T0 });
-  const server = app.listen(0, "127.0.0.1");
-  t.after(() => server.close());
-  await new Promise((r) => server.once("listening", r));
-  const temps = async (q) =>
-    (await (await fetch(`http://127.0.0.1:${server.address().port}/api/sparks/a/gpu-history${q}`)).json()).c;
+  runtime.stop();
+  assert.deepEqual(errors, ["disk full"]);
+});
 
-  assert.deepEqual(await temps(""), [50, 60], "default: the dense 8 h");
-  assert.deepEqual(await temps(`?windowMs=${DAY}`), [50, 60], "a day from the long series");
-  assert.deepEqual(await temps(`?windowMs=${7 * DAY}`), [40, 50, 60], "a week");
-  assert.deepEqual(await temps(`?windowMs=${30 * DAY}`), [40, 50, 60], "capped at 7 days");
+// ─── Routes ───────────────────────────────────────────────
+
+/** Minimal Express stand-in: records GET handlers and replays requests. */
+function fakeApp() {
+  const routes = new Map();
+  return {
+    get: (route, handler) => routes.set(route, handler),
+    call(route, params, query = {}) {
+      const res = {
+        statusCode: 200,
+        body: undefined,
+        status(code) {
+          this.statusCode = code;
+          return this;
+        },
+        json(body) {
+          this.body = body;
+          return this;
+        },
+      };
+      routes.get(route)({ params, query }, res);
+      return res;
+    },
+  };
+}
+
+test("routes: unknown units are 404, ranges are validated, the setting is reported", () => {
+  let enabled = false;
+  const store = new UnitHistory({ now: () => START, logError: () => {} });
+  store.recordSample([{ id: "u", values: { gpuUtil: 42 } }], START);
+  store.record("u", START, 1, 2, 3);
+  const app = fakeApp();
+  registerUnitHistoryRoutes(app, { store, hasUnit: (id) => id === "u", isEnabled: () => enabled, now: () => START });
+  const HIST = "/api/sparks/:id/history";
+  const GPU = "/api/sparks/:id/gpu-history";
+
+  assert.deepEqual(app.call(GPU, { id: "nope" }).body, { error: "Spark not found" });
+  assert.equal(app.call(HIST, { id: "nope" }).statusCode, 404);
+  for (const range of ["2h", "__proto__", "toString", ["1h", "6h"]]) {
+    const res = app.call(HIST, { id: "u" }, { range });
+    assert.equal(res.statusCode, 400, String(range));
+    assert.deepEqual(res.body, { error: "range must be one of: 1h, 6h, 24h, 7d, 30d" });
+  }
+  assert.deepEqual(app.call(HIST, { id: "u" }).body, { enabled: false });
+  enabled = true;
+  const body = app.call(HIST, { id: "u" }).body;
+  assert.equal(body.enabled, true);
+  assert.equal(body.range, "1h");
+  assert.deepEqual(body.points, [{ t: START, gpuUtil: { avg: 42, max: 42 } }]);
+  assert.equal(app.call(HIST, { id: "u" }, { range: "30d" }).body.stepMs, 90 * 60 * S);
+  assert.deepEqual(app.call(GPU, { id: "u" }).body, { t: [START], u: [1], c: [2], p: [3], gpus: [] });
+});
+
+test("gpu-history clamps windowMs to [1 min, the store's deepest window]", () => {
+  const seen = [];
+  const store = { maxWindowMs: 7 * D, window: (id, w) => (seen.push(w), {}) };
+  const app = fakeApp();
+  registerUnitHistoryRoutes(app, { store, hasUnit: () => true, isEnabled: () => true, now: () => START });
+  for (const windowMs of [undefined, "abc", "5", String(2 * D), String(30 * D)]) {
+    app.call("/api/sparks/:id/gpu-history", { id: "u" }, { windowMs });
+  }
+  assert.deepEqual(seen, [8 * H, 8 * H, 60 * S, 2 * D, 7 * D]);
 });

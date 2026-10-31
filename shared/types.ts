@@ -370,6 +370,12 @@ export interface GpuMetrics {
   gpuAllocMB?: number;
   /** true when the GPU draws from the OS memory pool (GB10: nvidia-smi memory.total is N/A). */
   unifiedMemory?: boolean;
+  /** Summed draw (W) of every GPU on the host (#33). Optional: older agents omit it. */
+  powerDrawTotal?: number;
+  /** Number of GPUs seen (#33). */
+  gpuCount?: number;
+  /** Where the GPU power figure came from (#33); absent when nothing measured it. */
+  powerSource?: "nvidia-smi" | "amd-hwmon";
 }
 
 export interface CpuMetrics {
@@ -381,6 +387,8 @@ export interface CpuMetrics {
   draw: number;
   /** CPU TDP (W). */
   tdp: number;
+  /** Where `draw` came from (#33): a RAPL / thermal / hwmon sensor, or the TDP x usage model. */
+  drawSource?: "rapl" | "thermal" | "hwmon" | "estimated";
 }
 
 export interface MemMetrics {

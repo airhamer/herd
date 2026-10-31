@@ -85,10 +85,15 @@ test("registry mutation starts a monitor, invalidates energy, and appears on the
 
   const energy = await json(port, "/api/fleet-energy");
   assert.equal(energy.status, 200);
-  assert.equal(energy.body.membershipChanged, true);
-  assert.equal(energy.body.restartRequired, true);
+  // #33: the tracker re-scopes live; no restart is asked for.
+  assert.equal(energy.body.membershipChanged, false);
+  assert.equal(energy.body.restartRequired, false);
   assert.equal(energy.body.currentWatts30s, null);
   assert.ok(energy.body.currentNodeIds.includes("alpha"));
+  assert.ok(energy.body.trackedNodeIds.includes("alpha"));
+  assert.equal(energy.body.label, "estimated, not wall-metered");
+  assert.equal(typeof energy.body.coverage.percent, "number");
+  assert.ok(Array.isArray(energy.body.hosts));
 
   const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
   t.after(() => ws.close());

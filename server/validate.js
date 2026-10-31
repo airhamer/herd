@@ -37,34 +37,24 @@ function normalizedHost(host) {
 }
 
 /**
- * IPv4 embedded in IPv6 (both dotted `::ffff:a.b.c.d` and the hex form
- * `::ffff:xxxx:xxxx` a URL parser produces) → dotted quad, else null.
- * Ported from upstream/main — the alert channel policy needs it because WHATWG
- * URL re-serializes IPv4-mapped hosts in hex.
+ * The IPv4 address inside an IPv4-mapped IPv6 address (::ffff:0:0/96), as a
+ * dotted quad, or null. The WHATWG URL parser is used to put any spelling
+ * (dotted tail, full or zero-compressed hex, upper case) into one canonical
+ * form first; it is also what turns `[::ffff:a.b.c.d]` URL hosts into hex,
+ * which is why alert channel URLs need this.
  */
-function mappedIpv4(host) {
-  let body = host;
-  let dotted = null;
-  const v4 = body.match(/:(\d{1,3}(?:\.\d{1,3}){3})$/);
-  if (v4 && net.isIP(v4[1]) === 4) {
-    dotted = v4[1];
-    body = body.slice(0, v4.index);
+function ipv4InsideMapped(host) {
+  let canonical;
+  try {
+    canonical = new URL(`http://[${host}]/`).hostname.slice(1, -1);
+  } catch {
+    return null;
   }
-  const halves = body.split("::");
-  if (halves.length > 2) return null;
-  const head = halves[0] ? halves[0].split(":") : [];
-  const tail = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
-  const groups = head.length + tail.length + (dotted ? 2 : 0);
-  if (halves.length === 1 ? groups !== 8 : groups >= 8) return null;
-  const parts = [...head, ...(halves.length === 2 ? Array(8 - groups).fill("0") : []), ...tail];
-  if (dotted) {
-    const octets = dotted.split(".").map((octet) => Number(octet));
-    parts.push(((octets[0] << 8) | octets[1]).toString(16), ((octets[2] << 8) | octets[3]).toString(16));
-  }
-  if (parts.length !== 8 || parts.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) return null;
-  const nums = parts.map((part) => parseInt(part, 16));
-  if (nums.slice(0, 5).some((n) => n !== 0) || nums[5] !== 0xffff) return null;
-  return `${nums[6] >> 8}.${nums[6] & 255}.${nums[7] >> 8}.${nums[7] & 255}`;
+  const tail = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(canonical);
+  if (!tail) return null;
+  const high = Number.parseInt(tail[1], 16);
+  const low = Number.parseInt(tail[2], 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".");
 }
 
 export function isForbiddenAddress(address) {
@@ -78,8 +68,8 @@ export function isForbiddenAddress(address) {
     if (host === "::" || host.startsWith("ff")) return true;
     const first = parseInt(host.split(":", 1)[0] || "0", 16);
     if ((first & 0xffc0) === 0xfe80) return true;
-    const mapped = mappedIpv4(host);
-    if (mapped) return isForbiddenAddress(mapped);
+    const inner = ipv4InsideMapped(host);
+    if (inner) return isForbiddenAddress(inner);
     return false;
   }
   return false;
