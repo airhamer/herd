@@ -10,6 +10,9 @@ import type {
   EventsResponse,
   DecodeBenchListResponse,
   FleetEnergy,
+  LlmTokenHistory,
+  LlmTokenRange,
+  LlmTokenTotals,
   MonthlyEnergy,
   FleetPlanResponse,
   FleetSnapshot,
@@ -86,6 +89,16 @@ export function fetchSparks(): Promise<{ sparks: SparkConfig[] }> {
 
 export function fetchFleetEnergy(): Promise<FleetEnergy> {
   return apiFetch("/api/fleet-energy");
+}
+
+/** FLEET3 (#38): fleet LLM token totals for a range. */
+export function fetchLlmTokenTotals(range: LlmTokenRange = "24h"): Promise<LlmTokenTotals> {
+  return apiFetch(`/api/llm-token-totals?range=${encodeURIComponent(range)}`);
+}
+
+/** FLEET3 (#38): hourly (24h) or daily token buckets for the details view. */
+export function fetchLlmTokenHistory(range: LlmTokenRange = "24h"): Promise<LlmTokenHistory> {
+  return apiFetch(`/api/llm-token-totals/history?range=${encodeURIComponent(range)}`);
 }
 
 /** Long-run per-month energy history; the card loads it once when it opens. */

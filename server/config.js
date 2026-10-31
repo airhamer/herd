@@ -23,6 +23,9 @@ const FLEET_ENERGY_JSON_PATH =
   process.env.FLEET_ENERGY_JSON_PATH || path.join(ROOT, "config", "fleet-energy.json");
 // Long-run monthly energy totals; outlives the 31-day window (docs/specs/monthly-energy.md).
 const FLEET_ENERGY_MONTHLY_JSON_PATH = process.env.FLEET_ENERGY_MONTHLY_JSON_PATH || path.join(ROOT, "config", "fleet-energy-monthly.json");
+// FLEET3 (#38): LLM token ledger (hourly 72 h, daily 35 d, all-time per model and endpoint).
+const LLM_TOKEN_TOTALS_JSON_PATH =
+  process.env.LLM_TOKEN_TOTALS_JSON_PATH || path.join(ROOT, "config", "llm-token-totals.json");
 // Bucketed unit history; only written while settings.metricsHistory is on.
 const METRICS_HISTORY_JSON_PATH =
   process.env.METRICS_HISTORY_JSON_PATH ||
@@ -120,6 +123,7 @@ export {
   LLM_DAILY_JSON_PATH,
   FLEET_ENERGY_JSON_PATH,
   FLEET_ENERGY_MONTHLY_JSON_PATH,
+  LLM_TOKEN_TOTALS_JSON_PATH,
   METRICS_HISTORY_JSON_PATH,
   ALERTS_JSON_PATH,
   LLM_PROBE_TIMEOUT_MS,

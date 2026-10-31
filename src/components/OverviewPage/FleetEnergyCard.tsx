@@ -124,7 +124,7 @@ export function FleetEnergyCard({ children }: { children?: ReactNode } = {}) {
           </div>
         ) : null}
         {showEfficiency ? (
-          <div data-testid="fleet-energy-efficiency"><div className="text-[10px] text-muted">Efficiency (24 h)</div><strong className="font-tabular text-sm">{number(data?.whPerOutputToken24h, 4)} Wh/token</strong></div>
+          <div data-testid="fleet-energy-efficiency" title={data?.tokenSource === "ledger" ? "Fleet energy over generated tokens of every endpoint in the token ledger" : "Fleet energy over the head Spark's output tokens"}><div className="text-[10px] text-muted">Efficiency (24 h)</div><strong className="font-tabular text-sm">{number(data?.whPerOutputToken24h, 4)} Wh/token</strong></div>
         ) : null}
       </div>
       <div className="mt-3 flex h-12 items-end gap-px" aria-label="Hourly estimated watts for the last 24 hours, with gaps shown empty">

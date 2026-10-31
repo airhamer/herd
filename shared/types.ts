@@ -1331,3 +1331,62 @@ export interface FleetUpdatePlan {
   startedAt: number | null;
   waveStates: Array<"pending" | "running" | "rebooting" | "slow" | "healthy">;
 }
+
+// ─── LLM token ledger (FLEET3, issue #38) ────────────────
+// GET /api/llm-token-totals?range=… and /history (server/llmtokens/*).
+
+export type LlmTokenRange = "24h" | "7d" | "30d" | "all";
+
+/** generated = output tokens; cached = prompt tokens from the prefix cache; prefill = prompt − cached. */
+export interface LlmTokenSplit {
+  generated: number;
+  cached: number;
+  prefill: number;
+  /** generated + cached + prefill */
+  total: number;
+}
+
+export interface LlmTokenModelRow extends LlmTokenSplit {
+  model: string;
+  /** `nodeId:port` series that served the model in the range. */
+  endpoints: string[];
+  /** Ledger source tiers that credited tokens: "counter", "native", "proxy"… */
+  sources: string[];
+}
+
+export interface LlmTokenEndpointRow extends LlmTokenSplit {
+  seriesId: string;
+  nodeId: string;
+  nodeName: string | null;
+  port: number;
+  backend: string | null;
+  models: string[];
+  sources: string[];
+  lastSeenMs: number | null;
+}
+
+export interface LlmTokenTotals extends LlmTokenSplit {
+  range: LlmTokenRange;
+  resolution: "hour" | "day" | "all";
+  fromMs: number;
+  toMs: number;
+  trackedSinceMs: number;
+  endpointCount: number;
+  models: LlmTokenModelRow[];
+  endpoints: LlmTokenEndpointRow[];
+}
+
+export interface LlmTokenHistoryPoint {
+  startMs: number;
+  generated: number;
+  cached: number;
+  prefill: number;
+}
+
+export interface LlmTokenHistory {
+  range: LlmTokenRange;
+  resolution: "hour" | "day";
+  stepMs: number;
+  trackedSinceMs: number;
+  points: LlmTokenHistoryPoint[];
+}

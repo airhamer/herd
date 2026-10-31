@@ -13,6 +13,7 @@ config/showcase-history.json
 config/llm-daily.json
 config/fleet-energy.json
 config/fleet-energy-monthly.json*
+config/llm-token-totals.json*
 config/gpu-history.json
 config/gpu-history-long.json
 config/metrics-history.json

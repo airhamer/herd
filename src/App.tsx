@@ -16,6 +16,7 @@ import { OverviewPage } from "./components/OverviewPage/OverviewPage";
 import { FleetPage } from "./components/OverviewPage/FleetPage";
 import { RecentActivityCard } from "./components/Activity/RecentActivityCard";
 import { FleetEnergyCard } from "./components/OverviewPage/FleetEnergyCard";
+import { FleetTokenTotals } from "./components/OverviewPage/FleetTokenTotals";
 import { MonthlyEnergy } from "./components/OverviewPage/MonthlyEnergy";
 import { ActivityPage, type ActivityUnit } from "./components/Activity/ActivityPage";
 import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
@@ -651,6 +652,7 @@ function FleetViewPane({
         requests={fleet.requests}
         memory={fleet.memory}
         onSelectNode={(nodeId) => onNavigate({ page: "node", nodeId })}
+        tokens={<FleetTokenTotals />}
         energy={
           showFleetEnergy ? (
             <FleetEnergyCard>
