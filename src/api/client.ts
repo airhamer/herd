@@ -41,6 +41,12 @@ import type {
   StartPrefillBenchRequest,
   UpdateActionResponse,
 } from "./types";
+import type {
+  BenchCompareResponse,
+  BenchResult,
+  BenchResultsFilter,
+  BenchResultsListResponse,
+} from "../../shared/types";
 
 const BASE = "";
 const TOKEN = (typeof localStorage !== "undefined" && localStorage.getItem("sparkdashToken")) || "";
@@ -782,4 +788,26 @@ export function fetchGuard(): Promise<{ guards: GuardResult[] }> {
 /** Fleet-level AI-memory service health; `services: []` means nothing is configured. */
 export function fetchMemoryHealth(): Promise<{ services: MemoryServiceResult[] }> {
   return apiFetch("/api/memory-health");
+}
+
+// ─── Bench results store ─────────────────────────────────
+
+/** List stored bench results, newest first; filters map 1:1 to query params. */
+export function listBenchResults(filter: BenchResultsFilter = {}): Promise<BenchResultsListResponse> {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filter)) {
+    if (v !== undefined && v !== null && v !== "") params.set(k, String(v));
+  }
+  const q = params.toString();
+  return apiFetch(`/api/bench-results${q ? `?${q}` : ""}`);
+}
+
+export function getBenchResult(id: string): Promise<BenchResult> {
+  return apiFetch(`/api/bench-results/${encodeURIComponent(id)}`);
+}
+
+/** Like-with-like comparison; `comparable: false` carries the refusal reasons. */
+export function compareBenchResults(baseline: string, candidate: string): Promise<BenchCompareResponse> {
+  const q = new URLSearchParams({ baseline, candidate }).toString();
+  return apiFetch(`/api/bench-results/compare?${q}`);
 }
