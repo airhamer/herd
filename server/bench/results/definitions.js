@@ -66,8 +66,27 @@ const LIST = [
     metric: "decode_tps_stream",
     owner: "Hasso bench.sh",
     comparable: "single_stream_greedy_median",
-    formula: "Median decode tok/s of repeated single-stream greedy (temperature 0) requests.",
-    url: null,
+    formula:
+      "Hasso bench.sh greedy median: Python statistics.median of the timed runs of the code and reasoning probes (temperature 0, max_tokens 1200, two streamed runs each); per run (completion_tokens − 1) / (t_last_token − t_first_token), reasoning chunks counted. Math (temperature 0.6) and free prose never enter it.",
+    url: "https://github.com/hasso5703/dgx-spark-qwen38/blob/main/bench.sh",
+  },
+  {
+    name: "hasso.bench_probe_median.v1",
+    metric: "decode_tps_stream",
+    owner: "Hasso bench.sh",
+    comparable: "hasso_bench_probe",
+    formula:
+      "One bench.sh probe (code / reasoning greedy, math peak at temperature 0.6, free prose greedy worst case): median of its two streamed single-stream runs, each (completion_tokens − 1) / (t_last_token − t_first_token).",
+    url: "https://github.com/hasso5703/dgx-spark-qwen38/blob/main/bench.sh",
+  },
+  {
+    name: "hasso.matrix_two_call_delta.v1",
+    metric: "decode_tps_stream",
+    owner: "Hasso bench-matrix.sh",
+    comparable: "single_stream_two_call_delta",
+    formula:
+      "Hasso bench-matrix.sh battery v1, decode net of prefill: the same prompt sent twice, not streamed, temperature 0, at max_tokens 80 and 680; (completion_tokens₆₈₀ − completion_tokens₈₀) / (wall₆₈₀ − wall₈₀). Refused (no value) when Δtokens < 50 or Δwall < 2.0 s. One discarded warm-up call first.",
+    url: "https://github.com/hasso5703/dgx-spark-qwen38/blob/main/bench-matrix.sh",
   },
   {
     name: "herd.showcase.stream_mean_estimated.v1",

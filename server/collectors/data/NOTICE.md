@@ -34,6 +34,41 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Hasso battery: `server/collectors/hassoBattery.js` (#44)
+
+The Hasso battery adapts `bench.sh` and `bench-matrix.sh` from
+hasso5703/dgx-spark-qwen38 (<https://github.com/hasso5703/dgx-spark-qwen38>)
+so Herd's single-stream numbers line up with Hasso's `BENCHMARKS.md`. The
+four bench.sh probe prompts and the eight battery v1 workloads are reproduced
+unchanged with their sampling settings; the streamed rate, greedy median,
+two-call delta and reliability guard are ported to JavaScript. The scripts
+are published under the MIT licence, which is compatible with Herd's MIT
+licence.
+
+```
+MIT License
+
+Copyright (c) 2026 hasso5703
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 # Quality bench data
 
 The Quality bench (`server/collectors/QualityBench.js`, #42) bundles two

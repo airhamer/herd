@@ -1,7 +1,8 @@
 /**
  * Streaming OpenAI-compatible fixture for decode-bench tests and demos:
  * every /v1/chat/completions request streams `tokens` content chunks
- * `tokenMs` apart after `ttftMs`, then a usage chunk. Request bodies are
+ * `tokenMs` apart after `ttftMs`, then a usage chunk; a request without
+ * `stream: true` gets one JSON reply after the same time. Request bodies are
  * recorded so tests can assert exactly what was sent.
  */
 import http from "http";
@@ -32,6 +33,22 @@ export function startSseFixture(opts = {}) {
       if (failEvery > 0 && requests.length % failEvery === 0) {
         res.writeHead(500, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: "fixture failure" } }));
+        return;
+      }
+      if (body && body.stream !== true) {
+        // Non-streamed completion (Hasso bench-matrix.sh): same timing, one JSON reply.
+        const n = Math.min(tokens, body.max_tokens ?? tokens);
+        await new Promise((r) => setTimeout(r, ttftMs + Math.max(0, n - 1) * tokenMs));
+        const prompt = String(body.messages?.[0]?.content ?? "");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            id: "x",
+            model,
+            choices: [{ index: 0, finish_reason: "length", message: { role: "assistant", content: "t ".repeat(n) } }],
+            usage: { prompt_tokens: Math.max(1, Math.round(prompt.length / 4)), completion_tokens: n },
+          })
+        );
         return;
       }
       res.writeHead(200, { "content-type": "text/event-stream" });
