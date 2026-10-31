@@ -724,31 +724,36 @@ export interface FleetEnergy {
   hourlyWatts24h: Array<number | null>;
 }
 
-/** One UTC month of the permanent energy roll-up. */
+/** Per-node share of a month in the long-run energy history. */
+export interface MonthlyEnergyNode {
+  wh: number;
+  coverageMs: number;
+}
+
+/**
+ * A UTC calendar month of the long-run energy history
+ * (GET /api/fleet-energy/monthly; see docs/specs/monthly-energy.md).
+ */
 export interface MonthlyEnergyMonth {
-  /** "YYYY-MM" (UTC). */
-  month: string;
-  startMs: number;
-  /** Exclusive end of the month. */
-  endMs: number;
-  /** False while the month is still the current one. */
-  closed: boolean;
-  /** Nodes that reported in this month (the scope at the time). */
-  nodeIds: string[];
-  nodes: Record<string, { wh: number; coverageMs: number }>;
-  totalWh: number;
-  fleetWh: number;
+  month: string; // "YYYY-MM"
+  startMs: number; // first instant of the month
+  endMs: number; // first instant of the next month
+  closed: boolean; // false for the month that is still running
+  nodeIds: string[]; // every node that contributed, sorted
+  nodes: Record<string, MonthlyEnergyNode>;
+  totalWh: number; // sum of the per-node estimates
+  fleetWh: number; // fleet-level estimate (what the UI shows)
   fleetCoverageMs: number;
   outputTokens: number;
   coveredOutputTokens: number;
-  whPerOutputToken: number | null;
+  whPerOutputToken: number | null; // null until any tokens were paired with energy
 }
 
+/** Response body of GET /api/fleet-energy/monthly (months oldest first). */
 export interface MonthlyEnergy {
   estimated: boolean;
   generatedAt: number;
   foldedThroughMs: number;
-  /** Oldest first. */
   months: MonthlyEnergyMonth[];
 }
 

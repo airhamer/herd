@@ -86,7 +86,7 @@ export function fetchFleetEnergy(): Promise<FleetEnergy> {
   return apiFetch("/api/fleet-energy");
 }
 
-/** Permanent monthly energy roll-up (monthly folds hourly; fetched once, no polling). */
+/** Long-run per-month energy history; the card loads it once when it opens. */
 export function fetchMonthlyEnergy(): Promise<MonthlyEnergy> {
   return apiFetch("/api/fleet-energy/monthly");
 }

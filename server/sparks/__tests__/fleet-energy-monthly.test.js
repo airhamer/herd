@@ -1,3 +1,4 @@
+// Monthly energy history: behaviour from docs/specs/monthly-energy.md (herd LIC1 clean-room tests).
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -8,17 +9,24 @@ import { FleetEnergyTracker } from "../../energy/FleetEnergyTracker.js";
 import { MonthlyEnergyArchive, monthKey, monthRange } from "../../energy/FleetEnergyMonthly.js";
 import { registerFleetEnergyRoute } from "../../energy/FleetEnergyRuntime.js";
 
-const MINUTE = 60_000;
-// 128.2 W per node: 100 W GPU + idle CPU (5.2 W) + 23 W base.
-const WH_PER_NODE_MINUTE = 128.2 / 60;
+const MIN = 60_000;
+const DAY = 24 * 60 * MIN;
+const NOON_OCT_5 = Date.UTC(2026, 9, 5, 12, 0);
+const m = (n) => NOON_OCT_5 + n * MIN;
+// Every node draws 100 W GPU + 5.2 W idle CPU + 23 W base = 128.2 W.
+const NODE_WH_PER_MIN = 128.2 / 60;
 
-function tempDir(t) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "energy-monthly-"));
+function scratch(t) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herd-monthly-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  return dir;
+  return {
+    dir,
+    window: path.join(dir, "fleet-energy.json"),
+    monthly: path.join(dir, "fleet-energy-monthly.json"),
+  };
 }
 
-function snap(id, tokens) {
+function unit(id, outputTokens) {
   return {
     id,
     online: true,
@@ -26,333 +34,283 @@ function snap(id, tokens) {
     role: "head",
     llmPorts: [8000],
     metrics: {
-      gpu: { power: { draw: 100 } },
       cpu: { usage: 0 },
-      llm: [{ available: true, totalOutputTokens: tokens }],
+      gpu: { power: { draw: 100 } },
+      llm: [{ available: true, totalOutputTokens: outputTokens }],
     },
   };
 }
 
-/** Record one sample every 2 s from `fromMs` to `toMs` (inclusive). */
-function feed(tracker, nodes, fromMs, toMs, tokenRate = 0) {
-  for (let at = fromMs; at <= toMs; at += 2000) {
-    const tokens = Math.floor(((at - fromMs) / 2000) * tokenRate);
-    tracker.record(nodes.map((id) => snap(id, tokens)), at);
+/** Sample the fleet every 2 s over [from, to]; `perSample` output tokens per sample. */
+function run(tracker, ids, from, to, perSample = 0) {
+  let tokens = 0;
+  for (let at = from; at <= to; at += 2_000) {
+    tracker.record(ids.map((id) => unit(id, tokens)), at);
+    tokens += perSample;
   }
 }
 
-function bucket(minuteStartMs, wh = 1, extra = {}) {
+/** A stored two-node minute ("x", "y") with `wh` per node and full coverage. */
+function minuteBucket(minuteStartMs, wh = 1, overrides = {}) {
   return {
     minuteStartMs,
-    nodeWh: { a: wh, b: wh },
-    nodeCoverageMs: { a: MINUTE, b: MINUTE },
-    fleetWattMs: 2 * wh * 3_600_000,
-    fleetCoverageMs: MINUTE,
+    nodeWh: { x: wh, y: wh },
+    nodeCoverageMs: { x: MIN, y: MIN },
+    fleetWattMs: wh * 2 * 3_600_000,
+    fleetCoverageMs: MIN,
     outputTokens: 0,
     coveredOutputTokens: 0,
-    ...extra,
+    ...overrides,
   };
 }
 
-test("month keys and ranges use UTC", () => {
-  assert.equal(monthKey(Date.UTC(2026, 8, 30, 23, 59, 59)), "2026-09");
-  assert.equal(monthKey(Date.UTC(2026, 9, 1, 0, 0, 0)), "2026-10");
-  assert.deepEqual(monthRange("2026-12"), [Date.UTC(2026, 11, 1), Date.UTC(2027, 0, 1)]);
-  assert.equal(monthRange("2026-13"), null);
-  assert.equal(monthRange("26-1"), null);
+const near = (actual, expected, eps = 1e-9) =>
+  assert.ok(Math.abs(actual - expected) <= eps, `${actual} is not within ${eps} of ${expected}`);
+
+const tracker = (options) => new FleetEnergyTracker({ setIntervalFn: null, ...options });
+
+// ── month arithmetic ─────────────────────────────────────────────────────────
+
+test("monthKey and monthRange work in UTC and reject malformed keys", () => {
+  assert.equal(monthKey(Date.UTC(2026, 11, 31, 23, 59, 59, 999)), "2026-12");
+  assert.equal(monthKey(Date.UTC(2027, 0, 1)), "2027-01");
+  assert.deepEqual(monthRange("2027-02"), [Date.UTC(2027, 1, 1), Date.UTC(2027, 2, 1)]);
+  for (const bad of ["2026-13", "2026-1", "26-01", "", null, 202601]) assert.equal(monthRange(bad), null);
 });
 
-test("folding is idempotent and leaves open minutes for later", () => {
+// ── the archive on its own ───────────────────────────────────────────────────
+
+test("only minutes that ended at least 10 s ago are folded, and each only once", () => {
+  const archive = new MonthlyEnergyArchive({ now: () => m(10) });
+  const buckets = [minuteBucket(m(0)), minuteBucket(m(1)), minuteBucket(m(2))];
+  // m(2) ends at m(3); at m(3)+5 s it is not settled yet.
+  assert.equal(archive.foldBuckets(buckets, { nowMs: m(3) + 5_000 }), 2);
+  assert.equal(archive.foldBuckets(buckets, { nowMs: m(3) + 5_000 }), 0);
+  assert.equal(archive.foldBuckets(buckets, { nowMs: m(3) + 10_000 }), 1);
+  assert.equal(archive.foldBuckets(buckets, { nowMs: m(9) }), 0);
+  near(archive.snapshot(m(10)).months[0].nodes.x.wh, 3);
+});
+
+test("a month boundary splits minutes into their own UTC months", () => {
+  const edge = Date.UTC(2026, 10, 1);
+  const archive = new MonthlyEnergyArchive({ now: () => edge + 5 * MIN });
+  archive.foldBuckets([minuteBucket(edge - MIN, 2), minuteBucket(edge, 3)], { nowMs: edge + 5 * MIN });
+  const months = archive.snapshot(edge + 5 * MIN).months;
+  assert.deepEqual(months.map((x) => x.month), ["2026-10", "2026-11"]);
+  assert.deepEqual(months.map((x) => x.closed), [true, false]);
+  near(months[0].totalWh, 4);
+  near(months[1].totalWh, 6);
+});
+
+test("a minute with no measured node moves the watermark but adds nothing", () => {
   const archive = new MonthlyEnergyArchive();
-  const t0 = Date.UTC(2026, 9, 5, 12, 0);
-  const buckets = [bucket(t0), bucket(t0 + MINUTE), bucket(t0 + 2 * MINUTE)];
-  // At t0+2m+5s the third minute has not ended; the second ended less than the 10 s grace ago.
-  assert.equal(archive.foldBuckets(buckets, { nowMs: t0 + 2 * MINUTE + 5000 }), 1);
-  assert.equal(archive.foldBuckets(buckets, { nowMs: t0 + 2 * MINUTE + 5000 }), 0);
-  assert.equal(archive.foldBuckets(buckets, { nowMs: t0 + 3 * MINUTE + 10_000 }), 2);
-  assert.equal(archive.foldBuckets(buckets, { nowMs: t0 + 3 * MINUTE + 10_000 }), 0);
+  const nothing = { minuteStartMs: m(1), nodeWh: {}, nodeCoverageMs: {}, fleetWattMs: 0, fleetCoverageMs: MIN, outputTokens: 2, coveredOutputTokens: 7 };
+  assert.equal(archive.foldBuckets([minuteBucket(m(0)), nothing], { nowMs: m(6) }), 1);
+  assert.equal(archive.foldedThroughMs, m(2));
   const [month] = archive.snapshot().months;
-  assert.equal(month.month, "2026-10");
-  assert.equal(month.nodes.a.wh, 3);
-  assert.equal(month.totalWh, 6);
-  assert.equal(month.fleetCoverageMs, 3 * MINUTE);
+  near(month.fleetWh, 2);
+  assert.equal(month.fleetCoverageMs, MIN);
+  assert.equal(month.coveredOutputTokens, 0);
 });
 
-test("minutes either side of a UTC month boundary land in different months", () => {
-  const archive = new MonthlyEnergyArchive();
-  const boundary = Date.UTC(2026, 9, 1);
-  const buckets = [bucket(boundary - MINUTE, 1), bucket(boundary, 2)];
-  archive.foldBuckets(buckets, { nowMs: boundary + 5 * MINUTE });
-  const { months } = archive.snapshot(boundary + 5 * MINUTE);
-  assert.deepEqual(months.map((m) => [m.month, m.totalWh]), [["2026-09", 2], ["2026-10", 4]]);
-  assert.deepEqual(months.map((m) => m.closed), [true, false]);
+test("a clock far in the future cannot push the watermark past real time", () => {
+  const archive = new MonthlyEnergyArchive({ now: () => m(0) });
+  assert.equal(archive.foldBuckets([minuteBucket(m(0) + 30 * DAY)], { nowMs: m(0) + 30 * DAY + 3 * MIN }), 0);
+  assert.ok(archive.foldedThroughMs <= m(0) + DAY);
+  assert.equal(archive.foldBuckets([minuteBucket(m(-3))], { nowMs: m(0) }), 1);
+  near(archive.snapshot(m(0)).months[0].nodes.y.wh, 1);
 });
 
-test("tracker rolls up finished minutes and keeps them after the window is reset", (t) => {
-  const start = Date.UTC(2026, 9, 5, 12, 0);
-  let clock = start + 5 * MINUTE;
-  const tracker = new FleetEnergyTracker({ nodeIds: ["a", "b"], setIntervalFn: null, now: () => clock });
-  feed(tracker, ["a", "b"], start, start + 5 * MINUTE);
-  const before = tracker.monthlySnapshot(start + 5 * MINUTE).months[0];
-  assert.ok(before.nodes.a.wh > 4 * WH_PER_NODE_MINUTE && before.nodes.a.wh < 5 * WH_PER_NODE_MINUTE);
-
-  // Fork deviation: this fork's window endpoint is read-only (no public tracker.clear()),
-  // so the window reset is modeled by a restart from the 31-day file, which the
-  // "totals survive a restart" test covers. Here we only assert continued accrual.
-  const after = tracker.monthlySnapshot(start + 5 * MINUTE).months[0];
-  assert.equal(after.totalWh, before.totalWh);
-
-  feed(tracker, ["a", "b"], start + 6 * MINUTE, start + 8 * MINUTE);
-  const later = tracker.monthlySnapshot(start + 8 * MINUTE).months[0];
-  assert.ok(later.totalWh > before.totalWh);
+test("a saved watermark more than a day ahead is pulled back on load; stored months stay", (t) => {
+  const { monthly } = scratch(t);
+  fs.writeFileSync(monthly, JSON.stringify({
+    version: 1,
+    savedAt: m(0),
+    foldedThroughMs: m(0) + 200 * DAY,
+    months: { "2026-08": { nodes: { x: { wh: 9, coverageMs: MIN } }, fleetWh: 9, fleetCoverageMs: MIN, outputTokens: 0, coveredOutputTokens: 0, tokenFleetWh: 0 } },
+  }));
+  const archive = new MonthlyEnergyArchive({ filePath: monthly, now: () => m(0) });
+  assert.ok(archive.foldedThroughMs <= m(0));
+  assert.equal(archive.foldBuckets([minuteBucket(m(1))], { nowMs: m(4) }), 1);
+  const byKey = Object.fromEntries(archive.snapshot(m(4)).months.map((x) => [x.month, x]));
+  assert.equal(byKey["2026-08"].nodes.x.wh, 9);
+  assert.equal(byKey["2026-10"].nodes.x.wh, 1);
 });
 
-test("a minute written to twice by the tracker is counted once", () => {
-  const start = Date.UTC(2026, 9, 5, 12, 0);
-  const tracker = new FleetEnergyTracker({ nodeIds: ["a"], setIntervalFn: null, now: () => start + 3 * MINUTE + 20_000 });
-  feed(tracker, ["a"], start, start + 3 * MINUTE);
-  const first = tracker.monthlySnapshot(start + 3 * MINUTE + 20_000).months[0].nodes.a.wh;
-  tracker.monthlySnapshot(start + 3 * MINUTE + 20_000);
-  tracker.flush();
-  assert.equal(tracker.monthlySnapshot(start + 3 * MINUTE + 20_000).months[0].nodes.a.wh, first);
+test("a corrupt archive file is renamed aside with the clock in its name", (t) => {
+  const { dir, monthly } = scratch(t);
+  fs.writeFileSync(monthly, "[[[");
+  const archive = new MonthlyEnergyArchive({ filePath: monthly, now: () => 4321 });
+  assert.deepEqual(archive.snapshot().months, []);
+  assert.deepEqual(fs.readdirSync(dir), ["fleet-energy-monthly.unreadable-4321.json"]);
 });
 
-test("totals survive a restart and re-reading the 31-day file does not double count", (t) => {
-  const dir = tempDir(t);
-  const filePath = path.join(dir, "fleet-energy.json");
-  const monthlyFilePath = path.join(dir, "fleet-energy-monthly.json");
-  const options = { nodeIds: ["a", "b"], filePath, monthlyFilePath, setIntervalFn: null };
-  const start = Date.UTC(2026, 9, 5, 12, 0);
+// ── tracker integration ──────────────────────────────────────────────────────
 
-  const first = new FleetEnergyTracker({ ...options, now: () => start + 4 * MINUTE });
-  feed(first, ["a", "b"], start, start + 4 * MINUTE);
-  first.close();
-
-  // The 31-day file reloads the same minutes; the watermark keeps them from being added twice.
-  const second = new FleetEnergyTracker({ ...options, now: () => start + 10 * MINUTE });
-  const reloaded = second.monthlySnapshot(start + 10 * MINUTE).months[0].totalWh;
-  assert.ok(Math.abs(reloaded - 2 * 4 * WH_PER_NODE_MINUTE) < 0.01, `${reloaded}`);
-  feed(second, ["a", "b"], start + 10 * MINUTE, start + 12 * MINUTE);
-  second.close();
-
-  const third = new FleetEnergyTracker({ ...options, now: () => start + 20 * MINUTE });
-  const total = third.monthlySnapshot(start + 20 * MINUTE).months[0].totalWh;
-  assert.ok(total > reloaded);
-  assert.ok(total < reloaded + 3 * 2 * WH_PER_NODE_MINUTE + 0.01, `${total}`);
-  third.close();
-  const fourth = new FleetEnergyTracker({ ...options, now: () => start + 30 * MINUTE });
-  assert.equal(fourth.monthlySnapshot(start + 30 * MINUTE).months[0].totalWh, total);
-  assert.equal(JSON.parse(fs.readFileSync(monthlyFilePath, "utf8")).version, 1);
-  assert.equal(fs.statSync(monthlyFilePath).mode & 0o777, 0o600);
+test("the tracker archives finished minutes as it records and keeps accruing", () => {
+  const fleet = tracker({ nodeIds: ["x", "y"], now: () => m(6) });
+  run(fleet, ["x", "y"], m(0), m(6));
+  const first = fleet.monthlySnapshot(m(6)).months[0];
+  assert.ok(first.nodes.x.wh > 5 * NODE_WH_PER_MIN - 0.01 && first.nodes.x.wh < 6 * NODE_WH_PER_MIN);
+  assert.equal(fleet.monthlySnapshot(m(6)).months[0].totalWh, first.totalWh);
+  run(fleet, ["x", "y"], m(7), m(10));
+  assert.ok(fleet.monthlySnapshot(m(10)).months[0].totalWh > first.totalWh);
 });
 
-test("first start backfills the existing 31-day file", (t) => {
-  const dir = tempDir(t);
-  const filePath = path.join(dir, "fleet-energy.json");
-  const monthlyFilePath = path.join(dir, "fleet-energy-monthly.json");
-  const start = Date.UTC(2026, 9, 5, 12, 0);
+test("re-reading a minute through repeated snapshots and flushes never double counts", () => {
+  const at = m(4) + 15_000;
+  const fleet = tracker({ nodeIds: ["x"], now: () => at });
+  run(fleet, ["x"], m(0), m(4));
+  const once = fleet.monthlySnapshot(at).months[0].nodes.x.wh;
+  fleet.flush();
+  fleet.monthlySnapshot(at);
+  assert.equal(fleet.monthlySnapshot(at).months[0].nodes.x.wh, once);
+});
 
-  const old = new FleetEnergyTracker({ nodeIds: ["a"], filePath, setIntervalFn: null, now: () => start });
-  feed(old, ["a"], start, start + 3 * MINUTE);
+test("restarts reload the 31-day file without adding its minutes again", (t) => {
+  const files = scratch(t);
+  const base = { nodeIds: ["x", "y"], filePath: files.window, monthlyFilePath: files.monthly };
+
+  const a = tracker({ ...base, now: () => m(5) });
+  run(a, ["x", "y"], m(0), m(5));
+  a.close();
+
+  const b = tracker({ ...base, now: () => m(12) });
+  const afterFirst = b.monthlySnapshot(m(12)).months[0].totalWh;
+  near(afterFirst, 2 * 5 * NODE_WH_PER_MIN, 0.01);
+  run(b, ["x", "y"], m(12), m(14));
+  b.close();
+
+  const c = tracker({ ...base, now: () => m(25) });
+  const afterSecond = c.monthlySnapshot(m(25)).months[0].totalWh;
+  assert.ok(afterSecond > afterFirst && afterSecond < afterFirst + 2 * 3 * NODE_WH_PER_MIN + 0.01, String(afterSecond));
+  c.close();
+
+  const d = tracker({ ...base, now: () => m(40) });
+  assert.equal(d.monthlySnapshot(m(40)).months[0].totalWh, afterSecond);
+  d.close();
+  assert.equal(JSON.parse(fs.readFileSync(files.monthly, "utf8")).version, 1);
+  assert.equal(fs.statSync(files.monthly).mode & 0o777, 0o600);
+});
+
+test("enabling the archive on an existing install back-fills from the window file", (t) => {
+  const files = scratch(t);
+  const legacy = tracker({ nodeIds: ["x"], filePath: files.window, now: () => m(0) });
+  run(legacy, ["x"], m(0), m(4));
+  legacy.close();
+  assert.equal(fs.existsSync(files.monthly), false);
+
+  const upgraded = tracker({ nodeIds: ["x"], filePath: files.window, monthlyFilePath: files.monthly, now: () => m(90) });
+  assert.ok(upgraded.monthlySnapshot(m(90)).months[0].nodes.x.wh > 3 * NODE_WH_PER_MIN);
+  upgraded.close();
+});
+
+test("changing fleet members keeps the previous members' energy in the month", (t) => {
+  const files = scratch(t);
+  const opts = { filePath: files.window, monthlyFilePath: files.monthly };
+  const old = tracker({ ...opts, nodeIds: ["x", "y"], now: () => m(0) });
+  run(old, ["x", "y"], m(0), m(4));
   old.close();
-  assert.equal(fs.existsSync(monthlyFilePath), false);
 
-  const upgraded = new FleetEnergyTracker({
-    nodeIds: ["a"],
-    filePath,
-    monthlyFilePath,
-    setIntervalFn: null,
-    now: () => start + 2 * 60 * MINUTE,
-  });
-  const [month] = upgraded.monthlySnapshot(start + 2 * 60 * MINUTE).months;
-  assert.ok(month.nodes.a.wh > 2 * WH_PER_NODE_MINUTE);
+  const fresh = tracker({ ...opts, nodeIds: ["x", "z"], now: () => m(60) });
+  run(fresh, ["x", "z"], m(60), m(63));
+  const [month] = fresh.monthlySnapshot(m(63)).months;
+  assert.deepEqual(month.nodeIds, ["x", "y", "z"]);
+  assert.ok(month.nodes.y.wh > 3 * NODE_WH_PER_MIN);
+  assert.ok(month.nodes.z.wh > 1.5 * NODE_WH_PER_MIN);
+  assert.ok(month.nodes.x.wh > month.nodes.z.wh + 3 * NODE_WH_PER_MIN);
+  fresh.close();
+  assert.ok(fs.readdirSync(files.dir).some((n) => n.startsWith("fleet-energy.scope-")));
 });
 
-test("a membership change keeps the old scope's months and adds the new scope", (t) => {
-  const dir = tempDir(t);
-  const filePath = path.join(dir, "fleet-energy.json");
-  const monthlyFilePath = path.join(dir, "fleet-energy-monthly.json");
-  const start = Date.UTC(2026, 9, 5, 12, 0);
-
-  const before = new FleetEnergyTracker({ nodeIds: ["a", "b"], filePath, monthlyFilePath, setIntervalFn: null, now: () => start });
-  feed(before, ["a", "b"], start, start + 3 * MINUTE);
-  before.close();
-
-  const later = start + 60 * MINUTE;
-  const after = new FleetEnergyTracker({ nodeIds: ["a", "c"], filePath, monthlyFilePath, setIntervalFn: null, now: () => later });
-  feed(after, ["a", "c"], later, later + 3 * MINUTE);
-  const [month] = after.monthlySnapshot(later + 3 * MINUTE).months;
-  assert.deepEqual(month.nodeIds, ["a", "b", "c"]);
-  assert.ok(month.nodes.b.wh > 2 * WH_PER_NODE_MINUTE);
-  assert.ok(month.nodes.c.wh > 1.5 * WH_PER_NODE_MINUTE);
-  // "a" has both periods.
-  assert.ok(month.nodes.a.wh > month.nodes.c.wh + 2 * WH_PER_NODE_MINUTE);
-});
-
-test("an out-of-scope file's implausible minutes never reach the archive", (t) => {
-  const dir = tempDir(t);
-  const filePath = path.join(dir, "fleet-energy.json");
-  const monthlyFilePath = path.join(dir, "fleet-energy-monthly.json");
-  const start = Date.UTC(2026, 9, 5, 12, 0);
-  const at = (n) => start + n * MINUTE;
-  const poisoned = [
-    bucket(at(0)), // plausible: 60 W per node for a full minute
-    bucket(at(1), 50), // implausible Wh (over 4 Wh/min)
-    bucket(at(2), 1, { nodeCoverageMs: { a: 120_000, b: MINUTE } }), // coverage beyond a minute
-    bucket(at(3), 1, { fleetCoverageMs: 120_000 }), // fleet coverage beyond a minute
-    bucket(at(4), 1, { nodeWh: { a: -1, b: 1 } }), // negative Wh
-    bucket(at(5), 1, { fleetWattMs: -5 }), // negative watts
-    bucket(at(6), 1, { fleetWattMs: 1e12 }), // watts above the fleet bound
-    bucket(at(7), 1, { fleetWattMs: 1 }), // watts below the fleet floor
-    bucket(at(8), 1, { nodeWh: { a: null, b: 1 } }), // NaN does not survive JSON; it arrives as null
-    bucket(at(9), 1, { nodeWh: { a: 1 } }), // node set differs from the file's own nodeIds
-    bucket(at(10), 1, { outputTokens: -3 }),
-    bucket(at(11) + 1), // not minute aligned
-    bucket(at(0), 3), // duplicate minute
+test("a foreign-scope file only contributes believable, well-formed minutes", (t) => {
+  const files = scratch(t);
+  const stored = [
+    minuteBucket(m(0)), // the only good minute
+    minuteBucket(m(1), 40), // far above what one unit can draw in a minute
+    minuteBucket(m(2), 1, { nodeCoverageMs: { x: MIN, y: 3 * MIN } }),
+    minuteBucket(m(3), 1, { fleetCoverageMs: 2 * MIN }),
+    minuteBucket(m(4), 1, { nodeWh: { x: 1, y: -2 } }),
+    minuteBucket(m(5), 1, { fleetWattMs: -1 }),
+    minuteBucket(m(6), 1, { fleetWattMs: 5e11 }),
+    minuteBucket(m(7), 1, { fleetWattMs: 2 }),
+    minuteBucket(m(8), 1, { nodeWh: { x: 1, y: null } }),
+    minuteBucket(m(9), 1, { nodeWh: { y: 1 } }),
+    minuteBucket(m(10), 1, { outputTokens: -1 }),
+    minuteBucket(m(11) + 500),
+    minuteBucket(m(0), 2.5), // second copy of a minute is ignored
   ];
-  fs.writeFileSync(
-    filePath,
-    JSON.stringify({ version: 1, savedAt: at(20), nodeIds: ["a", "b"], buckets: poisoned })
-  );
+  fs.writeFileSync(files.window, JSON.stringify({ version: 1, savedAt: m(20), nodeIds: ["x", "y"], buckets: stored }));
 
-  const tracker = new FleetEnergyTracker({
-    nodeIds: ["a", "c"],
-    filePath,
-    monthlyFilePath,
-    setIntervalFn: null,
-    now: () => at(30),
-  });
-  const [month, ...rest] = tracker.monthlySnapshot(at(30)).months;
-  assert.equal(rest.length, 0);
-  assert.deepEqual(month.nodeIds, ["a", "b"]);
-  assert.ok(Math.abs(month.nodes.a.wh - 1) < 1e-9, `${month.nodes.a.wh}`);
-  assert.ok(Math.abs(month.totalWh - 2) < 1e-9, `${month.totalWh}`);
-  assert.equal(month.fleetCoverageMs, MINUTE);
-  assert.equal(month.outputTokens, 0);
-  tracker.close();
-  assert.ok(fs.readdirSync(dir).some((name) => name.includes(".scope-")));
+  const fleet = tracker({ nodeIds: ["x", "z"], filePath: files.window, monthlyFilePath: files.monthly, now: () => m(30) });
+  const months = fleet.monthlySnapshot(m(30)).months;
+  assert.equal(months.length, 1);
+  assert.deepEqual(months[0].nodeIds, ["x", "y"]);
+  near(months[0].nodes.y.wh, 1);
+  near(months[0].totalWh, 2);
+  assert.equal(months[0].fleetCoverageMs, MIN);
+  assert.equal(months[0].outputTokens, 0);
+  fleet.close();
+  assert.ok(fs.existsSync(path.join(files.dir, `fleet-energy.scope-${m(20)}.json`)));
 });
 
-test("an out-of-scope file with no usable node list adds nothing", (t) => {
-  const dir = tempDir(t);
-  const filePath = path.join(dir, "fleet-energy.json");
-  const start = Date.UTC(2026, 9, 5, 12, 0);
-  fs.writeFileSync(
-    filePath,
-    JSON.stringify({ version: 1, savedAt: start, nodeIds: [], buckets: [bucket(start)] })
-  );
-  const tracker = new FleetEnergyTracker({
-    nodeIds: ["a", "c"],
-    filePath,
-    monthlyFilePath: path.join(dir, "fleet-energy-monthly.json"),
-    setIntervalFn: null,
-    now: () => start + 30 * MINUTE,
-  });
-  assert.equal(tracker.monthlySnapshot(start + 30 * MINUTE).months.length, 0);
-  tracker.close();
+test("a foreign-scope file without a node list contributes nothing", (t) => {
+  const files = scratch(t);
+  fs.writeFileSync(files.window, JSON.stringify({ version: 1, savedAt: m(0), nodeIds: [], buckets: [minuteBucket(m(0))] }));
+  const fleet = tracker({ nodeIds: ["x", "z"], filePath: files.window, monthlyFilePath: files.monthly, now: () => m(30) });
+  assert.deepEqual(fleet.monthlySnapshot(m(30)).months, []);
+  fleet.close();
 });
 
-test("Wh per output token pairs fleet energy with covered tokens", () => {
-  const tracker = new FleetEnergyTracker({ nodeIds: ["a"], setIntervalFn: null });
-  const start = Date.UTC(2026, 9, 5, 12, 0);
-  feed(tracker, ["a"], start, start + 4 * MINUTE, 10);
-  const [month] = tracker.monthlySnapshot(start + 4 * MINUTE + 20_000).months;
+test("Wh per output token is null until tokens were counted", () => {
+  const busy = tracker({ nodeIds: ["x"] });
+  run(busy, ["x"], m(0), m(5), 25);
+  const [month] = busy.monthlySnapshot(m(5) + 30_000).months;
   assert.ok(month.coveredOutputTokens > 0);
   assert.ok(month.whPerOutputToken > 0);
-  const noTokens = new FleetEnergyTracker({ nodeIds: ["a"], setIntervalFn: null });
-  feed(noTokens, ["a"], start, start + 3 * MINUTE, 0);
-  assert.equal(noTokens.monthlySnapshot(start + 3 * MINUTE + 20_000).months[0].whPerOutputToken, null);
+
+  const idle = tracker({ nodeIds: ["x"] });
+  run(idle, ["x"], m(0), m(4));
+  assert.equal(idle.monthlySnapshot(m(4) + 30_000).months[0].whPerOutputToken, null);
 });
 
-test("an unreadable monthly file is set aside, not overwritten", (t) => {
-  const dir = tempDir(t);
-  const file = path.join(dir, "fleet-energy-monthly.json");
-  fs.writeFileSync(file, "{not json");
-  const archive = new MonthlyEnergyArchive({ filePath: file, now: () => 1234 });
-  assert.equal(archive.snapshot().months.length, 0);
-  assert.deepEqual(fs.readdirSync(dir), ["fleet-energy-monthly.unreadable-1234.json"]);
-});
+// ── HTTP ─────────────────────────────────────────────────────────────────────
 
-test("monthly HTTP API: read, and clearing is explicit", async (t) => {
-  const start = Date.UTC(2026, 9, 5, 12, 0);
-  const tracker = new FleetEnergyTracker({ nodeIds: ["a", "b"], setIntervalFn: null, now: () => start + 3 * MINUTE + 20_000 });
-  feed(tracker, ["a", "b"], start, start + 3 * MINUTE);
+test("GET returns the history; DELETE needs an explicit month or a confirmed wipe", async (t) => {
+  const at = m(4) + 30_000;
+  const fleet = tracker({ nodeIds: ["x", "y"], now: () => at });
+  run(fleet, ["x", "y"], m(0), m(4));
   const app = express();
-  registerFleetEnergyRoute(app, tracker);
+  registerFleetEnergyRoute(app, fleet);
   const server = app.listen(0);
   t.after(() => server.close());
-  const base = `http://127.0.0.1:${server.address().port}/api/fleet-energy`;
+  const url = (q = "") => `http://127.0.0.1:${server.address().port}/api/fleet-energy/monthly${q}`;
+  const months = async () => (await (await fetch(url())).json()).months;
+  const del = (q) => fetch(url(q), { method: "DELETE" });
 
-  const got = await (await fetch(`${base}/monthly`)).json();
-  assert.deepEqual(got.months.map((m) => m.month), ["2026-10"]);
+  const body = await (await fetch(url())).json();
+  assert.equal(body.estimated, true);
+  assert.deepEqual(body.months.map((x) => x.month), ["2026-10"]);
 
-  // The window endpoint is read-only in this fork: DELETE is not registered, and
-  // of course the archive is untouched.
-  assert.equal((await fetch(base, { method: "DELETE" })).status, 404);
-  assert.equal((await (await fetch(`${base}/monthly`)).json()).months.length, 1);
+  // The 31-day window has no DELETE route at all.
+  assert.equal((await fetch(url().replace("/monthly", ""), { method: "DELETE" })).status, 404);
 
-  assert.equal((await fetch(`${base}/monthly`, { method: "DELETE" })).status, 400);
-  assert.equal((await fetch(`${base}/monthly?month=nope`, { method: "DELETE" })).status, 400);
-  assert.equal((await fetch(`${base}/monthly?all=1`, { method: "DELETE" })).status, 400);
-  // Wiping everything needs the explicit confirmation, and a refusal deletes nothing.
-  const unconfirmed = await fetch(`${base}/monthly?all=true`, { method: "DELETE" });
-  assert.equal(unconfirmed.status, 400);
-  assert.match((await unconfirmed.json()).error, /confirm=delete-all-history/);
-  assert.equal((await fetch(`${base}/monthly?all=true&confirm=yes`, { method: "DELETE" })).status, 400);
-  assert.equal((await (await fetch(`${base}/monthly`)).json()).months.length, 1);
-  const one = await (await fetch(`${base}/monthly?month=2026-10`, { method: "DELETE" })).json();
-  assert.equal(one.removed, 1);
-  assert.equal((await (await fetch(`${base}/monthly`)).json()).months.length, 0);
+  for (const q of ["", "?month=2026-1", "?all=yes", "?all=true&confirm=please", "?month=2026-10&all=true"]) {
+    assert.equal((await del(q)).status, 400, q);
+  }
+  const refused = await del("?all=true");
+  assert.equal(refused.status, 400);
+  assert.match((await refused.json()).error, /confirm=delete-all-history/);
+  assert.equal((await months()).length, 1);
 
-  feed(tracker, ["a", "b"], start + 10 * MINUTE, start + 13 * MINUTE);
-  assert.equal((await (await fetch(`${base}/monthly`)).json()).months.length, 1);
-  const all = await fetch(`${base}/monthly?all=true&confirm=delete-all-history`, { method: "DELETE" });
-  assert.equal(all.status, 200);
-  assert.equal((await all.json()).removed, 1);
-  assert.equal((await (await fetch(`${base}/monthly`)).json()).months.length, 0);
-});
+  assert.deepEqual(await (await del("?month=2026-09")).json(), { removed: 0 });
+  assert.deepEqual(await (await del("?month=2026-10")).json(), { removed: 1 });
+  assert.equal((await months()).length, 0);
 
-test("a clock that ran far ahead cannot hide later real minutes", () => {
-  const t0 = Date.UTC(2026, 9, 5, 12, 0);
-  const clock = t0;
-  const archive = new MonthlyEnergyArchive({ now: () => clock });
-  const tenDays = 10 * 24 * 60 * MINUTE;
-  // Data recorded while the clock was 10 days ahead: folding stops at now + 1 day of the injected clock.
-  assert.equal(archive.foldBuckets([bucket(t0 + tenDays)], { nowMs: t0 + tenDays + MINUTE * 2 }), 0);
-  assert.ok(archive.foldedThroughMs <= t0 + 24 * 60 * MINUTE);
-  assert.equal(archive.foldBuckets([bucket(t0 - 5 * MINUTE)], { nowMs: t0 }), 1);
-  assert.equal(archive.snapshot(t0).months[0].nodes.a.wh, 1);
-});
-
-test("a stored watermark beyond now + 1 day is clamped on the next fold and totals are kept", (t) => {
-  const dir = tempDir(t);
-  const file = path.join(dir, "monthly.json");
-  const t0 = Date.UTC(2026, 9, 5, 12, 0);
-  const future = t0 + 400 * 24 * 60 * MINUTE;
-  fs.writeFileSync(
-    file,
-    JSON.stringify({
-      version: 1,
-      savedAt: t0,
-      foldedThroughMs: future,
-      months: { "2026-09": { nodes: { a: { wh: 7, coverageMs: MINUTE } }, fleetWh: 7, fleetCoverageMs: MINUTE, outputTokens: 0, coveredOutputTokens: 0, tokenFleetWh: 0 } },
-    })
-  );
-  const archive = new MonthlyEnergyArchive({ filePath: file, now: () => t0 });
-  assert.ok(archive.foldedThroughMs <= t0);
-  assert.equal(archive.foldBuckets([bucket(t0 + MINUTE)], { nowMs: t0 + 3 * MINUTE }), 1);
-  const months = archive.snapshot(t0).months;
-  assert.equal(months.find((m) => m.month === "2026-09").nodes.a.wh, 7);
-  assert.equal(months.find((m) => m.month === "2026-10").nodes.a.wh, 1);
-});
-
-test("a discarded bucket adds nothing to an existing month", () => {
-  const archive = new MonthlyEnergyArchive();
-  const t0 = Date.UTC(2026, 9, 5, 12, 0);
-  const empty = { minuteStartMs: t0 + MINUTE, nodeWh: {}, nodeCoverageMs: {}, fleetWattMs: 0, fleetCoverageMs: MINUTE, outputTokens: 0, coveredOutputTokens: 5 };
-  archive.foldBuckets([bucket(t0), empty], { nowMs: t0 + 5 * MINUTE });
-  const [month] = archive.snapshot().months;
-  assert.equal(month.fleetCoverageMs, MINUTE);
-  assert.equal(month.coveredOutputTokens, 0);
-  assert.equal(month.fleetWh, 2);
+  run(fleet, ["x", "y"], m(10), m(14));
+  assert.equal((await months()).length, 1);
+  const wiped = await del("?all=true&confirm=delete-all-history");
+  assert.equal(wiped.status, 200);
+  assert.deepEqual(await wiped.json(), { removed: 1 });
+  assert.equal((await months()).length, 0);
 });

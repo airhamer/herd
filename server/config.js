@@ -21,10 +21,8 @@ const LLM_DAILY_JSON_PATH =
 /** Rolling fleet energy estimates (gitignored; written atomically at mode 0600). */
 const FLEET_ENERGY_JSON_PATH =
   process.env.FLEET_ENERGY_JSON_PATH || path.join(ROOT, "config", "fleet-energy.json");
-/** Permanent monthly energy roll-up (gitignored; survives resets and fleet changes). */
-const FLEET_ENERGY_MONTHLY_JSON_PATH =
-  process.env.FLEET_ENERGY_MONTHLY_JSON_PATH ||
-  path.join(ROOT, "config", "fleet-energy-monthly.json");
+// Long-run monthly energy totals; outlives the 31-day window (docs/specs/monthly-energy.md).
+const FLEET_ENERGY_MONTHLY_JSON_PATH = process.env.FLEET_ENERGY_MONTHLY_JSON_PATH || path.join(ROOT, "config", "fleet-energy-monthly.json");
 // Opt-in 48 h / 30 d unit history (Settings → metricsHistory); never written while it is off.
 const METRICS_HISTORY_JSON_PATH =
   process.env.METRICS_HISTORY_JSON_PATH ||
