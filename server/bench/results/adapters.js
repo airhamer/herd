@@ -354,7 +354,7 @@ export function fromAeonDecodeJob(job, opts = {}) {
   return out;
 }
 
-function aeonMetrics(cell) {
+export function aeonMetrics(cell) {
   const n = Number.isInteger(cell.n) && cell.n > 0 ? cell.n : null;
   const val = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const row = (metric, definition, value, extra = {}) => ({

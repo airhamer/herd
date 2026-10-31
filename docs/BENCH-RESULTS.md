@@ -55,6 +55,7 @@ Names are append-only (`owner.what.vN`). Only definitions in the same
 | Quality / energy | `herd.quality.item_pass_rate.v1`, `reference.accuracy_published.v1`, `herd.energy.gpu_power_wave.v1` |
 | Energy over a run window | `herd.energy.node_tracker_run.v1` (fleet energy tracker estimate for the node over the whole run ÷ the run's output tokens; own group; BENCH6) |
 | Quality, mean of categories | `herd.quality.category_mean.v1` (Quality bench overall, see [QUALITY-BENCH.md](./QUALITY-BENCH.md)) |
+| AEON Bench Pod scores, one group each | `aeon.suite_case_mean_score.v1` (aeon-suite-v4 mean case score × 100), `aeon.agentic_task_mean_score.v1` (aeon-agentic-v2.5 per harness). Imported only, see [AEON-POD.md](./AEON-POD.md) |
 
 The AEON ladder (DecodeBench `protocol: "aeon-perf-v1"`) stores one record per
 cell, `perf.direct.<category>.c<n>` and `perf.direct.overall.c<n>`, with suite
@@ -93,6 +94,7 @@ one `hasso.matrix.<workload>` per battery workload, with suite
 | GET | `/api/bench-results/upgrade` | `baseline=<run_id>[,<run_id>]&candidate=…`: "Upgrade worth it?" verdict, see below |
 | GET | `/api/bench-results/:id` | |
 | GET | `/api/bench-results/:id/references` | nearest published figures, same definition group only, `limit` 1–50 (default 3) |
+| POST | `/api/bench-results/import/aeon-pod` | one AEON Bench Pod run (`{ run, node_id, port?, board_status?, board_url?, … }`) → `aeon-pod` records with Herd's lane provenance; re-import replaces. See [AEON-POD.md](./AEON-POD.md) (BENCH7) |
 | POST | `/api/bench-results` | reference / aeon-pod results only. Missing fields become `null`; `id` defaults to `<origin>:<run_id>`. 201 created, 200 replaced, 400 with `errors[]` |
 | DELETE | `/api/bench-results/:id` | |
 
@@ -154,7 +156,9 @@ panel and in a fleet node's **LLM benchmarks** panel
 
 - **Sides.** Each side is one or more runs, at most one per bench (typically a
   decode, AEON or Hasso run, plus an optional quality run). Runs pair by
-  bench; a bench on one side only is refused. Cells pair by the id suffix
+  bench; a bench on one side only is refused. AEON Bench Pod perf runs pair
+  as DecodeBench (same `aeon-perf-v1` ladder), and pod text and agentic runs
+  are quality runs (BENCH7). Cells pair by the id suffix
   after the run id (`c4`, `perf.direct.overall.c8`, a quality category).
   Cells without a partner are listed under `unpaired` and left out.
 - **Refusal.** Every paired cell must pass the compare rules above:
@@ -216,6 +220,9 @@ panel and in a fleet node's **LLM benchmarks** panel
     window) and memory headroom (read at start and finish) to every record of
     the run (BENCH6).
   - A failing sink never affects a bench.
+- **AEON Bench Pod (BENCH7):** `POST /api/bench-results/import/aeon-pod` or
+  `scripts/aeon-pod-import.mjs`; provenance is read for the named node at
+  import time. Runbook: [AEON-POD.md](./AEON-POD.md).
 - **Legacy history:**
   - At startup, Herd imports `bench-history.json`,
     `prefill-bench-history.json` and `showcase-history.json`.

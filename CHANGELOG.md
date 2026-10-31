@@ -19,6 +19,13 @@ Format: version sections are listed newest first.
 
 ### Added
 
+- **AEON Bench Pod runbook and import (#47)**: [docs/AEON-POD.md](docs/AEON-POD.md) explains how to run AEON Bench Pod (aeon-suite-v4, the agentic-v2.5 harnesses and the aeon-perf-v1 ladder) against a Herd lane. It covers the `self_reported` path (`--target`, kept local by default) and the `attested` path (`--serve-url` + `--remote-host`), and imports the results.
+  - **API:** new `POST /api/bench-results/import/aeon-pod` (`server/bench/aeonPod/`) turns one pod run into `origin: aeon-pod` records, with Herd's provenance for the named lane. The board status is what the operator states: `not_submitted`, `self_reported`, or `attested` with its board URL. The pod's own `trust_tier` is kept as a claim only.
+  - **Script:** `scripts/aeon-pod-import.mjs` is zero-dependency and fetches from the pod dashboard or a saved run JSON.
+  - **Definitions:** `aeon.suite_case_mean_score.v1` and `aeon.agentic_task_mean_score.v1`. Pod perf cells reuse the AEON ladder definitions.
+  - **Upgrade worth it?:** pod text and agentic runs count as quality runs, and pod perf runs pair with DecodeBench AEON-ladder runs.
+  - Tested once against the demo lane (stub server): `self_reported`, not submitted. The pod and Herd ladders agree within 1.5%.
+
 - **Upgrade worth it? (#46)**: **Upgrade worth it?** in the LLM panel and in a fleet node's **LLM benchmarks** panel compares a baseline run with a candidate run, each a throughput run plus an optional quality run.
   - **Refusal:** mismatched hardware bucket, suite or suite version, conditions, or headline-metric definition groups are refused, each with a reason.
   - **Throughput:** Δ% per cell, judged against a noise band. The band is the spread of repeated runs on the same lane, floored at 3%, or 15% when there are no repeats.
