@@ -13,6 +13,14 @@
  *
  * An agent lane on the same LAN address and port as a Spark lane is the same
  * engine; it is listed once, as the Spark lane.
+ *
+ * SC11 (#20) proxy-only rule: when a node's telemetry reports a running
+ * guard/keepalive proxy, that proxy front is the node's only LLM traffic
+ * address — the front never changes and a component action only changes what
+ * answers behind it (shared/types.ts, component-action seam). Every engine
+ * lane on such a node is therefore published at the proxy's port (one lane
+ * per proxy front, `viaProxy: true`); the engine's own port is claimed so
+ * the direct address can never surface as a second lane.
  */
 
 import { hasServerCounters } from "./serverCounters.js";
@@ -33,6 +41,23 @@ export function parseLaneId(laneId) {
 
 function str(v) {
   return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+/**
+ * SC11: the node's proxy front port, from telemetry's ProxyStatus
+ * (agent/collectors/proxy.js) passed through the fleet snapshot. Non-null
+ * only when the proxy reports itself running on a valid port — everything
+ * else (absent status, stopped, malformed port) means "no proxy", so lanes
+ * keep their direct engine port exactly as before.
+ *
+ * @param {any} node fleet node record (buildFleetSnapshot spread + registry keys)
+ * @returns {number | null}
+ */
+export function proxyFront(node) {
+  const p = node && node.proxy;
+  if (!p || typeof p !== "object" || p.running !== true) return null;
+  const port = Number(p.port);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
 }
 
 /**
@@ -79,10 +104,14 @@ export function listShowcaseTargets({ sparks = [], sparkSnapshot = () => null, n
     const ips = [node.registryLanIp, node.lanIp].filter(Boolean);
     const rec = nodeRecord(node.nodeId) || null;
     const ssh = rec?.protocol === "ssh" && rec?.ssh?.user ? true : false;
+    // SC11: a running proxy fronts every LLM port on this node; all its
+    // lanes publish at the proxy port (and collapse to one lane per front).
+    const proxyPort = proxyFront(node);
     for (const entry of node.llm) {
-      const port = Number(entry?.port);
-      if (!Number.isInteger(port) || port < 1 || port > 65535) continue;
-      if (ips.some((ip) => claimed.has(`${ip}:${port}`))) continue;
+      const enginePort = Number(entry?.port);
+      if (!Number.isInteger(enginePort) || enginePort < 1 || enginePort > 65535) continue;
+      const port = proxyPort ?? enginePort;
+      if (ips.some((ip) => claimed.has(`${ip}:${port}`) || claimed.has(`${ip}:${enginePort}`))) continue;
       const backend = str(entry?.backend);
       out.push({
         laneId: laneIdOf("node", node.nodeId, port),
@@ -96,7 +125,16 @@ export function listShowcaseTargets({ sparks = [], sparkSnapshot = () => null, n
         available: Boolean(node.online) && Boolean(entry?.modelId || backend),
         serverCounters: hasServerCounters(backend),
         access: ssh ? "lan-or-ssh" : "lan",
+        ...(proxyPort != null ? { viaProxy: true } : {}),
       });
+      // Claim the direct engine address too: with a proxy in front it is no
+      // longer a legitimate showcase target, and later records (a second
+      // agent entry, or another lane behind the same front) must not
+      // republish it beside the proxy lane.
+      for (const ip of ips) {
+        claimed.add(`${ip}:${enginePort}`);
+        if (proxyPort != null) claimed.add(`${ip}:${proxyPort}`);
+      }
     }
   }
 

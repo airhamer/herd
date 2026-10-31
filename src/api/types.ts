@@ -1601,6 +1601,12 @@ export interface FleetShowcaseTarget {
   serverCounters: boolean;
   /** How Herd reaches it: local, LAN with SSH-tunnel fallback, or LAN only. */
   access: "local" | "lan-or-ssh" | "lan";
+  /**
+   * SC11 (#20): true when the node's guard/keepalive proxy is running and
+   * `port` is the proxy front, not the engine's direct port — LLM traffic
+   * reaches the engine only through the proxy. Absent = direct lane.
+   */
+  viaProxy?: boolean;
 }
 
 export interface FleetShowcaseLimits {
