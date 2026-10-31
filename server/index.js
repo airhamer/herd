@@ -40,6 +40,7 @@ import { BenchResultsStore } from "./bench/results/store.js";
 import { createResultsRecorder } from "./bench/results/recorder.js";
 import { describeProvenance } from "./bench/results/provenance.js";
 import { registerBenchResultsRoutes } from "./bench/results/routes.js";
+import { registerAeonPodRoutes } from "./bench/aeonPod/routes.js";
 import { readRegistry, registryRecords, syncRegistryIntoStore } from "./bench/references/loader.js";
 import { llmProbeHost } from "./collectors/llmHost.js";
 import { onceClose, resolveLlmHttpTarget } from "./collectors/llmTunnel.js";
@@ -615,6 +616,24 @@ try {
   console.warn(`[bench-results] reference registry: ${err.message}`);
 }
 registerBenchResultsRoutes(app, { store: benchResultsStore, registry: referenceRegistry, energyWindow: benchEnergyWindow });
+// AEON Bench Pod import (BENCH7): provenance is Herd's view of the benched lane now.
+registerAeonPodRoutes(app, {
+  store: benchResultsStore,
+  provenanceFor(nodeId, port) {
+    const spark = registry.getSpark(nodeId);
+    if (spark) {
+      const ports = Array.isArray(spark.llmPorts) && spark.llmPorts.length ? spark.llmPorts : [resolveLlmPort(spark)];
+      if (port != null && !ports.includes(port)) {
+        throw Object.assign(new Error(`Port ${port} is not an LLM port of ${spark.id}`), { status: 400 });
+      }
+      return benchProvenance(spark, monitors.get(spark.id), port ?? ports[0], ports);
+    }
+    const rec = getNode(nodeId);
+    if (!rec) throw Object.assign(new Error(`Node ${nodeId} not found`), { status: 404 });
+    const snapshot = fleetConnection ? fleetConnection.getSnapshot(rec.id) : null;
+    return describeNodeProvenance(rec, snapshot, resolveNodeBenchTarget(rec, snapshot, { port }));
+  },
+});
 
 /** Host + lane provenance for a bench run starting now (null on failure). */
 function benchProvenance(spark, monitor, port, ports, customHost = false) {
