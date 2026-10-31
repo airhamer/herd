@@ -7,6 +7,30 @@
 import { LLM_PROBE_TIMEOUT_MS } from "../config.js";
 import { classifyHostScope } from "../validate.js";
 import { llmProbeHost } from "./llmHost.js";
+import {
+  NATIVE_BACKENDS,
+  backendFromOwnedBy,
+  clampCached,
+  counterDeltas,
+  hassoRates,
+  healthLooksLikeStrata,
+  metricsLookLikeSplash,
+  metricsLookLikeTensorfold,
+  parseFreeTokenStats,
+  parseLmStudioModels,
+  parseLocalsStats,
+  parseOllama,
+  parseSplashMetrics,
+  parseStrataMetrics,
+  parseTensorfoldHealth,
+  parseTensorfoldMetrics,
+  round,
+  sglangHassoCounters,
+  statsLookLikeFreeToken,
+  tagsLookLikeOllama,
+  modelsLookLikeLmStudio,
+  vllmHassoCounters,
+} from "./llmEngines.js";
 
 const FAIL_RESET_THRESHOLD = 3;
 const REDETECT_INTERVAL_MS = 60_000;
@@ -19,6 +43,77 @@ const SGLANG_MODEL_INFO_PATHS = ["/model_info", "/get_model_info"];
  * expire back to 0 if it stops changing.
  */
 const SGLANG_STICKY_TPS_LIVE_MS = 6_000;
+
+/** Backends herd knew before STAT1 (#34); their legacy fields are frozen. */
+const LEGACY_OPENAI_BACKENDS = new Set(["vllm", "sglang", "ds4", "exl3", "q27"]);
+const NATIVE_BACKEND_SET = new Set(NATIVE_BACKENDS);
+/** TensorFold prefill is measured over finished requests in this window. */
+const TENSORFOLD_PREFILL_WINDOW_MS = 60_000;
+
+/** Snapshot fields that are rates or windowed means (carry a window). */
+const WINDOWED_FIELDS = new Set([
+  "generationTps",
+  "prefillTps",
+  "cachedPrefillTps",
+  "uncachedPrefillTps",
+  "computedPrefillTps",
+  "engineDecodeTps",
+  "enginePrefillTps",
+  "queueTimeSeconds",
+  "ttftSeconds",
+  "specAcceptLength",
+]);
+
+/** Snapshot fields that get a `valueSources` entry when non-null. */
+const SOURCED_FIELDS = [
+  ...WINDOWED_FIELDS,
+  "totalOutputTokens",
+  "totalPromptTokens",
+  "totalCachedTokens",
+  "kvCacheUsage",
+  "requestsRunning",
+  "requestsWaiting",
+  "ttftP95Seconds",
+  "e2eP95Seconds",
+  "itlP95Seconds",
+  "preemptionsTotal",
+  "prefixCacheHitRate",
+  "mtpAcceptanceRate",
+];
+
+/** Default source tier per backend (Page §3); per-field overrides below. */
+const BACKEND_SOURCE = {
+  vllm: "counter",
+  sglang: "counter",
+  "llama.cpp": "native",
+  ds4: "counter",
+  exl3: "native",
+  q27: "counter",
+  tensorfold: "counter",
+  freetoken: "native",
+  strata: "native",
+  locals: "native",
+  splash: "counter",
+  lmstudio: "native",
+  ollama: "native",
+  tabbyapi: "native",
+};
+
+/** Static per-backend field notes: tier or approximate flags that never change. */
+const BACKEND_FIELD_SOURCES = {
+  // Prefill is estimated from engine-step tokens minus generation.
+  vllm: { prefillTps: { approximate: true } },
+  // Splash publishes p95 gauges and an acceptance gauge itself.
+  splash: {
+    ttftP95Seconds: { source: "native" },
+    itlP95Seconds: { source: "native" },
+    mtpAcceptanceRate: { source: "native" },
+  },
+  // Locals counts a prompt when its prefill finishes.
+  locals: { prefillTps: { approximate: true } },
+  // FreeToken's p95 is end-to-end; TTFT is the engine's reported mean.
+  freetoken: { ttftSeconds: { windowS: null } },
+};
 
 /**
  * Prefer a short model id when the server returns a Hugging Face hub cache path.
@@ -142,6 +237,42 @@ export class LlmProbe {
      * @type {"server_info" | "prometheus" | null}
      */
     this._sglangTokenSource = null;
+    this._initStat1State();
+  }
+
+  /**
+   * STAT1 (#34) state: prompt/cached totals, engine-native rates and the
+   * source tier of each value. Unknown is null, never 0.
+   */
+  _initStat1State() {
+    /** Lifetime prompt tokens the engine reports. null when not exposed. */
+    this.totalPromptTokens = null;
+    /** Lifetime prompt tokens served from cache. null when not exposed. */
+    this.totalCachedTokens = null;
+    /** Computed-only prefill tok/s from Δprompt − Δcached (vLLM). */
+    this.computedPrefillTps = null;
+    /** Engine-native decode tok/s (Hasso formula on vLLM/SGLang; engine counters elsewhere). */
+    this.engineDecodeTps = null;
+    /** Engine-native prefill tok/s (Hasso formula on vLLM/SGLang; engine counters elsewhere). */
+    this.enginePrefillTps = null;
+    /** Mean queue time (s) of requests admitted in the window. */
+    this.queueTimeSeconds = null;
+    /** Mean accepted tokens per speculative step. */
+    this.specAcceptLength = null;
+    /** Installed models (LM Studio / Ollama). */
+    this.installedModels = null;
+    /** Seconds the current rates span; null when there is no valid window. */
+    this._windowS = null;
+    /** Per-poll source overrides: field → { source?, windowS?, approximate? }. */
+    this._srcOverrides = {};
+    /** Previous Hasso counters (vLLM / SGLang). */
+    this._hassoPrev = null;
+    /** Previous native-engine counters, by key. */
+    this._ctr = new Map();
+    /** TensorFold finished-request prefill window: [{ t, prompt, cached, sec }]. */
+    this._tfPrefillWindow = [];
+    /** Previous TensorFold TTFT sum/count. */
+    this._tfTtftPrev = null;
   }
 
   /**
@@ -279,6 +410,7 @@ export class LlmProbe {
     this.lastIterSum = null;
     this._sglangStickyTps = null;
     this._sglangLoadGenTps = null;
+    this._initStat1State();
   }
 
   /** Note auth from an HTTP status on an unauthenticated probe request. */
@@ -296,6 +428,24 @@ export class LlmProbe {
 
   // ─── Server type detection ───────────────────────────────
   async _detectServerType() {
+    // Strata serves a llama.cpp-compatible /slots, so its /health
+    // (service: "strata") must be read first. Skip on any other known backend.
+    if (this.backendType == null || this.backendType === "strata" || this.backendType === "llama.cpp") {
+      try {
+        const res = await this._fetch(`${this.baseUrl}/health`);
+        if (res.ok) {
+          const data = await res.json().catch(() => null);
+          if (healthLooksLikeStrata(data)) {
+            this._noteAuthStatus(res.status);
+            this.serverIsOpenAI = true;
+            this.backendType = "strata";
+            return;
+          }
+        }
+      } catch {
+        /* not strata */
+      }
+    }
     // Skip the llama.cpp /slots probe once we've positively identified an
     // OpenAI-compatible backend. vLLM / sglang / ds4-server have no /slots,
     // so re-probing it on every re-detect cycle just spams 404s in the
@@ -306,7 +456,8 @@ export class LlmProbe {
       this.backendType !== "sglang" &&
       this.backendType !== "ds4" &&
       this.backendType !== "exl3" &&
-      this.backendType !== "q27"
+      this.backendType !== "q27" &&
+      !NATIVE_BACKEND_SET.has(this.backendType)
     ) {
       const slotUrl = `${this.baseUrl}/slots`;
       try {
@@ -365,11 +516,56 @@ export class LlmProbe {
       // q27's /v1/models reports owned_by: "q27" (signalnine/q27 engine).
       if (/q27/i.test(ownedBy)) return "q27";
     }
+    // owned_by that names an engine exactly (STAT1). Partial matches fall through.
+    const exact = backendFromOwnedBy(ownedBy);
+    if (exact) return exact;
+    // LM Studio answers 200 + JSON on every path, so it must be ruled out
+    // before the SGLang / vLLM heuristics read its catch-all as theirs.
+    if (await this._probeJson("/api/v0/models", modelsLookLikeLmStudio)) return "lmstudio";
+    if (await this._probeJson("/api/tags", tagsLookLikeOllama)) return "ollama";
     if (await this._probeIsDs4()) return "ds4";
     if (await this._probeIsSglang()) return "sglang";
     if (await this._probeIsExl3()) return "exl3";
     if (await this._probeIsQ27()) return "q27";
+    if (await this._probeJson("/v1/stats", statsLookLikeFreeToken)) return "freetoken";
+    const metrics = await this._fetchText("/metrics");
+    if (metrics != null && metricsLookLikeTensorfold(metrics)) return "tensorfold";
+    if (metrics != null && metricsLookLikeSplash(metrics)) return "splash";
     return "vllm";
+  }
+
+  /**
+   * GET `path` as JSON; null on any failure or non-2xx.
+   * @param {string} path
+   */
+  async _fetchJson(path) {
+    try {
+      const res = await this._fetch(`${this.baseUrl}${path}`);
+      if (!res.ok) return null;
+      return await res.json().catch(() => null);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * GET `path` as text; null on any failure or non-2xx.
+   * @param {string} path
+   */
+  async _fetchText(path) {
+    try {
+      const res = await this._fetch(`${this.baseUrl}${path}`);
+      if (!res.ok) return null;
+      return await res.text();
+    } catch {
+      return null;
+    }
+  }
+
+  /** True when GET `path` answers JSON that `test` accepts. */
+  async _probeJson(path, test) {
+    const data = await this._fetchJson(path);
+    return data != null && test(data);
   }
 
   /**
@@ -460,6 +656,8 @@ export class LlmProbe {
     const now = this._now();
     const dtSec = (now - this.lastProbeTime) / 1000;
     this.lastProbeTime = now;
+    this._windowS = dtSec > 0 && dtSec < 10 ? round(dtSec, 3) : null;
+    this._srcOverrides = {};
 
     // Model info from /v1/models — 401/403 means protected; other failure = down
     let modelsOk = false;
@@ -499,6 +697,16 @@ export class LlmProbe {
         this.backendType = "exl3";
       }
     }
+    if (this.backendType == null) {
+      const exact = backendFromOwnedBy(owned);
+      if (exact) this.backendType = exact;
+    }
+
+    // STAT1 engines: each reads its own native endpoint.
+    if (NATIVE_BACKEND_SET.has(this.backendType)) {
+      await this._probeNativeEngine(dtSec);
+      return this._getSnapshot();
+    }
 
     // EXL3 serve_openai.py: live tok/s from /health cumulative counters (no Prometheus).
     if (this.backendType === "exl3" || this.backendType == null) {
@@ -523,6 +731,7 @@ export class LlmProbe {
     if (this.backendType === "sglang" || this.backendType == null) {
       this._sglangTotalsPolled = false;
       const sgData = await this._fetchSglangJson(SGLANG_SERVER_INFO_PATHS);
+      this._sglangServerInfo = sgData;
       if (sgData) {
         this.backendType = "sglang";
         // Load before last_gen_throughput so inflight can keep a steady rate live.
@@ -547,6 +756,9 @@ export class LlmProbe {
           const txt = await metricsRes.text();
           if (this._sglangTotalsPolled) this._applySglangPrefillSplit(txt, dtSec);
           else this._applySglangMetrics(txt, dtSec);
+          this._noteSglangStat1(txt);
+        } else {
+          this._noteSglangStat1(null);
         }
       } catch {
         /* metrics optional */
@@ -575,9 +787,14 @@ export class LlmProbe {
         ) {
           this.backendType = "q27";
           this._applyQ27Metrics(txt, dtSec);
+        } else if (metricsLookLikeTensorfold(txt) || metricsLookLikeSplash(txt)) {
+          // A lane first labelled vLLM whose /metrics carry TensorFold or Splash series.
+          this.backendType = metricsLookLikeTensorfold(txt) ? "tensorfold" : "splash";
+          await this._probeNativeEngine(dtSec);
         } else {
           this.backendType = "vllm";
           this._applyVllmMetrics(txt, dtSec);
+          this._noteVllmStat1(txt, dtSec);
         }
       } else if (
         this.backendType !== "ds4" &&
@@ -676,6 +893,7 @@ export class LlmProbe {
       "computed"
     );
     this._setPrefillSplitRates(cached, computed, dtSec);
+    this._setPromptTotals(computed, cached);
 
     // Clear tiles that are vLLM-histogram-specific (no ds4 equivalent yet)
     this.kvCacheUsage = null;
@@ -783,6 +1001,7 @@ export class LlmProbe {
       this._getPromMetric(txt, "q27_prefill_computed_tokens_processed_total") ??
       this._getPromMetric(txt, "q27_prefill_computed_tokens_total");
     this._setPrefillSplitRates(cachedSplit, computedSplit, dtSec);
+    this._setPromptTotals(computedSplit, cachedSplit);
 
     const specAccept = this._getPromMetric(txt, "q27_spec_accept_ratio");
     this.mtpAcceptanceRate =
@@ -816,6 +1035,9 @@ export class LlmProbe {
     this.mtpAcceptanceRate = null;
     this.cachedPrefillTps = null;
     this.uncachedPrefillTps = null;
+    // serve_openai.py has no cache split: prompt total only.
+    this.totalPromptTokens = Number.isFinite(prompt) ? prompt : null;
+    this.totalCachedTokens = null;
 
     if (!Number.isFinite(completion)) {
       this.generationTps = busy ? this.generationTps : 0;
@@ -1294,6 +1516,12 @@ export class LlmProbe {
     const now = this._now();
     const dtSec = (now - this.lastProbeTime) / 1000;
     this.lastProbeTime = now;
+    this._windowS = dtSec > 0 && dtSec < 10 ? round(dtSec, 3) : null;
+    this._srcOverrides = {};
+    // /slots counters belong to each slot's current task, not the server's
+    // lifetime, so there are no prompt/cached totals to report.
+    this.totalPromptTokens = null;
+    this.totalCachedTokens = null;
 
     // Slots
     let slotsOk = false;
@@ -1625,7 +1853,487 @@ export class LlmProbe {
       mtpAcceptanceRate: this.mtpAcceptanceRate,
       posture: this._buildPosture(),
       error: this.error,
+      ...this._stat1Fields(),
     };
+  }
+
+  /** STAT1 fields appended to every live snapshot. */
+  _stat1Fields() {
+    const fields = {
+      totalPromptTokens: this.totalPromptTokens,
+      totalCachedTokens: this.totalCachedTokens,
+      computedPrefillTps: this.computedPrefillTps,
+      engineDecodeTps: this.engineDecodeTps,
+      enginePrefillTps: this.enginePrefillTps,
+      queueTimeSeconds: this.queueTimeSeconds,
+      specAcceptLength: this.specAcceptLength,
+      installedModels: this.installedModels,
+    };
+    return { ...fields, valueSources: this._buildValueSources(fields) };
+  }
+
+  /**
+   * Source tier, window and approximate flag for every non-null value.
+   * @param {Record<string, unknown>} extra
+   */
+  _buildValueSources(extra) {
+    const backend = this.backendType;
+    if (!backend) return {};
+    const base = BACKEND_SOURCE[backend] ?? "counter";
+    const statics = BACKEND_FIELD_SOURCES[backend] ?? {};
+    /** @type {Record<string, { source: string, windowS: number | null, approximate: boolean }>} */
+    const out = {};
+    for (const field of SOURCED_FIELDS) {
+      const value = field in extra ? extra[field] : this[field];
+      if (value == null) continue;
+      const entry = {
+        source: base,
+        windowS: WINDOWED_FIELDS.has(field) ? this._windowS : null,
+        approximate: false,
+        ...statics[field],
+        ...this._srcOverrides[field],
+      };
+      out[field] = entry;
+    }
+    return out;
+  }
+
+  /**
+   * @param {string} field
+   * @param {{ source?: string, windowS?: number | null, approximate?: boolean }} note
+   */
+  _noteSource(field, note) {
+    this._srcOverrides[field] = { ...this._srcOverrides[field], ...note };
+  }
+
+  /**
+   * Prompt total = computed + cached, cached total as given. Null when the
+   * engine exposes neither series.
+   * @param {number|null|undefined} computed
+   * @param {number|null|undefined} cached
+   */
+  _setPromptTotals(computed, cached) {
+    if (computed == null || cached == null) {
+      this.totalPromptTokens = computed ?? null;
+      this.totalCachedTokens = null;
+      return;
+    }
+    this.totalPromptTokens = computed + cached;
+    this.totalCachedTokens = cached;
+  }
+
+  // ─── STAT1: Hasso formulas on vLLM / SGLang ──────────────
+  /**
+   * vLLM totals, computed-only prefill (Δprompt − Δcached) and Hasso rates.
+   * Leaves every legacy field untouched.
+   * @param {string} txt
+   * @param {number} dtSec
+   */
+  _noteVllmStat1(txt, dtSec) {
+    const cur = vllmHassoCounters(txt);
+    this.totalPromptTokens = cur.prompt;
+    this.totalCachedTokens = clampCached(cur.cached, cur.prompt);
+    const prev = this._hassoPrev?.engine === "vllm" ? this._hassoPrev.counters : null;
+    const rates = hassoRates("vllm", prev, cur);
+    this.engineDecodeTps = rates.decodeTps;
+    this.enginePrefillTps = rates.prefillTps;
+    this.queueTimeSeconds = rates.queueSeconds;
+    this.specAcceptLength = rates.acceptLength;
+    this.computedPrefillTps = null;
+    if (prev && dtSec > 0 && dtSec < 10) {
+      const { deltas: d, reset } = counterDeltas(
+        { prompt: prev.prompt, cached: prev.cached },
+        { prompt: cur.prompt, cached: cur.cached }
+      );
+      if (!reset && d.prompt != null && d.cached != null) {
+        this.computedPrefillTps = round(Math.max(0, d.prompt - d.cached) / dtSec);
+      }
+    }
+    this._hassoPrev = { engine: "vllm", counters: cur };
+  }
+
+  /**
+   * SGLang totals, KV usage and Hasso rates. Prometheus is optional; without
+   * it the totals come from /server_info when that carries them.
+   * @param {string | null} txt
+   */
+  _noteSglangStat1(txt) {
+    const info = this._sglangServerInfo;
+    const infoPrompt = info ? this._finiteOrNull(info.total_input_tokens) : null;
+    const infoCached = info ? this._finiteOrNull(info.total_cached_tokens) : null;
+    if (txt == null) {
+      this.totalPromptTokens = infoPrompt;
+      this.totalCachedTokens = clampCached(infoCached, infoPrompt);
+      if (infoPrompt != null) this._noteSource("totalPromptTokens", { source: "native" });
+      if (infoCached != null) this._noteSource("totalCachedTokens", { source: "native" });
+      this.engineDecodeTps = null;
+      this.enginePrefillTps = null;
+      this.queueTimeSeconds = null;
+      this.specAcceptLength = null;
+      this._hassoPrev = null;
+      return;
+    }
+    const prompt =
+      this._getPromMetric(txt, "sglang:prompt_tokens_total") ??
+      this._getPromMetric(txt, "sglang_prompt_tokens_total") ??
+      infoPrompt;
+    const cached = this._sglangCachedTokens(txt) ?? infoCached;
+    this.totalPromptTokens = prompt;
+    this.totalCachedTokens = clampCached(cached, prompt);
+    if (this._sglangTotalsPolled) this._noteSource("totalOutputTokens", { source: "native" });
+    if (this._sglangGenGauge(txt) != null) this._noteSource("generationTps", { source: "native" });
+    const kv =
+      this._getPromMetricMax(txt, "sglang:token_usage") ??
+      this._getPromMetricMax(txt, "sglang_token_usage") ??
+      this._getPromMetricMax(txt, "sglang:full_token_usage") ??
+      this._getPromMetricMax(txt, "sglang_full_token_usage");
+    // Legacy SGLang left kvCacheUsage null; fill it only when the engine says.
+    if (kv != null) this.kvCacheUsage = round(kv, 4);
+    const cur = sglangHassoCounters(txt);
+    const prev = this._hassoPrev?.engine === "sglang" ? this._hassoPrev.counters : null;
+    const rates = hassoRates("sglang", prev, cur);
+    this.engineDecodeTps = rates.decodeTps;
+    this.enginePrefillTps = rates.prefillTps;
+    this.queueTimeSeconds = rates.queueSeconds;
+    this.specAcceptLength = rates.acceptLength;
+    this._hassoPrev = { engine: "sglang", counters: cur };
+  }
+
+  /** @param {unknown} v */
+  _finiteOrNull(v) {
+    if (v == null || v === "") return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  // ─── STAT1: native engines ───────────────────────────────
+  /** Clear every per-poll value so an engine that does not publish it reads null. */
+  _clearForNativeEngine() {
+    this.generationTps = null;
+    this.prefillTps = null;
+    this.cachedPrefillTps = null;
+    this.uncachedPrefillTps = null;
+    this.computedPrefillTps = null;
+    this.engineDecodeTps = null;
+    this.enginePrefillTps = null;
+    this.queueTimeSeconds = null;
+    this.specAcceptLength = null;
+    this.totalOutputTokens = null;
+    this.totalPromptTokens = null;
+    this.totalCachedTokens = null;
+    this.kvCacheUsage = null;
+    this.requestsRunning = null;
+    this.requestsWaiting = null;
+    this.ttftP95Seconds = null;
+    this.ttftSeconds = null;
+    this.preemptionsTotal = null;
+    this.prefixCacheHitRate = null;
+    this.e2eP95Seconds = null;
+    this.itlP95Seconds = null;
+    this.mtpAcceptanceRate = null;
+    this.slotsActive = 0;
+    this.slotsTotal = 0;
+  }
+
+  /**
+   * tok/s from a native counter: Δvalue / dt. null on the first sample, on a
+   * window outside (0, 10) s, or when the counter went backwards (restart).
+   * @param {string} key
+   * @param {number | null} value
+   * @param {number} dtSec
+   */
+  _ctrRate(key, value, dtSec) {
+    const prev = this._ctr.get(key);
+    if (value == null) {
+      this._ctr.delete(key);
+      return null;
+    }
+    this._ctr.set(key, value);
+    if (prev == null || !(dtSec > 0 && dtSec < 10)) return null;
+    const d = value - prev;
+    if (d < 0) return null;
+    return round(d / dtSec);
+  }
+
+  /**
+   * Ratio of two counter deltas: Δnum / Δden. null when either delta is
+   * unknown, the denominator did not move, or a counter went backwards.
+   * @param {string} key
+   * @param {number | null} numer
+   * @param {number | null} denom
+   */
+  _ctrRatio(key, numer, denom) {
+    const prev = this._ctr.get(key);
+    if (numer == null || denom == null) {
+      this._ctr.delete(key);
+      return null;
+    }
+    this._ctr.set(key, { numer, denom });
+    if (!prev) return null;
+    const dn = numer - prev.numer;
+    const dd = denom - prev.denom;
+    if (dn < 0 || dd <= 0) return null;
+    return dn / dd;
+  }
+
+  /** @param {number} dtSec */
+  async _probeNativeEngine(dtSec) {
+    this._clearForNativeEngine();
+    switch (this.backendType) {
+      case "tensorfold":
+        return this._probeTensorfold(dtSec);
+      case "freetoken":
+        return this._probeFreeToken(dtSec);
+      case "strata":
+        return this._probeStrata();
+      case "locals":
+        return this._probeLocals(dtSec);
+      case "splash":
+        return this._probeSplash(dtSec);
+      case "lmstudio":
+        return this._probeLmStudio();
+      case "ollama":
+        return this._probeOllama();
+      default:
+        // tabbyapi: label only. Its token totals need an admin key; rates stay null.
+        return undefined;
+    }
+  }
+
+  /**
+   * TensorFold: CUDA /health carries JSON totals; the native Zig build's
+   * /health is {"status":"ok"} and Prometheus /metrics carries tensorfold:*.
+   * @param {number} dtSec
+   */
+  async _probeTensorfold(dtSec) {
+    const health = parseTensorfoldHealth(await this._fetchJson("/health"));
+    const txt = await this._fetchText("/metrics");
+    const met = txt != null ? parseTensorfoldMetrics(txt) : null;
+    const now = this._now();
+    const tier = (fromHealth) => ({ source: fromHealth ? "native" : "counter" });
+
+    const promptH = health?.prompt != null;
+    const prompt = health?.prompt ?? met?.prompt ?? null;
+    const cached = health?.prompt != null ? health.cached : (met?.cached ?? null);
+    const prefillSec = health?.prompt != null ? health.prefillSeconds : (met?.prefillSeconds ?? null);
+    this.totalPromptTokens = prompt;
+    this.totalCachedTokens = clampCached(cached, prompt);
+    if (prompt != null) this._noteSource("totalPromptTokens", tier(promptH));
+    if (cached != null) this._noteSource("totalCachedTokens", tier(promptH));
+
+    // Decode: finished + running generation (Zig build) moves every step.
+    if (met?.generationFinished != null && met.generationRunning != null) {
+      this.generationTps = this._ctrRate("tf.gen", met.generationFinished + met.generationRunning, dtSec);
+      this.totalOutputTokens = met.generationFinished;
+    } else if (health?.completion != null) {
+      // CUDA build: completion total; may only move when a request finishes.
+      this.generationTps = this._ctrRate("tf.gen", health.completion, dtSec);
+      this.totalOutputTokens = health.completion;
+      this._noteSource("generationTps", { source: "native", approximate: true });
+      this._noteSource("totalOutputTokens", { source: "native" });
+    } else if (met?.generationFinished != null) {
+      this.totalOutputTokens = met.generationFinished;
+    }
+
+    // Prefill: computed-only tokens over finished-request prefill seconds,
+    // in a one-minute window. Unknown until a request finishes in it.
+    if (prompt != null && prefillSec != null) {
+      const win = this._tfPrefillWindow;
+      const last = win[win.length - 1];
+      if (last && (prompt < last.prompt || prefillSec < last.sec || (cached ?? 0) < last.cached)) win.length = 0;
+      win.push({ t: now, prompt, cached: cached ?? 0, sec: prefillSec });
+      while (win.length > 1 && now - win[0].t > TENSORFOLD_PREFILL_WINDOW_MS) win.shift();
+      const first = win[0];
+      const dSec = prefillSec - first.sec;
+      const dPrompt = prompt - first.prompt;
+      const dCached = (cached ?? 0) - first.cached;
+      if (win.length > 1 && dSec > 0) {
+        this.prefillTps = round(Math.max(0, dPrompt - dCached) / dSec);
+        this.computedPrefillTps = this.prefillTps;
+        const spanS = round((now - first.t) / 1000, 3);
+        const note = { ...tier(promptH), windowS: spanS, approximate: cached == null };
+        this._noteSource("prefillTps", note);
+        this._noteSource("computedPrefillTps", note);
+        if (dPrompt > 0) {
+          this.prefixCacheHitRate = round(Math.min(dCached, dPrompt) / dPrompt, 4);
+          this._noteSource("prefixCacheHitRate", note);
+        }
+      }
+    } else {
+      this._tfPrefillWindow = [];
+    }
+
+    const running = health?.running ?? met?.running ?? null;
+    this.requestsRunning = running;
+    if (health?.running != null) this._noteSource("requestsRunning", { source: "native" });
+    this.requestsWaiting = met?.waiting ?? null;
+    this.kvCacheUsage = round(health?.kvUsage ?? met?.kvUsage ?? null, 4);
+    if (health?.kvUsage != null) this._noteSource("kvCacheUsage", { source: "native" });
+    this.slotsActive = running != null ? Math.round(running) : 0;
+    this.slotsTotal = health?.slotsTotal != null ? Math.round(health.slotsTotal) : 0;
+
+    if (met?.ttftSum != null && met.ttftCount != null) {
+      const v = this._ctrRatio("tf.ttft", met.ttftSum, met.ttftCount);
+      this.ttftSeconds = v == null ? null : round(v, 3);
+    }
+  }
+
+  /**
+   * FreeToken /v1/stats: engine-computed decode/prefill tok/s over its own
+   * 5 s window, lifetime token totals, KV pages.
+   * @param {number} dtSec
+   */
+  async _probeFreeToken(dtSec) {
+    let raw = null;
+    try {
+      const res = await this._fetch(`${this.baseUrl}/v1/stats`);
+      if (res.status === 401 || res.status === 403) {
+        this.error = "FreeToken /v1/stats needs an API key";
+        return;
+      }
+      if (res.ok) raw = await res.json().catch(() => null);
+    } catch {
+      /* stats optional */
+    }
+    const st = parseFreeTokenStats(raw);
+    if (!st) return;
+    this.generationTps = round(st.decodeTps);
+    this.prefillTps = round(st.prefillTps);
+    this._noteSource("generationTps", { windowS: st.windowS });
+    this._noteSource("prefillTps", { windowS: st.windowS });
+    this.totalPromptTokens = st.prompt;
+    this.totalCachedTokens = clampCached(st.cached, st.prompt);
+    this.totalOutputTokens = st.completion;
+    this.requestsRunning = st.active;
+    this.slotsActive = st.active != null ? Math.round(st.active) : 0;
+    this.ttftSeconds = round(st.ttftMeanSeconds, 3);
+    this.e2eP95Seconds = round(st.e2eP95Seconds, 3);
+    this.kvCacheUsage = round(st.kvUsage, 4);
+    // Newer builds publish decode/prefill seconds: engine-time rates.
+    const dec = this._ctrRatio("ft.decode", st.decodeTokens, st.decodeSeconds);
+    this.engineDecodeTps = round(dec);
+    const computed = st.prompt != null && st.cached != null ? st.prompt - st.cached : null;
+    const pre = this._ctrRatio("ft.prefill", computed, st.prefillSeconds);
+    this.enginePrefillTps = round(pre);
+    if (dec != null) this._noteSource("engineDecodeTps", { source: "counter" });
+    if (pre != null) this._noteSource("enginePrefillTps", { source: "counter" });
+    void dtSec;
+  }
+
+  /** Strata JSON /metrics: engine-computed live rates and lifetime totals. */
+  async _probeStrata() {
+    const st = parseStrataMetrics(await this._fetchJson("/metrics"));
+    if (!st) return;
+    this.generationTps = round(st.decodeTps);
+    this.prefillTps = round(st.prefillTps);
+    this._noteSource("generationTps", { windowS: st.decodeWindowS, approximate: st.decodeApprox });
+    this._noteSource("prefillTps", { windowS: null, approximate: st.prefillApprox });
+    this.totalPromptTokens = st.prompt;
+    this.totalCachedTokens = clampCached(st.cached, st.prompt);
+    this.totalOutputTokens = st.output;
+    this.requestsRunning = st.running;
+    this.requestsWaiting = st.waiting;
+    this.slotsTotal = st.parallel != null ? Math.round(st.parallel) : 0;
+    this.slotsActive = st.slotsActive ?? (st.running != null ? Math.round(st.running) : 0);
+    if (st.maxContext != null) this.contextLength = st.maxContext;
+    this.mtpAcceptanceRate = round(st.acceptRate, 4);
+  }
+
+  /**
+   * Locals /stats: per-engine lifetime counters. They reset to zero when an
+   * engine restarts; a backwards step gives no rate and re-seeds.
+   * @param {number} dtSec
+   */
+  async _probeLocals(dtSec) {
+    const st = parseLocalsStats(await this._fetchJson("/stats"));
+    if (!st) {
+      this._ctr.delete("locals.engines");
+      return;
+    }
+    this.totalPromptTokens = st.prompt;
+    this.totalCachedTokens = clampCached(st.cached, st.prompt);
+    this.totalOutputTokens = st.completion;
+    this.requestsRunning = st.active;
+    this.slotsActive = st.active ?? 0;
+    if (st.prompt != null && st.prompt > 0 && st.cached != null) {
+      this.prefixCacheHitRate = round(Math.min(st.cached, st.prompt) / st.prompt, 4);
+    }
+
+    const flat = {};
+    for (const [name, e] of Object.entries(st.engines)) {
+      flat[`${name}.out`] = e.tokens_out ?? e.completion_tokens;
+      flat[`${name}.pt`] = e.prefill_tokens;
+      flat[`${name}.ps`] = e.prefill_s;
+    }
+    const prev = this._ctr.get("locals.engines");
+    this._ctr.set("locals.engines", flat);
+    if (!prev || !(dtSec > 0 && dtSec < 10)) return;
+    const sameEngines = Object.keys(prev).sort().join() === Object.keys(flat).sort().join();
+    const { deltas, reset } = counterDeltas(prev, flat);
+    if (reset || !sameEngines) return;
+    const sumOf = (suffix) => {
+      let t = null;
+      for (const [k, v] of Object.entries(deltas)) {
+        if (!k.endsWith(suffix) || v == null) continue;
+        t = (t ?? 0) + v;
+      }
+      return t;
+    };
+    const dOut = sumOf(".out");
+    if (dOut != null) this.generationTps = round(dOut / dtSec);
+    const dPt = sumOf(".pt");
+    const dPs = sumOf(".ps");
+    // Locals counts a prompt when its prefill finishes: no finished prefill in
+    // the window is a measured 0, not a missing value.
+    if (dPt != null && dPs != null) this.prefillTps = dPs > 0 ? round(dPt / dPs) : 0;
+  }
+
+  /**
+   * Splash splash_* Prometheus. Rates from counter deltas; the
+   * *_tokens_per_second gauges are lifetime averages and are not used.
+   * @param {number} dtSec
+   */
+  async _probeSplash(dtSec) {
+    const txt = await this._fetchText("/metrics");
+    const sp = txt != null ? parseSplashMetrics(txt) : null;
+    if (!sp) return;
+    this.generationTps = this._ctrRate("splash.out", sp.output, dtSec);
+    this.prefillTps = this._ctrRate("splash.prefill", sp.prefillComputed, dtSec);
+    this.uncachedPrefillTps = this.prefillTps;
+    this.cachedPrefillTps = this._ctrRate("splash.reused", sp.reused, dtSec);
+    this.totalOutputTokens = sp.output;
+    this.totalPromptTokens =
+      sp.prefillComputed != null && sp.reused != null ? sp.prefillComputed + sp.reused : null;
+    this.totalCachedTokens = sp.reused;
+    if (this.totalPromptTokens != null && this.totalPromptTokens > 0) {
+      this.prefixCacheHitRate = round(sp.reused / this.totalPromptTokens, 4);
+    }
+    const running =
+      sp.prefilling != null || sp.decoding != null ? (sp.prefilling ?? 0) + (sp.decoding ?? 0) : null;
+    this.requestsRunning = running;
+    this.slotsActive = running != null ? Math.round(running) : 0;
+    this.requestsWaiting = sp.queued;
+    this.ttftP95Seconds = round(sp.ttftP95Seconds, 3);
+    this.itlP95Seconds = round(sp.itlP95Seconds, 3);
+    this.mtpAcceptanceRate = round(sp.acceptRate, 4);
+  }
+
+  /** LM Studio: loaded model and context. No passive tok/s: rates stay null. */
+  async _probeLmStudio() {
+    const lm = parseLmStudioModels(await this._fetchJson("/api/v0/models"));
+    if (!lm) return;
+    this.installedModels = lm.installed;
+    if (lm.loadedModel) this.modelId = normalizeModelId(lm.loadedModel);
+    if (lm.contextLength != null) this.contextLength = lm.contextLength;
+  }
+
+  /** Ollama: installed and loaded models. No passive tok/s: rates stay null. */
+  async _probeOllama() {
+    const ol = parseOllama(await this._fetchJson("/api/tags"), await this._fetchJson("/api/ps"));
+    if (!ol) return;
+    this.installedModels = ol.installed;
+    if (ol.loadedModel) this.modelId = normalizeModelId(ol.loadedModel);
+    if (ol.contextLength != null) this.contextLength = ol.contextLength;
   }
 
   _defaultLlm() {
@@ -1655,6 +2363,15 @@ export class LlmProbe {
       mtpAcceptanceRate: null,
       posture: this._buildPosture(),
       error: this.error,
+      totalPromptTokens: null,
+      totalCachedTokens: null,
+      computedPrefillTps: null,
+      engineDecodeTps: null,
+      enginePrefillTps: null,
+      queueTimeSeconds: null,
+      specAcceptLength: null,
+      installedModels: null,
+      valueSources: {},
     };
   }
 

@@ -354,9 +354,36 @@ export interface UnifiedMemoryMetrics {
 }
 
 // ─── LLM metrics ─────────────────────────────────────────
+/**
+ * Where an LLM value came from (Page §3). Tier order: counter (engine counters
+ * herd differences) < native (a rate the engine computes) < proxy < client.
+ */
+export interface LlmValueSource {
+  source: "counter" | "native" | "proxy" | "client";
+  /** Seconds the value spans; null for gauges and lifetime totals. */
+  windowS: number | null;
+  /** True when the engine value only approximates the live rate. */
+  approximate: boolean;
+}
+
 export interface LlmMetrics {
   available: boolean;
-  backend: "vllm" | "llama.cpp" | "sglang" | "ds4" | "exl3" | "q27" | null;
+  backend:
+    | "vllm"
+    | "llama.cpp"
+    | "sglang"
+    | "ds4"
+    | "exl3"
+    | "q27"
+    | "tensorfold"
+    | "freetoken"
+    | "strata"
+    | "locals"
+    | "splash"
+    | "lmstudio"
+    | "ollama"
+    | "tabbyapi"
+    | null;
   modelId: string | null;
   modelPath: string | null;
   /** For ollama etc: list of installed models. */
@@ -366,14 +393,32 @@ export interface LlmMetrics {
   gpuMemoryUtilization: number | null;
   slotsActive: number;
   slotsTotal: number;
-  generationTps: number;
-  prefillTps: number;
+  /** Live decode tok/s. null when the engine does not measure it (e.g. LM Studio, Ollama). */
+  generationTps: number | null;
+  /** Live prefill tok/s. null when the engine does not measure it. */
+  prefillTps: number | null;
   /** Live cached-prefill tok/s when the backend splits kinds (ds4, llama.cpp, sglang). */
   cachedPrefillTps?: number | null;
   /** Live uncached/computed prefill tok/s when split is available. */
   uncachedPrefillTps?: number | null;
   /** Cumulative total output (generation) tokens as reported by the LLM server */
-  totalOutputTokens: number;
+  totalOutputTokens: number | null;
+  /** Lifetime prompt tokens the engine reports (STAT1). null when not exposed. */
+  totalPromptTokens?: number | null;
+  /** Lifetime prompt tokens served from cache (STAT1). null when not exposed. */
+  totalCachedTokens?: number | null;
+  /** Computed-only prefill tok/s: (Δprompt − Δcached) / Δt. vLLM only. */
+  computedPrefillTps?: number | null;
+  /** Engine-native decode tok/s (Hasso formula on vLLM/SGLang; engine counters elsewhere). */
+  engineDecodeTps?: number | null;
+  /** Engine-native prefill tok/s (Hasso formula on vLLM/SGLang; engine counters elsewhere). */
+  enginePrefillTps?: number | null;
+  /** Mean queue time (s) of requests admitted in the window. */
+  queueTimeSeconds?: number | null;
+  /** Mean accepted tokens per speculative step. */
+  specAcceptLength?: number | null;
+  /** Source tier, window and approximate flag for each non-null value (STAT1). */
+  valueSources?: Partial<Record<string, LlmValueSource>>;
   /** vLLM KV cache usage fraction (0–1). null when backend !== vllm or unreachable. */
   kvCacheUsage?: number | null;
   /** vLLM running request count. null when unavailable. */
