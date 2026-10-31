@@ -10,6 +10,10 @@ import type {
   EventsResponse,
   DecodeBenchListResponse,
   FleetEnergy,
+  FleetShowcaseListResponse,
+  FleetShowcaseSessionState,
+  FleetShowcaseStartRequest,
+  FleetShowcaseTargetsResponse,
   LlmTokenHistory,
   LlmTokenRange,
   LlmTokenTotals,
@@ -41,6 +45,12 @@ import type {
   StartPrefillBenchRequest,
   UpdateActionResponse,
 } from "./types";
+import type {
+  BenchCompareResponse,
+  BenchResult,
+  BenchResultsFilter,
+  BenchResultsListResponse,
+} from "../../shared/types";
 
 const BASE = "";
 const TOKEN = (typeof localStorage !== "undefined" && localStorage.getItem("sparkdashToken")) || "";
@@ -355,6 +365,40 @@ export function clearShowcaseHistory(
   id: string
 ): Promise<{ success: boolean }> {
   return apiFetch(`/api/sparks/${id}/llm/showcase`, { method: "DELETE" });
+}
+
+// ─── Fleet Prompt Showcase (SHOW1) ───────────────────────
+export function getFleetShowcaseTargets(): Promise<FleetShowcaseTargetsResponse> {
+  return apiFetch("/api/fleet/showcase/targets");
+}
+
+export function startFleetShowcase(
+  body: FleetShowcaseStartRequest
+): Promise<{ sessionId: string; status: string }> {
+  return apiFetch("/api/fleet/showcase", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function listFleetShowcase(): Promise<FleetShowcaseListResponse> {
+  return apiFetch("/api/fleet/showcase");
+}
+
+export function getFleetShowcase(
+  sessionId: string,
+  opts?: { since?: number }
+): Promise<FleetShowcaseSessionState> {
+  const q =
+    opts?.since != null && Number.isFinite(opts.since)
+      ? `?since=${encodeURIComponent(String(opts.since))}`
+      : "";
+  return apiFetch(`/api/fleet/showcase/${encodeURIComponent(sessionId)}${q}`);
+}
+
+export function cancelFleetShowcase(sessionId: string): Promise<FleetShowcaseSessionState> {
+  return apiFetch(`/api/fleet/showcase/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+}
+
+export function clearFleetShowcaseHistory(): Promise<{ success: boolean }> {
+  return apiFetch("/api/fleet/showcase", { method: "DELETE" });
 }
 
 // ─── LLM probe ports (per Spark) ─────────────────────────
@@ -782,4 +826,26 @@ export function fetchGuard(): Promise<{ guards: GuardResult[] }> {
 /** Fleet-level AI-memory service health; `services: []` means nothing is configured. */
 export function fetchMemoryHealth(): Promise<{ services: MemoryServiceResult[] }> {
   return apiFetch("/api/memory-health");
+}
+
+// ─── Bench results store ─────────────────────────────────
+
+/** List stored bench results, newest first; filters map 1:1 to query params. */
+export function listBenchResults(filter: BenchResultsFilter = {}): Promise<BenchResultsListResponse> {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(filter)) {
+    if (v !== undefined && v !== null && v !== "") params.set(k, String(v));
+  }
+  const q = params.toString();
+  return apiFetch(`/api/bench-results${q ? `?${q}` : ""}`);
+}
+
+export function getBenchResult(id: string): Promise<BenchResult> {
+  return apiFetch(`/api/bench-results/${encodeURIComponent(id)}`);
+}
+
+/** Like-with-like comparison; `comparable: false` carries the refusal reasons. */
+export function compareBenchResults(baseline: string, candidate: string): Promise<BenchCompareResponse> {
+  const q = new URLSearchParams({ baseline, candidate }).toString();
+  return apiFetch(`/api/bench-results/compare?${q}`);
 }

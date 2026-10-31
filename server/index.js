@@ -34,13 +34,21 @@ import {
   normalizeContextSizes,
 } from "./collectors/PrefillBench.js";
 import { showcaseManager } from "./collectors/ShowcaseManager.js";
+import { BenchResultsStore } from "./bench/results/store.js";
+import { createResultsRecorder } from "./bench/results/recorder.js";
+import { describeProvenance } from "./bench/results/provenance.js";
+import { registerBenchResultsRoutes } from "./bench/results/routes.js";
 import { llmProbeHost } from "./collectors/llmHost.js";
-import { onceClose, resolveLlmHttpTarget } from "./collectors/llmTunnel.js";
+import { onceClose, openSshLlmTunnel, probeLlmHttp, resolveLlmHttpTarget } from "./collectors/llmTunnel.js";
 import { formatLlmBaseUrl, parseLlmTargetInput } from "../src/shared/llmTarget.js";
 import { llmDaily } from "./collectors/LlmDaily.js";
 import { closeLlmStreamAgent } from "./collectors/LlmStreaming.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
-import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH, LLM_TOKEN_TOTALS_JSON_PATH, METRICS_HISTORY_JSON_PATH } from "./config.js";
+import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH, FLEET_SHOWCASE_HISTORY_PATH, LLM_TOKEN_TOTALS_JSON_PATH, METRICS_HISTORY_JSON_PATH } from "./config.js";
+import { FleetShowcaseManager } from "./showcase/FleetShowcaseManager.js";
+import { listShowcaseTargets, resolveNodeLaneTarget } from "./showcase/fleetTargets.js";
+import { registerFleetShowcaseRoutes } from "./showcase/routes.js";
+import { getNodeSshPassword } from "./fleet/nodeCredentials.js";
 import { LlmTokenLedger } from "./llmtokens/LlmTokenLedger.js";
 import { collectTokenObservations } from "./llmtokens/observations.js";
 import { createLlmTokenRuntime, registerLlmTokenRoutes, withLedgerTokens } from "./llmtokens/LlmTokenRuntime.js";
@@ -612,6 +620,136 @@ const server = createServer(app);
 
 app.use(express.json());
 app.use(createAuthMiddleware());
+
+// ─── Bench results store (BENCH1) ─────────────────────────
+const benchResultsStore = new BenchResultsStore();
+const benchResultsRecorder = createResultsRecorder({ store: benchResultsStore });
+decodeBenchManager.resultSink = benchResultsRecorder.sinkFor("DecodeBench");
+prefillBenchManager.resultSink = benchResultsRecorder.sinkFor("PrefillBench");
+showcaseManager.resultSink = benchResultsRecorder.sinkFor("Showcase");
+try {
+  const imported = benchResultsStore.importLegacyHistories({
+    decode: decodeBenchManager.historyPath,
+    prefill: prefillBenchManager.historyPath,
+    showcase: showcaseManager.historyPath,
+  });
+  const added = Object.values(imported).reduce((n, r) => n + (r.added || 0), 0);
+  if (added) console.log(`[bench-results] imported ${added} result(s) from bench history files`);
+} catch (err) {
+  console.warn(`[bench-results] legacy history import failed: ${err.message}`);
+}
+registerBenchResultsRoutes(app, { store: benchResultsStore });
+
+/** Host + lane provenance for a bench run starting now (null on failure). */
+function benchProvenance(spark, monitor, port, ports, customHost = false) {
+  try {
+    return describeProvenance({
+      snapshot: monitor ? monitor.snapshot() : null,
+      allSnapshots: [...monitors.values()].map((m) => m.snapshot()),
+      nodeId: spark.id,
+      port,
+      ports,
+      customHost,
+    });
+  } catch {
+    return null;
+  }
+}
+
+// ─── Fleet Prompt Showcase (SHOW1, issue #39) ───────────
+// One session fans the shared Showcase prompts out to any set of LLM lanes:
+// SSH Spark ports (LAN or SSH tunnel) and agent-node engines (LAN first, SSH
+// tunnel for protocol:"ssh" nodes). Client timing everywhere; server tok/s
+// from the engine counters polled every 400 ms where the engine has them.
+const fleetShowcaseManager = new FleetShowcaseManager({ historyPath: FLEET_SHOWCASE_HISTORY_PATH });
+fleetShowcaseManager.resultSink = benchResultsRecorder.sinkFor("FleetShowcase");
+fleetShowcaseManager.eventSink = (session) => recordEvent(activity.fleetShowcase(session));
+
+function fleetShowcaseTargets() {
+  return listShowcaseTargets({
+    sparks: registry.sparks,
+    sparkSnapshot: (id) => monitors.get(id)?.snapshot() ?? null,
+    nodes: registeredFleetNodes(),
+    nodeRecord: (id) => getNode(id),
+  });
+}
+
+function sparkPortsOf(spark) {
+  return Array.isArray(spark.llmPorts) && spark.llmPorts.length ? spark.llmPorts : [resolveLlmPort(spark)];
+}
+
+/** Why a lane cannot join a fleet session now (Spark-level jobs only), or null. */
+function fleetShowcaseLaneBusy(target) {
+  if (target.kind !== "spark") return null;
+  if (showcaseManager.getActive(target.nodeId)) return "a prompt showcase is already running on this Spark";
+  if (decodeBenchManager.getActive(target.nodeId)) return "a decode benchmark is running on this Spark";
+  if (prefillBenchManager.getActive(target.nodeId)) return "a prefill benchmark is running on this Spark";
+  return null;
+}
+
+function buildFleetShowcaseLane(target) {
+  const base = {
+    laneId: target.laneId,
+    kind: target.kind,
+    nodeId: target.nodeId,
+    nodeName: target.nodeName,
+    host: target.host,
+    port: target.port,
+    modelId: target.modelId,
+    backend: target.backend,
+    serverCounters: target.serverCounters,
+  };
+  if (target.kind === "spark") {
+    const spark = registry.getSpark(target.nodeId);
+    const apiKey = resolveLlmApiKey(spark, target.port);
+    const monitor = monitors.get(target.nodeId);
+    return {
+      lane: {
+        ...base,
+        apiKey,
+        resolveTarget: ({ signal, onStatus }) => resolveLlmHttpTarget(spark, target.port, { apiKey, signal, onStatus }),
+      },
+      provenance: benchProvenance(spark, monitor, target.port, sparkPortsOf(spark)),
+    };
+  }
+  let provenance = null;
+  try {
+    provenance = describeProvenance({
+      snapshot: {
+        id: target.nodeId,
+        name: target.nodeName,
+        kind: "node",
+        metrics: { llm: [{ backend: target.backend, modelId: target.modelId }] },
+      },
+      nodeId: target.nodeId,
+      port: target.port,
+      ports: [target.port],
+    });
+  } catch {
+    provenance = null;
+  }
+  return {
+    lane: {
+      ...base,
+      apiKey: null,
+      resolveTarget: ({ signal, onStatus }) =>
+        resolveNodeLaneTarget(
+          target,
+          { probe: probeLlmHttp, openTunnel: openSshLlmTunnel, nodeRecord: getNode, getPassword: getNodeSshPassword },
+          { signal, onStatus }
+        ),
+    },
+    provenance,
+  };
+}
+
+registerFleetShowcaseRoutes(app, {
+  manager: fleetShowcaseManager,
+  listTargets: fleetShowcaseTargets,
+  buildLane: buildFleetShowcaseLane,
+  laneBusy: fleetShowcaseLaneBusy,
+  noteStart: (sessionId, provenance) => benchResultsRecorder.noteStart("FleetShowcase", sessionId, provenance),
+});
 
 app.get("/api/health", (_req, res) => {
   res.json(inspectHealth(process.env.BIND_HOST || "127.0.0.1"));
@@ -1707,6 +1845,9 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
   if (showcaseManager.getActive(spark.id)) {
     return res.status(409).json({ error: "A prompt showcase is already running for this Spark" });
   }
+  if (fleetShowcaseManager.busySparkIds().has(spark.id)) {
+    return res.status(409).json({ error: "A fleet prompt showcase is running on this Spark" });
+  }
   if (prefillBenchManager.getActive(spark.id)) {
     return res.status(409).json({ error: "A prefill benchmark is already running for this Spark" });
   }
@@ -1793,6 +1934,7 @@ app.post("/api/sparks/:id/llm/bench", async (req, res) => {
             }
           : null,
     });
+    benchResultsRecorder.noteStart("DecodeBench", job.benchId, benchProvenance(spark, monitor, port, ports, target.custom));
     res.status(202).json(job);
   } catch (err) {
     const status = err.status || 500;
@@ -1880,6 +2022,9 @@ app.post("/api/sparks/:id/llm/prefill-bench", async (req, res) => {
   if (showcaseManager.getActive(spark.id)) {
     return res.status(409).json({ error: "A prompt showcase is already running for this Spark" });
   }
+  if (fleetShowcaseManager.busySparkIds().has(spark.id)) {
+    return res.status(409).json({ error: "A fleet prompt showcase is running on this Spark" });
+  }
   if (decodeBenchManager.getActive(spark.id)) {
     return res.status(409).json({ error: "A decode benchmark is already running for this Spark" });
   }
@@ -1927,6 +2072,7 @@ app.post("/api/sparks/:id/llm/prefill-bench", async (req, res) => {
       tls: target.tls,
       resolveTarget: target.resolveTarget,
     });
+    benchResultsRecorder.noteStart("PrefillBench", job.benchId, benchProvenance(spark, monitor, port, ports, target.custom));
     res.status(202).json(job);
   } catch (err) {
     const status = err.status || 500;
@@ -2024,6 +2170,9 @@ app.post("/api/sparks/:id/llm/showcase", (req, res) => {
   if (!ports.includes(port)) {
     return res.status(400).json({ error: "port is not configured for this Spark" });
   }
+  if (fleetShowcaseManager.busySparkIds().has(spark.id)) {
+    return res.status(409).json({ error: "A fleet prompt showcase is running on this Spark" });
+  }
 
   let modelId = req.body?.modelId || null;
   if (!modelId && monitor) {
@@ -2050,6 +2199,7 @@ app.post("/api/sparks/:id/llm/showcase", (req, res) => {
       prompts: req.body?.prompts,
       apiKey: resolveLlmApiKey(spark, port),
     });
+    benchResultsRecorder.noteStart("Showcase", result.sessionId, benchProvenance(spark, monitor, port, ports));
     res.status(202).json(result);
   } catch (err) {
     const status = err.status || 500;
@@ -2561,6 +2711,7 @@ async function shutdown(signal) {
   }
   const energyPersistenceSucceeded = fleetEnergyRuntime.stop();
   llmTokenRuntime.stop();
+  fleetShowcaseManager.stop();
   activityWatcher.stop();
   eventLog.flush();
   try {

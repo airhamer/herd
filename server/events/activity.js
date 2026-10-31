@@ -481,6 +481,30 @@ export const activity = {
         };
     }
   },
+
+  /** Fleet-wide Showcase (SHOW1) lifecycle; not tied to one unit. */
+  fleetShowcase(session) {
+    const lanes = Array.isArray(session?.lanes) ? session.lanes : [];
+    const names = lanes.map((l) => `${l?.nodeName ?? "?"}:${l?.port ?? "?"}`);
+    const label = `${lanes.length} lane${lanes.length === 1 ? "" : "s"}`;
+    const data = { sessionId: session?.sessionId ?? null, lanes: names };
+    const base = { sparkId: null, sparkName: null, data };
+    switch (session?.status) {
+      case "running":
+        return { ...base, type: "fleet.showcase.started", severity: "info", message: `Fleet showcase started on ${label}` };
+      case "completed":
+        return { ...base, type: "fleet.showcase.completed", severity: "success", message: `Fleet showcase finished on ${label}` };
+      case "cancelled":
+        return { ...base, type: "fleet.showcase.cancelled", severity: "info", message: `Fleet showcase cancelled (${label})` };
+      default:
+        return {
+          ...base,
+          type: "fleet.showcase.failed",
+          severity: "error",
+          message: `Fleet showcase failed (${label}): ${msgOf(session?.error) || "unknown error"}`,
+        };
+    }
+  },
 };
 
 /**

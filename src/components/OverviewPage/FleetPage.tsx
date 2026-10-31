@@ -89,6 +89,13 @@ export function FleetPage({ nodes, topology, requests, memory, onSelectNode, ene
           Fleet Overview
         </h1>
         <div className="flex flex-wrap items-center justify-end gap-3">
+          <a
+            href="/fleet/showcase"
+            className="text-[11px] text-accent hover:underline"
+            title="Run the Prompt Showcase on every LLM lane at once"
+          >
+            Fleet showcase
+          </a>
           <span className="online-chip">
             <span className="dot" />
             {onlineCount}/{nodes.length} online

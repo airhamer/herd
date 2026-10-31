@@ -27,6 +27,10 @@ const FLEET_ENERGY_MONTHLY_JSON_PATH = process.env.FLEET_ENERGY_MONTHLY_JSON_PAT
 const LLM_TOKEN_TOTALS_JSON_PATH =
   process.env.LLM_TOKEN_TOTALS_JSON_PATH || path.join(ROOT, "config", "llm-token-totals.json");
 // Bucketed unit history; only written while settings.metricsHistory is on.
+/** SHOW1 (#39): finished fleet Prompt Showcase sessions (bounded). */
+const FLEET_SHOWCASE_HISTORY_PATH =
+  process.env.FLEET_SHOWCASE_HISTORY_PATH || path.join(ROOT, "config", "fleet-showcase-history.json");
+
 const METRICS_HISTORY_JSON_PATH =
   process.env.METRICS_HISTORY_JSON_PATH ||
   path.join(ROOT, "config", "metrics-history.json");
@@ -124,6 +128,7 @@ export {
   FLEET_ENERGY_JSON_PATH,
   FLEET_ENERGY_MONTHLY_JSON_PATH,
   LLM_TOKEN_TOTALS_JSON_PATH,
+  FLEET_SHOWCASE_HISTORY_PATH,
   METRICS_HISTORY_JSON_PATH,
   ALERTS_JSON_PATH,
   LLM_PROBE_TIMEOUT_MS,
