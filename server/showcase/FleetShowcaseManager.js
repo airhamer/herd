@@ -12,7 +12,11 @@
  *     decode   per stream (tokens − 1) / (t_last − t_first)
  *     TTFT     first streamed token − request sent
  *     prefill  prompt_tokens / TTFT
- *     lane tok/s = Σ decode tokens / (max t_last − min t_first)
+ *     lane tok/s = Σ decode tokens / (max t_last − min t_first)  (SHOW2:
+ *              the concurrent-window aggregate, same as DecodeBench; also
+ *              pooled per engine and fleet-wide, each with its peak)
+ *     estimated  tokens counted from characters are flagged per stream and
+ *              carried into every aggregate they feed
  *   server timing where the engine has a generation counter: Δgenerated / Δt
  *     sampled every 400 ms (serverCounters.js). Ollama / LM Studio: client only.
  *
@@ -35,6 +39,7 @@ import {
 } from "../collectors/LlmStreaming.js";
 import { withFillToMaxInstruction } from "../../src/shared/llmPrompts.js";
 import { pollGenerationRate, readGeneratedTokens, SERVER_POLL_INTERVAL_MS } from "./serverCounters.js";
+import { AggregatePeak, aggregateView, CHARS_PER_TOKEN, concurrentWindow, sampleDue } from "./aggregate.js";
 
 export const FLEET_SHOWCASE_LIMITS = Object.freeze({
   minLanes: 1,
@@ -71,6 +76,48 @@ function labelFromPrompt(prompt) {
 
 const pos = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
 
+/** Tokens came from the ~4 chars/token estimate (live counts always do until usage arrives). */
+export function isEstimated(s) {
+  return (s?.tokenCount || 0) > 0 && s.tokenSource !== "usage";
+}
+
+function windowOf(streams) {
+  return concurrentWindow(
+    streams.map((s) => ({ tFirst: s._tFirst, tLast: s._tLast, tokens: s.tokenCount, estimated: isEstimated(s), status: s.status }))
+  );
+}
+
+/** Engine key for the per-engine aggregate. */
+export function engineKey(lane) {
+  return lane.serverEngine || lane.backend || "unknown";
+}
+
+/**
+ * Concurrent-window aggregates pooled per engine and fleet-wide (SHOW2).
+ * Peaks come from `session._aggPeaks` (sampled while running).
+ * @param {any} session
+ */
+export function sessionAggregates(session) {
+  const peaks = session._aggPeaks || new Map();
+  const byEngine = new Map();
+  for (const lane of session.lanes) {
+    const key = engineKey(lane);
+    if (!byEngine.has(key)) byEngine.set(key, []);
+    byEngine.get(key).push(lane);
+  }
+  const engines = [...byEngine.entries()]
+    .map(([engine, lanes]) => ({
+      engine,
+      laneIds: lanes.map((l) => l.laneId),
+      ...aggregateView(windowOf(lanes.flatMap((l) => l.streams)), peaks.get(`engine:${engine}`)),
+    }))
+    .sort((a, b) => a.engine.localeCompare(b.engine));
+  return {
+    fleet: aggregateView(windowOf(session.lanes.flatMap((l) => l.streams)), peaks.get("fleet")),
+    engines,
+  };
+}
+
 /**
  * Client + server figures for one lane (live or final).
  * @param {any} lane
@@ -78,23 +125,18 @@ const pos = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
 export function laneSummary(lane) {
   const streams = lane.streams || [];
   const ok = streams.filter((s) => s.status === "completed" && s.tokenCount > 0);
-  const live = streams.filter((s) => s.status === "streaming");
-  const firsts = streams.map((s) => s._tFirst).filter((v) => typeof v === "number");
-  const lasts = streams.map((s) => s._tLast).filter((v) => typeof v === "number");
-  const decodeTokens = streams.reduce((n, s) => n + (s._tFirst != null ? Math.max(0, (s.tokenCount || 0) - 1) : 0), 0);
-  const windowMs = firsts.length && lasts.length ? Math.max(...lasts) - Math.min(...firsts) : 0;
-  let clientTps = windowMs > 0 && decodeTokens > 0 ? round2((decodeTokens / windowMs) * 1000) : null;
-  // While streaming, the live per-stream rates are the better "now" figure.
-  if (live.length) {
-    const sum = streams.reduce((n, s) => n + (s.status === "streaming" ? s.liveTokPerSec || 0 : 0), 0);
-    if (sum > 0) clientTps = round2(sum);
-  }
+  // SHOW2: the concurrent-window aggregate, live (t_last so far) and final.
+  const win = windowOf(streams);
+  const aggregate = aggregateView(win, lane._aggPeak);
   const rates = streams.map((s) => s.decodeTps || s.liveTokPerSec || 0).filter(pos);
   const ttfts = streams.map((s) => s.ttftMs).filter(pos);
   const prefills = ok.map((s) => s.prefillTps).filter(pos);
   const sources = new Set(ok.map((s) => s.tokenSource).filter(Boolean));
   return {
-    clientTps,
+    clientTps: aggregate.tps,
+    clientTpsPeak: aggregate.peakTps,
+    estimated: aggregate.estimated,
+    aggregate,
     streamTpsMean: rates.length ? round2(rates.reduce((a, b) => a + b, 0) / rates.length) : null,
     ttftP50Ms: ttfts.length ? round2(median(ttfts)) : null,
     prefillTps: prefills.length ? round2(prefills.reduce((a, b) => a + b, 0) / prefills.length) : null,
@@ -140,6 +182,7 @@ function streamFields(s) {
     reasoningLength: s.reasoning.length,
     tokenCount: s.tokenCount,
     tokenSource: s.tokenSource,
+    estimated: isEstimated(s),
     promptTokenSource: s.promptTokenSource,
     ttftMs: s.ttftMs,
     decodeTps: s.decodeTps,
@@ -165,6 +208,7 @@ function sessionHead(session) {
     startedAt: session.startedAt,
     completedAt: session.completedAt,
     error: session.error,
+    aggregates: sessionAggregates(session),
   };
 }
 
@@ -197,6 +241,10 @@ function historySummary(rec) {
     promptType: rec.promptType ?? null,
     maxTokens: rec.maxTokens ?? null,
     laneCount: lanes.length,
+    fleetTps: rec.aggregates?.fleet?.tps ?? null,
+    fleetPeakTps: rec.aggregates?.fleet?.peakTps ?? null,
+    fleetPeakEstimated: Boolean(rec.aggregates?.fleet?.peakEstimated),
+    fleetEstimated: Boolean(rec.aggregates?.fleet?.estimated),
     streamsPerLane: Array.isArray(rec.prompts) ? rec.prompts.length : 0,
     lanes: lanes.map((l) => ({
       laneId: l.laneId,
@@ -205,6 +253,8 @@ function historySummary(rec) {
       modelId: l.modelId ?? null,
       backend: l.backend ?? null,
       clientTps: l.clientTps ?? null,
+      clientTpsPeak: l.clientTpsPeak ?? null,
+      estimated: Boolean(l.estimated),
       serverTps: l.serverTps ?? null,
       ttftP50Ms: l.ttftP50Ms ?? null,
       status: l.status,
@@ -495,6 +545,36 @@ export class FleetShowcaseManager {
     session.rev += 1;
   }
 
+  /**
+   * Feed lane / engine / fleet peaks (SHOW2). Throttled while running;
+   * `final` always counts the settled aggregates.
+   */
+  _sampleAggregates(session, final = false) {
+    if (!final && !sampleDue(session, performance.now())) return;
+    if (!session._aggPeaks) session._aggPeaks = new Map();
+    const peaks = session._aggPeaks;
+    const feed = (holder, key, streams) => {
+      let p = holder.get(key);
+      if (!p) holder.set(key, (p = new AggregatePeak()));
+      const win = windowOf(streams);
+      if (final) p.final(win);
+      else p.observe(win);
+      return p;
+    };
+    const byEngine = new Map();
+    for (const lane of session.lanes) {
+      if (!lane._aggPeak) lane._aggPeak = new AggregatePeak();
+      const win = windowOf(lane.streams);
+      if (final) lane._aggPeak.final(win);
+      else lane._aggPeak.observe(win);
+      const key = engineKey(lane);
+      if (!byEngine.has(key)) byEngine.set(key, []);
+      byEngine.get(key).push(...lane.streams);
+    }
+    for (const [engine, streams] of byEngine) feed(peaks, `engine:${engine}`, streams);
+    feed(peaks, "fleet", session.lanes.flatMap((l) => l.streams));
+  }
+
   _emitEvent(session) {
     if (!this.eventSink) return;
     try {
@@ -525,6 +605,7 @@ export class FleetShowcaseManager {
         this._bump(session);
       }
       if (this.activeId === session.sessionId) this.activeId = null;
+      this._sampleAggregates(session, true);
       this._archive(session);
     }
   }
@@ -670,6 +751,7 @@ export class FleetShowcaseManager {
       if (info?.reasoning) stream.reasoning += info.reasoning;
       if (info?.answer) stream.content += info.answer;
       this._liveMetrics(stream, info);
+      this._sampleAggregates(session);
       this._bump(session);
     };
     const runOpts = {
@@ -739,7 +821,7 @@ export class FleetShowcaseManager {
     if (info?.tLast != null) stream._tLast = info.tLast;
     if (info?.model) stream.model = info.model;
     const chars = stream.content.length + stream.reasoning.length;
-    stream.tokenCount = Math.max(info?.tokenCount || 0, chars > 0 ? Math.max(1, Math.round(chars / 4)) : 0);
+    stream.tokenCount = Math.max(info?.tokenCount || 0, chars > 0 ? Math.max(1, Math.round(chars / CHARS_PER_TOKEN)) : 0);
     if (stream._t0 != null && stream._tFirst != null && stream.ttftMs == null) {
       stream.ttftMs = round2(stream._tFirst - stream._t0);
     }

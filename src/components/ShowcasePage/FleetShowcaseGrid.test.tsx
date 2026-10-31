@@ -14,6 +14,24 @@ describe("FleetShowcaseGrid (SHOW1)", () => {
     expect(tile.textContent).toContain("SSH tunnel");
     expect(tile.textContent).toContain("Spark");
     expect(tile.textContent).toContain("usage");
+    expect(tile.querySelector('[data-testid="tile-peak"]')!.textContent).toBe("peak 84.6 tok/s");
+    expect(tile.querySelector(".fleet-showcase-tile__badge--est")).toBeNull();
+  });
+
+  it("flags live (character-estimated) lanes and mixed lanes (SHOW2)", () => {
+    const live = fleetLane({
+      status: "running", tokenSource: null, estimated: true, clientTpsPeak: 91,
+      aggregate: { tps: 80.2, peakTps: 91, peakEstimated: true, estimated: true, decodeTokens: 400, windowMs: 5000, streams: 2 },
+    });
+    const mixed = fleetLane({ laneId: "spark:s1:8001", port: 8001, tokenSource: "mixed", estimated: true });
+    const { container } = render(<FleetShowcaseGrid lanes={[live, mixed]} />);
+    const [a, b] = [...container.querySelectorAll(".fleet-showcase-tile")];
+    const badgeA = a.querySelector('[data-testid="tile-token-badge"]')!;
+    expect(badgeA.textContent).toBe("≈ est.");
+    expect(badgeA.className).toContain("fleet-showcase-tile__badge--est");
+    expect(badgeA.getAttribute("title")).toMatch(/until the engine reports usage/);
+    expect(a.querySelector('[data-testid="tile-peak"]')!.textContent).toBe("peak ≈91.0 tok/s");
+    expect(b.querySelector('[data-testid="tile-token-badge"]')!.textContent).toBe("≈ mixed");
   });
 
   it("marks client-only engines and estimated tokens", () => {

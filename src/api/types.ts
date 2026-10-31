@@ -1188,6 +1188,23 @@ export interface ShowcaseStartRequest {
   prompts: string[];
 }
 
+/**
+ * Concurrent-window aggregate of one wave (SHOW2, #40): Σ decode tokens /
+ * (max t_last − min t_first), the DecodeBench definition; `peakTps` is the
+ * highest value seen while the wave ran.
+ */
+export interface ShowcaseAggregate {
+  tps: number | null;
+  peakTps: number | null;
+  /** The peak came from live (character-estimated) counts. */
+  peakEstimated?: boolean;
+  /** Some counted tokens came from the ~4 chars/token estimate (no usage). */
+  estimated: boolean;
+  decodeTokens: number;
+  windowMs: number;
+  streams: number;
+}
+
 export interface ShowcaseStreamState {
   streamId: string;
   label: string;
@@ -1205,6 +1222,10 @@ export interface ShowcaseStreamState {
   decodeTps: number;
   liveTokPerSec: number;
   peakTokPerSec?: number;
+  /** "usage" (engine-reported) or "estimate" (~4 chars/token) once settled. */
+  tokenSource?: "usage" | "estimate" | null;
+  /** Token count is a character estimate (always while streaming). */
+  estimated?: boolean;
   model: string | null;
   error: string | null;
 }
@@ -1230,6 +1251,8 @@ export interface ShowcaseSessionState {
   meanDecodeTps?: number;
   peakStreamTps?: number;
   streamCount?: number;
+  /** Concurrent-window aggregate (null for runs archived before SHOW2). */
+  aggregate?: ShowcaseAggregate | null;
   streams: ShowcaseStreamState[];
   error?: string | null;
   /** True when loaded from disk history (not a live poll session). */
@@ -1280,7 +1303,6 @@ export interface FleetShowcaseStartRequest {
 }
 
 export interface FleetShowcaseStreamState extends ShowcaseStreamState {
-  tokenSource?: "usage" | "estimate" | null;
   prefillTps?: number | null;
 }
 
@@ -1303,8 +1325,13 @@ export interface FleetShowcaseLaneState {
   serverTpsMax: number | null;
   serverSamples: number;
   serverEngine?: string | null;
-  /** Lane tok/s: live sum while streaming, then Σ decode tokens / window. */
+  /** Lane tok/s: concurrent-window aggregate (live and final). */
   clientTps: number | null;
+  /** Peak of the lane aggregate while it ran. */
+  clientTpsPeak?: number | null;
+  /** Lane tokens include character estimates. */
+  estimated?: boolean;
+  aggregate?: ShowcaseAggregate;
   streamTpsMean: number | null;
   ttftP50Ms: number | null;
   prefillTps: number | null;
@@ -1329,7 +1356,20 @@ export interface FleetShowcaseSessionState {
   completedAt: number | null;
   error: string | null;
   lanes: FleetShowcaseLaneState[];
+  /** Per-engine and fleet-wide concurrent-window aggregates (SHOW2). */
+  aggregates?: FleetShowcaseAggregates;
   fromHistory?: boolean;
+}
+
+export interface FleetShowcaseEngineAggregate extends ShowcaseAggregate {
+  /** serverEngine, else backend, else "unknown". */
+  engine: string;
+  laneIds: string[];
+}
+
+export interface FleetShowcaseAggregates {
+  fleet: ShowcaseAggregate;
+  engines: FleetShowcaseEngineAggregate[];
 }
 
 export interface FleetShowcaseHistorySummary {
@@ -1340,6 +1380,10 @@ export interface FleetShowcaseHistorySummary {
   promptType: ShowcasePromptType | null;
   maxTokens: number | null;
   laneCount: number;
+  fleetTps?: number | null;
+  fleetPeakTps?: number | null;
+  fleetPeakEstimated?: boolean;
+  fleetEstimated?: boolean;
   streamsPerLane: number;
   lanes: {
     laneId: string;
@@ -1348,6 +1392,8 @@ export interface FleetShowcaseHistorySummary {
     modelId: string | null;
     backend: string | null;
     clientTps: number | null;
+    clientTpsPeak?: number | null;
+    estimated?: boolean;
     serverTps: number | null;
     ttftP50Ms: number | null;
     status: string;
@@ -1378,6 +1424,10 @@ export interface ShowcaseHistorySummary {
   totalTokens: number;
   meanDecodeTps: number;
   peakStreamTps: number;
+  aggregateTps?: number | null;
+  aggregatePeakTps?: number | null;
+  aggregatePeakEstimated?: boolean;
+  aggregateEstimated?: boolean;
   streamCount: number;
   error?: string | null;
 }
