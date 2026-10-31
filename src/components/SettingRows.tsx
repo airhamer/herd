@@ -1,69 +1,70 @@
-/** The Settings dialog's row layout, shared with dialogs opened from it (Alerts). */
+import type { ReactNode } from "react";
 
-export function SettingRow({
-  title,
-  help,
-  htmlFor,
-  stack = false,
-  children,
-}: {
+/*
+ * Row primitives in the Settings dialog look (`.set-row`): text on the left,
+ * control on the right. Used by the Alerts dialog and the browser alert
+ * settings so they match the rest of Settings.
+ */
+
+interface RowProps {
   title: string;
-  help?: React.ReactNode;
+  help?: ReactNode;
+  /** id of the control; renders the title as its <label>. */
   htmlFor?: string;
-  /** Text above, control below (for controls that need room or show messages). */
+  /** Put the control under the text, for wide controls or inline messages. */
   stack?: boolean;
-  children: React.ReactNode;
-}) {
+  children: ReactNode;
+}
+
+export function SettingRow({ title, help, htmlFor, stack, children }: RowProps) {
+  const heading = htmlFor ? <label htmlFor={htmlFor}>{title}</label> : <span className="set-row__title">{title}</span>;
   return (
-    <div className={`set-row${stack ? " set-row--stack" : ""}`}>
+    <div className={stack ? "set-row set-row--stack" : "set-row"}>
       <div className="set-row__text">
-        {htmlFor ? <label htmlFor={htmlFor}>{title}</label> : <span className="set-row__title">{title}</span>}
-        {help && <small>{help}</small>}
+        {heading}
+        {help ? <small>{help}</small> : null}
       </div>
       <div className="set-row__control">{children}</div>
     </div>
   );
 }
 
-export function ToggleRow({
-  title,
-  help,
-  checked,
-  onChange,
-  disabled = false,
-  label,
-  children,
-}: {
+/** The on/off switch used across Settings (`.toggle-track` / `.toggle-dot`). */
+export function Switch({ checked, onChange, label, disabled }: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean }) {
+  const track = "toggle-track relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+  const dot = "toggle-dot inline-block h-4 w-4 transform rounded-full shadow transition-transform";
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={label}
+      aria-checked={checked}
+      disabled={disabled}
+      className={checked ? `${track} is-on` : track}
+      onClick={() => onChange(!checked)}
+    >
+      <span className={`${dot} ${checked ? "translate-x-4" : "translate-x-0"}`} />
+    </button>
+  );
+}
+
+interface ToggleRowProps {
   title: string;
-  help?: React.ReactNode;
+  help?: ReactNode;
   checked: boolean;
   onChange: (next: boolean) => void;
   disabled?: boolean;
-  /** Accessible name for the switch when the title alone is ambiguous. */
+  /** Switch name when `title` is not specific enough (defaults to the title). */
   label?: string;
-  /** Extra controls next to the switch (e.g. a duration field). */
-  children?: React.ReactNode;
-}) {
+  /** Controls placed before the switch, e.g. a wait field. */
+  children?: ReactNode;
+}
+
+export function ToggleRow({ title, help, checked, onChange, disabled = false, label, children }: ToggleRowProps) {
   return (
     <SettingRow title={title} help={help}>
       {children}
-      <button
-        type="button"
-        role="switch"
-        aria-checked={checked}
-        aria-label={label ?? title}
-        disabled={disabled}
-        onClick={() => onChange(!checked)}
-        className={`toggle-track relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors disabled:cursor-not-allowed disabled:opacity-50${
-          checked ? " is-on" : ""
-        }`}
-      >
-        <span
-          className={`toggle-dot inline-block h-4 w-4 transform rounded-full shadow transition-transform ${
-            checked ? "translate-x-4" : "translate-x-0"
-          }`}
-        />
-      </button>
+      <Switch checked={checked} onChange={onChange} label={label ?? title} disabled={disabled} />
     </SettingRow>
   );
 }

@@ -6,6 +6,8 @@ import type {
   AlertsResponse,
   AlertTestResult,
   DecodeBenchJob,
+  EventsQuery,
+  EventsResponse,
   DecodeBenchListResponse,
   FleetEnergy,
   MonthlyEnergy,
@@ -86,7 +88,7 @@ export function fetchFleetEnergy(): Promise<FleetEnergy> {
   return apiFetch("/api/fleet-energy");
 }
 
-/** Permanent monthly energy roll-up (monthly folds hourly; fetched once, no polling). */
+/** Long-run per-month energy history; the card loads it once when it opens. */
 export function fetchMonthlyEnergy(): Promise<MonthlyEnergy> {
   return apiFetch("/api/fleet-energy/monthly");
 }
@@ -481,32 +483,46 @@ export function updateSettings(patch: Partial<Settings>): Promise<Settings> {
   });
 }
 
-// ─── Alert notifications ─────────────────────────────
-export function fetchAlerts(): Promise<AlertsResponse> {
-  return apiFetch("/api/alerts");
-}
+// ─── Alerts (/api/alerts*) ──────────────────────────────
+const ALERTS = "/api/alerts";
 
-export function fetchAlertsConfig(): Promise<AlertsConfig> {
-  return apiFetch("/api/alerts/config");
-}
+/** Live alert state: firing, pending and the recent transitions. */
+export const fetchAlerts = (): Promise<AlertsResponse> => apiFetch(ALERTS);
 
-export function updateAlertsConfig(update: AlertsConfigUpdate): Promise<AlertsConfig> {
-  return apiFetch("/api/alerts/config", {
-    method: "PUT",
-    body: JSON.stringify(update),
-  });
-}
+export const fetchAlertsConfig = (): Promise<AlertsConfig> => apiFetch(`${ALERTS}/config`);
+
+/** Partial update; omitted sections stay as stored. Returns the new config. */
+export const updateAlertsConfig = (update: AlertsConfigUpdate): Promise<AlertsConfig> =>
+  apiFetch(`${ALERTS}/config`, { method: "PUT", body: JSON.stringify(update) });
 
 /**
- * Send one test message. With `channel`, the unsaved draft is tested (a masked
- * URL resolves against `channelId` on the server).
+ * Fire a test notification. Pass the dialog's draft as `channel` to try
+ * unsaved edits; a masked URL in it is looked up by `channelId`.
  */
-export function testAlertChannel(channelId: string | undefined, channel?: AlertChannel): Promise<AlertTestResult> {
-  return apiFetch("/api/alerts/test", {
-    method: "POST",
-    body: JSON.stringify({ channelId, channel }),
-  });
+export const testAlertChannel = (channelId: string | undefined, channel?: AlertChannel): Promise<AlertTestResult> =>
+  apiFetch(`${ALERTS}/test`, { method: "POST", body: JSON.stringify({ channelId, channel }) });
+
+// ─── Activity (/api/events) ─────────────────────────────
+
+/** Build the /api/events query string; empty filters are left out. */
+export function eventsPath(query: EventsQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.limit != null) params.set("limit", String(query.limit));
+  if (query.sparkId) params.set("sparkId", query.sparkId);
+  if (query.sinceId != null) params.set("sinceId", String(query.sinceId));
+  if (query.beforeId != null) params.set("beforeId", String(query.beforeId));
+  if (query.types?.length) params.set("type", query.types.join(","));
+  if (query.severities?.length) params.set("severity", query.severities.join(","));
+  const qs = params.toString();
+  return qs ? `/api/events?${qs}` : "/api/events";
 }
+
+/** Fleet activity, newest first. */
+export const fetchEvents = (query: EventsQuery = {}): Promise<EventsResponse> => apiFetch(eventsPath(query));
+
+/** Delete events at least `olderThanMs` old, or every event when omitted. */
+export const clearEvents = (olderThanMs?: number): Promise<{ removed: number }> =>
+  apiFetch(olderThanMs ? `/api/events?olderThanMs=${Math.floor(olderThanMs)}` : "/api/events", { method: "DELETE" });
 
 // ─── Fleet (node-agent) ─────────────────────────────────
 /** Aggregated fleet snapshot: nodes + topology + requests + memory. */
@@ -726,18 +742,19 @@ export function abandonUpdatePlan(): Promise<AbandonPlanResponse> {
   return apiFetch("/api/fleet/updates/plan", { method: "DELETE" });
 }
 
-// ─── Unit history (S2.3a routes; names mirrored exactly) ──
+// ─── Unit history (docs/specs/unit-history.md §9) ─────────
 
-/** The 48 h / 30 d bucketed unit history (`{ enabled: false }` while the server setting is off). */
+const sparkPath = (sparkId: string) => `/api/sparks/${encodeURIComponent(sparkId)}`;
+
+/** Bucketed unit history for one range; `{ enabled: false }` when the server setting is off. */
 export function getUnitHistory(sparkId: string, range: MetricsHistoryRange): Promise<MetricsHistoryResponse> {
-  return apiFetch<MetricsHistoryResponse>(`/api/sparks/${encodeURIComponent(sparkId)}/history?range=${range}`);
+  return apiFetch<MetricsHistoryResponse>(`${sparkPath(sparkId)}/history?range=${range}`);
 }
 
-/** The dense GPU raw series (parallel arrays, newest last); default window server-side. */
+/** Recent raw GPU samples as parallel arrays (oldest first); the server picks the window unless one is given. */
 export function getGpuHistory(sparkId: string, windowMs?: number): Promise<GpuHistoryResponse> {
-  return apiFetch<GpuHistoryResponse>(
-    `/api/sparks/${encodeURIComponent(sparkId)}/gpu-history${windowMs != null ? `?windowMs=${windowMs}` : ""}`,
-  );
+  const query = windowMs === undefined || windowMs === null ? "" : `?windowMs=${windowMs}`;
+  return apiFetch<GpuHistoryResponse>(`${sparkPath(sparkId)}/gpu-history${query}`);
 }
 
 // ─── Guard proxy (S4.1b) ──────────────────────────────────

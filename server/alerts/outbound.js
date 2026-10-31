@@ -1,84 +1,91 @@
-/**
- * Which addresses an alert channel may reach. This is the one place that
- * decides it for alerts, and it decides nothing of its own: it applies the
- * outbound-target policy `server/validate.js` already applies to units, LLM
- * endpoints and bench targets —
- *
- *   - save time: `isAllowedTargetHost` (a valid host; an IP literal must not be
- *     a forbidden address), plus a DNS check of a hostname when it resolves;
- *   - send time: `assertAllowedTarget`, which resolves the host and refuses if
- *     any answer is a forbidden address (`isForbiddenAddress`: unspecified,
- *     link-local / cloud metadata, multicast and IPv4-mapped forms of those).
- *     The connection is then pinned to exactly those checked addresses, so a
- *     record that changes between the check and the connect (DNS rebinding)
- *     cannot redirect it.
- *
- * Private LAN, Tailscale and loopback addresses stay allowed, as they are for
- * units — a self-hosted ntfy on the LAN is the common case. What the dashboard
- * may reach is the maintainer's decision: change it in validate.js and alerts
- * follow, rather than growing a second policy here.
- */
-import dns from "node:dns/promises";
+// Outbound policy for alert channel URLs: the same address rules herd applies
+// to unit and LLM targets (server/validate.js isForbiddenAddress), checked when
+// a channel is saved and again, against fresh DNS, on every send.
+// docs/specs/alerts.md §5. Clean-room implementation (LIC1).
+import dns from "node:dns";
 import net from "node:net";
-import { assertAllowedTarget, isAllowedTargetHost } from "../validate.js";
+import { isForbiddenAddress } from "../validate.js";
 
-/** Refused by the policy. The message is fixed text: no host, address or URL. */
-export class OutboundPolicyError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = "OutboundPolicyError";
-    this.status = 400;
-  }
-}
-
+/** Fixed failure texts: they never name the address or echo resolver output. */
 export const POLICY_BLOCKED = "blocked: the host resolves to an address the outbound policy does not allow";
 export const POLICY_UNRESOLVED = "could not resolve the channel host";
 
-/** URL hostname without IPv6 brackets. */
+export class OutboundPolicyError extends Error {
+  constructor(reason) {
+    super(reason);
+    this.name = "OutboundPolicyError";
+    this.reason = reason;
+  }
+}
+
+const defaultLookup = (host) => dns.promises.lookup(host, { all: true, verbatim: true });
+
+/** Host part of a channel URL without IPv6 brackets, or null when it does not parse. */
 export function channelHost(url) {
-  const host = url.hostname;
-  return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  try {
+    const host = new URL(url).hostname;
+    return host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  } catch {
+    return null;
+  }
 }
 
 /**
- * Save-time check of a parsed URL: http(s) only, and a host the policy allows.
- * @returns {string|null} an error message, or null when allowed
+ * Why a URL can never be a channel target, before any DNS: "required",
+ * "invalid", "scheme" or "forbidden" (a literal address the policy refuses).
+ * null when the URL is acceptable so far.
  */
 export function channelUrlProblem(url) {
-  if (url.protocol !== "http:" && url.protocol !== "https:") return "Channel URL must start with http:// or https://";
-  const host = channelHost(url);
-  if (!host) return "Channel URL needs a host";
-  if (!isAllowedTargetHost(host)) return "Channel URL host is not allowed (same outbound policy as unit and LLM targets)";
+  if (typeof url !== "string" || url.trim() === "") return "required";
+  let parsed;
+  try {
+    parsed = new URL(url.trim());
+  } catch {
+    return "invalid";
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "scheme";
+  const host = channelHost(parsed.href);
+  if (!host) return "invalid";
+  if (net.isIP(host) && isForbiddenAddress(host)) return "forbidden";
   return null;
 }
 
 /**
- * Resolve the channel's host and apply the policy to every answer.
- * @param {URL} url
- * @param {{ lookup?: typeof dns.lookup }} [opts]
- * @returns {Promise<string[]>} the checked addresses
+ * Resolve a channel URL's host once and check every answer.
+ * @returns {Promise<{ host: string, addresses: Array<{ address: string, family: number }> }>}
+ * @throws {OutboundPolicyError} with POLICY_BLOCKED or POLICY_UNRESOLVED
  */
-export async function resolveChannelTarget(url, { lookup = dns.lookup } = {}) {
+export async function resolveChannelTarget(url, { lookup = defaultLookup } = {}) {
   const host = channelHost(url);
-  if (!isAllowedTargetHost(host)) throw new OutboundPolicyError(POLICY_BLOCKED);
-  try {
-    return await assertAllowedTarget(host, [host], { lookup });
-  } catch (err) {
-    throw new OutboundPolicyError(err?.status === 403 ? POLICY_BLOCKED : POLICY_UNRESOLVED);
+  if (!host) throw new OutboundPolicyError(POLICY_UNRESOLVED);
+  let answers;
+  if (net.isIP(host)) {
+    answers = [{ address: host, family: net.isIP(host) }];
+  } else {
+    try {
+      answers = await lookup(host);
+    } catch {
+      throw new OutboundPolicyError(POLICY_UNRESOLVED);
+    }
   }
+  const list = (Array.isArray(answers) ? answers : [answers])
+    .filter((a) => a && typeof a.address === "string")
+    .map((a) => ({ address: a.address, family: a.family === 6 || net.isIPv6(a.address) ? 6 : 4 }));
+  if (list.length === 0) throw new OutboundPolicyError(POLICY_UNRESOLVED);
+  if (list.some((a) => isForbiddenAddress(a.address))) throw new OutboundPolicyError(POLICY_BLOCKED);
+  return { host, addresses: list };
 }
 
 /**
- * A `lookup` for the connection that answers with the addresses already
- * checked, never asking DNS again.
- * @param {string[]} addresses
+ * A `lookup` for net/tls connect options that only ever answers with the
+ * addresses already checked, so the socket cannot reach anything else.
  */
 export function pinnedLookup(addresses) {
-  const entries = addresses.map((address) => ({ address, family: net.isIP(address) || 4 }));
+  const first = addresses[0];
   return (_hostname, options, callback) => {
-    const cb = typeof options === "function" ? options : callback;
-    const all = typeof options === "object" && options?.all;
-    if (all) cb(null, entries);
-    else cb(null, entries[0].address, entries[0].family);
+    const done = typeof options === "function" ? options : callback;
+    const wantsAll = typeof options === "object" && options?.all;
+    if (wantsAll) done(null, addresses.map((a) => ({ address: a.address, family: a.family })));
+    else done(null, first.address, first.family);
   };
 }

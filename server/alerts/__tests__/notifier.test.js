@@ -1,165 +1,200 @@
-/**
- * Notifier: message formats, and the three things the review asked for —
- * the outbound policy applied on every send (pinned to the checked address),
- * redirects never followed, and no response body anywhere.
- */
-import { test } from "node:test";
+// Notifier (docs/specs/alerts.md §5): payloads per channel type, and delivery
+// that re-checks the outbound policy, pins the socket, refuses redirects and
+// keeps no response body. LIC1 clean-room rewrite.
+import { describe, test } from "node:test";
 import { strict as assert } from "node:assert";
-import { Notifier, buildRequest, describeGroup, filterGroupForChannel } from "../notifier.js";
+import { Notifier, TEST_TITLE, buildRequest, describeGroup, filterGroupForChannel, formatAge } from "../notifier.js";
 import { POLICY_BLOCKED, POLICY_UNRESOLVED } from "../outbound.js";
-import { LEAK, quietLog, receiver, stubFetch, stubLookup } from "./fixtures.js";
+import { SECRET_MARKER, fakeDns, localServer, recordingFetch, silentLog } from "./helpers.js";
 
-const NOW = 1_800_000_000_000;
-const alert = (over = {}) => ({
-  key: "spark-1:thermal",
-  ruleId: "thermal",
-  ruleName: "GPU temperature",
-  unitId: "spark-1",
-  unitName: "spark-1",
-  severity: "critical",
-  peakSeverity: "critical",
-  label: "GPU is close to its shutdown temperature",
-  summary: "91°C (warns at 85°C, critical at 90°C).",
-  startsAt: NOW - 5 * 60_000,
-  ...over,
-});
-const firing = { firing: [alert()], resolved: [], reminder: false };
+const T = 1_850_000_000_000;
+const MIN = 60_000;
 
-test("ntfy: title, priority and tags from the group; one line per alert", () => {
-  const { url, init } = buildRequest({ type: "ntfy", url: "https://ntfy.example.com/t" }, firing, NOW);
-  assert.equal(url, "https://ntfy.example.com/t");
-  assert.equal(init.headers.Title, "[CRITICAL] spark-1: GPU is close to its shutdown temperature");
-  assert.equal(init.headers.Priority, "5");
-  assert.match(init.body, /CRITICAL spark-1 · GPU temperature: 91°C .* \(for 5m\)/);
-});
-
-test("discord never pings and caps embed text; slack and webhook carry the same alerts", () => {
-  const d = JSON.parse(buildRequest({ type: "discord", url: "https://d/x" }, firing, NOW).init.body);
-  assert.deepEqual(d.allowed_mentions, { parse: [] });
-  assert.equal(d.embeds.length, 1);
-  const s = JSON.parse(buildRequest({ type: "slack", url: "https://s/x" }, firing, NOW).init.body);
-  assert.match(s.text, /GPU temperature/);
-  const w = JSON.parse(buildRequest({ type: "webhook", url: "https://w/x" }, firing, NOW).init.body);
-  assert.equal(w.status, "firing");
-  assert.equal(w.alerts[0].rule, "thermal");
-  assert.equal(w.alerts[0].label, "GPU is close to its shutdown temperature");
-});
-
-test("a large group is cut to a fixed number of lines", () => {
-  const many = { firing: Array.from({ length: 40 }, (_, i) => alert({ key: `u${i}:thermal`, unitName: `u${i}` })), resolved: [] };
-  const d = describeGroup(many, NOW);
-  assert.equal(d.lines.length, 21);
-  assert.equal(d.lines.at(-1), "+20 more");
-});
-
-test("a channel's minimum severity filters the group; resolved follows the peak", () => {
-  const ch = { minSeverity: "critical" };
-  assert.equal(filterGroupForChannel(ch, { firing: [alert({ severity: "warning", peakSeverity: "warning" })], resolved: [] }), null);
-  const r = filterGroupForChannel(ch, { firing: [], resolved: [alert({ severity: "warning", peakSeverity: "critical" })] });
-  assert.equal(r.resolved.length, 1);
-});
-
-test("send: delivered through a real socket, pinned to the address the policy checked", async (t) => {
-  const rx = await receiver();
-  t.after(rx.close);
-  const lookup = stubLookup(["127.0.0.1"]);
-  const n = new Notifier({ lookup, log: quietLog });
-  const r = await n.send({ id: "c", name: "Local", type: "webhook", url: `http://hooks.example.test:${rx.port}/hook` }, firing);
-  assert.deepEqual(r, { ok: true, status: 200 });
-  assert.equal(rx.requests.length, 1);
-  assert.equal(rx.requests[0].url, "/hook");
-  assert.equal(JSON.parse(rx.requests[0].body).alerts[0].unit, "spark-1");
-  assert.deepEqual(lookup.asked, ["hooks.example.test"], "resolved exactly once — the connection reuses that answer");
-});
-
-test("send: a host that resolves to a forbidden address is refused, and nothing is sent", async (t) => {
-  const rx = await receiver();
-  t.after(rx.close);
-  // DNS rebinding / changed records: the name now answers with the metadata address.
-  const n = new Notifier({ lookup: stubLookup(["169.254.169.254"]), log: quietLog });
-  const r = await n.send({ id: "c", name: "X", type: "webhook", url: `http://hooks.example.test:${rx.port}/hook` }, firing);
-  assert.deepEqual(r, { ok: false, error: POLICY_BLOCKED });
-  assert.equal(rx.requests.length, 0);
-  assert.equal(n.status.get("c").lastError, POLICY_BLOCKED);
-  assert.ok(!POLICY_BLOCKED.includes("169.254"), "the reason names no address");
-
-  for (const bad of [["0.0.0.0"], ["::ffff:169.254.169.254"], ["fe80::1"], ["224.0.0.1"]]) {
-    const r2 = await new Notifier({ lookup: stubLookup(bad), log: quietLog }).send({ id: "c", name: "X", type: "webhook", url: `http://h.example.test:${rx.port}/` }, firing);
-    assert.equal(r2.error, POLICY_BLOCKED, bad[0]);
-  }
-  const literal = await new Notifier({ log: quietLog }).send({ id: "c", name: "X", type: "webhook", url: "http://169.254.169.254/latest" }, firing);
-  assert.equal(literal.error, POLICY_BLOCKED);
-  assert.equal(rx.requests.length, 0);
-});
-
-test("send: an unresolvable host fails with a fixed reason", async () => {
-  const lookup = async () => {
-    throw Object.assign(new Error("getaddrinfo ENOTFOUND secret-topic.example.test"), { code: "ENOTFOUND" });
+function sample(patch = {}) {
+  return {
+    key: "box-a:disk",
+    ruleId: "disk",
+    ruleName: "Storage",
+    unitId: "box-a",
+    unitName: "box-a",
+    severity: "warning",
+    peakSeverity: "warning",
+    label: "Storage nearly full",
+    summary: "/data at 93%",
+    startsAt: T - 12 * MIN,
+    endsAt: null,
+    ...patch,
   };
-  const r = await new Notifier({ lookup, log: quietLog }).send({ id: "c", name: "X", type: "ntfy", url: "https://secret-topic.example.test/t" }, firing);
-  assert.deepEqual(r, { ok: false, error: POLICY_UNRESOLVED });
-});
+}
+const fired = (patch) => ({ firing: [sample(patch)], resolved: [], reminder: false });
+const channel = (patch = {}) => ({ id: "ch1", name: "Ops", type: "webhook", url: "http://hooks.lan/in", enabled: true, minSeverity: "warning", ...patch });
 
-test("send: a redirect is not followed and counts as a failure", async (t) => {
-  const target = await receiver();
-  t.after(target.close);
-  const rx = await receiver((_req, res) => {
-    res.writeHead(302, { Location: `http://127.0.0.1:${target.port}/elsewhere` });
-    res.end(`moved: ${LEAK}`);
+describe("message text", () => {
+  test("formatAge", () => {
+    const cases = [[0, "0s"], [59_999, "59s"], [MIN, "1m"], [61 * MIN, "1h 1m"], [25 * 60 * MIN, "1d 1h"], [-1, "0s"]];
+    for (const [ms, text] of cases) assert.equal(formatAge(ms), text, String(ms));
   });
-  t.after(rx.close);
-  const n = new Notifier({ log: quietLog });
-  const r = await n.send({ id: "c", name: "R", type: "ntfy", url: `http://127.0.0.1:${rx.port}/topic` }, firing);
-  assert.deepEqual(r, { ok: false, error: "redirect not followed (HTTP 302)" });
-  assert.equal(target.requests.length, 0, "the redirect target never saw a request");
-  for (const status of [301, 307, 308]) {
-    const r2 = await new Notifier({ fetchImpl: stubFetch(status, { headers: { Location: "http://x/" } }), lookup: stubLookup(["10.0.0.5"]), log: quietLog }).send({ id: "c", name: "R", type: "ntfy", url: "http://ntfy.lan/t" }, firing);
-    assert.equal(r2.error, `redirect not followed (HTTP ${status})`);
-  }
-});
 
-test("send: no response body reaches the result, the status or the log", async (t) => {
-  const rx = await receiver((_req, res) => {
-    res.writeHead(500, { "content-type": "text/plain" });
-    res.end(`internal error, token=${LEAK}`);
+  test("one alert: the title names it; lines say how long", () => {
+    const d = describeGroup(fired(), T);
+    assert.equal(d.title, "[WARNING] box-a: Storage nearly full");
+    assert.equal(d.tone, "warning");
+    assert.deepEqual(d.lines, ["WARNING box-a · Storage: /data at 93% (for 12m)"]);
+    const gone = describeGroup({ firing: [], resolved: [sample({ endsAt: T - 2 * MIN })] }, T);
+    assert.equal(gone.title, "[RESOLVED] box-a: Storage nearly full");
+    assert.equal(gone.lines[0], "RESOLVED box-a · Storage: /data at 93% (lasted 10m)");
+    assert.equal(describeGroup({ ...fired(), reminder: true }, T).title, "[Still firing] box-a: Storage nearly full");
   });
-  t.after(rx.close);
-  const logged = [];
-  const reported = [];
-  const n = new Notifier({ log: { warn: (m) => logged.push(m) }, onResult: (x) => reported.push(x) });
-  const r = await n.send({ id: "c", name: "B", type: "slack", url: `http://127.0.0.1:${rx.port}/x` }, firing);
-  assert.deepEqual(r, { ok: false, error: "HTTP 500" });
-  const everything = JSON.stringify({ r, status: [...n.status.values()], logged, reported: reported.map(({ ok, status, reason }) => ({ ok, status, reason })) });
-  assert.ok(!everything.includes(LEAK), everything);
-  assert.ok(!everything.includes("internal error"));
 
-  const ok = await new Notifier({ fetchImpl: stubFetch(200, { body: `ok ${LEAK}` }), lookup: stubLookup(["10.0.0.5"]), log: quietLog }).send({ id: "c", name: "B", type: "slack", url: "http://hooks.lan/x" }, firing);
-  assert.deepEqual(ok, { ok: true, status: 200 });
+  test("several alerts: counted title, critical wins the tone, long lists are cut", () => {
+    const group = { firing: [sample(), sample({ unitName: "box-b", severity: "critical" })], resolved: [sample({ endsAt: T })] };
+    const d = describeGroup(group, T);
+    assert.equal(d.title, "sparkDash: 2 firing, 1 resolved");
+    assert.equal(d.tone, "critical");
+    assert.equal(describeGroup({ ...group, reminder: true }, T).title, "sparkDash: 2 still firing, 1 resolved");
+    const crowd = { firing: Array.from({ length: 25 }, (_, i) => sample({ unitName: `n${i}` })), resolved: [] };
+    const cut = describeGroup(crowd, T);
+    assert.equal(cut.lines.length, 21);
+    assert.equal(cut.lines[20], "+5 more");
+  });
 });
 
-test("send: socket errors and timeouts become fixed reasons, never the error text", async () => {
-  const boom = Object.assign(new TypeError(`fetch failed for http://user:${LEAK}@x/`), { cause: { code: "ECONNREFUSED", message: LEAK } });
-  const r = await new Notifier({ fetchImpl: stubFetch(0, { throws: boom }), lookup: stubLookup(["10.0.0.5"]), log: quietLog }).send({ id: "c", name: "E", type: "webhook", url: "http://hooks.lan/x" }, firing);
-  assert.deepEqual(r, { ok: false, error: "connection failed (ECONNREFUSED)" });
-  const slow = Object.assign(new Error("aborted"), { name: "TimeoutError" });
-  const r2 = await new Notifier({ fetchImpl: stubFetch(0, { throws: slow }), lookup: stubLookup(["10.0.0.5"]), timeoutMs: 10_000, log: quietLog }).send({ id: "c", name: "E", type: "webhook", url: "http://hooks.lan/x" }, firing);
-  assert.equal(r2.error, "timed out after 10s");
-  const weird = new Error(LEAK);
-  const r3 = await new Notifier({ fetchImpl: stubFetch(0, { throws: weird }), lookup: stubLookup(["10.0.0.5"]), log: quietLog }).send({ id: "c", name: "E", type: "webhook", url: "http://hooks.lan/x" }, firing);
-  assert.equal(r3.error, "request failed");
+describe("requests per channel type", () => {
+  test("ntfy: plain text with title, priority and tag headers", () => {
+    const { url, init } = buildRequest(channel({ type: "ntfy", url: "https://ntfy.example.org/topic" }), fired({ severity: "critical" }), T);
+    assert.equal(url, "https://ntfy.example.org/topic");
+    assert.equal(init.method, "POST");
+    assert.equal(init.headers.Priority, "5");
+    assert.equal(init.headers.Tags, "rotating_light");
+    assert.match(init.body, /^CRITICAL box-a · Storage/);
+  });
+
+  test("discord: an embed per alert and no mentions", () => {
+    const body = JSON.parse(buildRequest(channel({ type: "discord" }), fired(), T).init.body);
+    assert.deepEqual(body.allowed_mentions, { parse: [] });
+    assert.equal(body.embeds.length, 1);
+    assert.equal(body.embeds[0].title, "Warning · box-a: Storage nearly full");
+    assert.equal(body.embeds[0].timestamp, new Date(T - 12 * MIN).toISOString());
+  });
+
+  test("slack: bold title then bullets", () => {
+    const body = JSON.parse(buildRequest(channel({ type: "slack" }), fired(), T).init.body);
+    assert.equal(body.text, "*[WARNING] box-a: Storage nearly full*\n• WARNING box-a · Storage: /data at 93% (for 12m)");
+  });
+
+  test("webhook: structured alerts", () => {
+    const body = JSON.parse(buildRequest(channel(), fired(), T).init.body);
+    assert.equal(body.status, "firing");
+    assert.equal(body.sentAt, new Date(T).toISOString());
+    assert.deepEqual(
+      { rule: body.alerts[0].rule, unit: body.alerts[0].unit, endsAt: body.alerts[0].endsAt },
+      { rule: "disk", unit: "box-a", endsAt: null }
+    );
+  });
+
+  test("a test group gets the fixed test text", () => {
+    const { init } = buildRequest(channel({ type: "ntfy" }), { test: true, firing: [], resolved: [] }, T);
+    assert.equal(init.headers.Title, TEST_TITLE);
+    assert.equal(init.headers.Tags, "test_tube");
+    assert.equal(JSON.parse(buildRequest(channel(), { test: true }, T).init.body).status, "test");
+  });
 });
 
-test("dispatch skips disabled channels and channels whose minimum the group does not meet", async () => {
-  const fetchImpl = stubFetch(200);
-  const n = new Notifier({ fetchImpl, lookup: stubLookup(["192.168.1.20"]), log: quietLog });
-  const results = await n.dispatch(
-    [
-      { id: "a", name: "A", type: "ntfy", url: "http://ntfy.lan/a", enabled: true, minSeverity: "warning" },
-      { id: "b", name: "B", type: "ntfy", url: "http://ntfy.lan/b", enabled: false, minSeverity: "warning" },
-      { id: "c", name: "C", type: "ntfy", url: "http://ntfy.lan/c", enabled: true, minSeverity: "critical" },
-    ],
-    { firing: [alert({ severity: "warning", peakSeverity: "warning" })], resolved: [] }
-  );
-  assert.deepEqual(results.map((x) => x.channelId), ["a"]);
-  assert.equal(fetchImpl.calls[0].init.redirect, "manual");
+describe("per-channel filtering", () => {
+  test("firing by current severity, resolved by peak; empty → null", () => {
+    const strict = { minSeverity: "critical" };
+    assert.equal(filterGroupForChannel(strict, fired()), null);
+    const part = filterGroupForChannel(strict, { firing: [], resolved: [sample({ peakSeverity: "critical" })] });
+    assert.equal(part.resolved.length, 1);
+    assert.equal(filterGroupForChannel({ minSeverity: "warning" }, fired()).firing.length, 1);
+  });
+});
+
+describe("delivery", () => {
+  test("goes over a real socket to the address that was checked, resolving once", async (t) => {
+    const srv = await localServer();
+    t.after(srv.stop);
+    const dns = fakeDns(["127.0.0.1"]);
+    const result = await new Notifier({ lookup: dns, log: silentLog }).send(channel({ url: `http://alerts.example.test:${srv.port}/in` }), fired());
+    assert.deepEqual(result, { ok: true, status: 200 });
+    assert.equal(srv.seen.length, 1);
+    assert.equal(srv.seen[0].path, "/in");
+    assert.equal(JSON.parse(srv.seen[0].body).alerts[0].unitId, "box-a");
+    assert.deepEqual(dns.names, ["alerts.example.test"]);
+  });
+
+  test("refuses hosts that resolve somewhere forbidden, and literal forbidden IPs", async (t) => {
+    const srv = await localServer();
+    t.after(srv.stop);
+    for (const address of ["169.254.169.254", "0.0.0.0", "::ffff:169.254.169.254", "fe80::1", "224.0.0.1"]) {
+      const notifier = new Notifier({ lookup: fakeDns([address]), log: silentLog });
+      const r = await notifier.send(channel({ url: `http://alerts.example.test:${srv.port}/in` }), fired());
+      assert.deepEqual(r, { ok: false, error: POLICY_BLOCKED }, address);
+      assert.equal(notifier.status.get("ch1").lastError, POLICY_BLOCKED);
+    }
+    const literal = await new Notifier({ log: silentLog }).send(channel({ url: "http://169.254.169.254/latest/meta-data" }), fired());
+    assert.equal(literal.error, POLICY_BLOCKED);
+    assert.equal(srv.seen.length, 0);
+    assert.equal(/\d+\.\d+\.\d+\.\d+/.test(POLICY_BLOCKED), false);
+  });
+
+  test("a name that does not resolve fails with a fixed reason", async () => {
+    const lookup = async () => {
+      throw Object.assign(new Error("ENOTFOUND hidden.example.test"), { code: "ENOTFOUND" });
+    };
+    const r = await new Notifier({ lookup, log: silentLog }).send(channel({ url: "https://hidden.example.test/x" }), fired());
+    assert.deepEqual(r, { ok: false, error: POLICY_UNRESOLVED });
+  });
+
+  test("redirects are reported, not followed", async (t) => {
+    const elsewhere = await localServer();
+    t.after(elsewhere.stop);
+    const bouncer = await localServer((_req, res) => {
+      res.writeHead(307, { Location: `http://127.0.0.1:${elsewhere.port}/` });
+      res.end(SECRET_MARKER);
+    });
+    t.after(bouncer.stop);
+    const r = await new Notifier({ log: silentLog }).send(channel({ url: `http://127.0.0.1:${bouncer.port}/x` }), fired());
+    assert.deepEqual(r, { ok: false, error: "redirect not followed (HTTP 307)" });
+    assert.equal(elsewhere.seen.length, 0);
+    for (const code of [301, 302, 308]) {
+      const stub = recordingFetch(code, { headers: { Location: "http://x/" } });
+      const r2 = await new Notifier({ fetchImpl: stub, lookup: fakeDns(["10.1.1.1"]), log: silentLog }).send(channel(), fired());
+      assert.equal(r2.error, `redirect not followed (HTTP ${code})`);
+      assert.equal(stub.calls[0].init.redirect, "manual");
+    }
+  });
+
+  test("response bodies and error text never come back", async (t) => {
+    const srv = await localServer((_req, res) => {
+      res.writeHead(502);
+      res.end(`upstream said ${SECRET_MARKER}`);
+    });
+    t.after(srv.stop);
+    const warnings = [];
+    const results = [];
+    const notifier = new Notifier({ log: { warn: (line) => warnings.push(line) }, onResult: (x) => results.push(x) });
+    const r = await notifier.send(channel({ url: `http://127.0.0.1:${srv.port}/x` }), fired());
+    assert.deepEqual(r, { ok: false, error: "HTTP 502" });
+    const seen = JSON.stringify({ r, status: [...notifier.status.values()], warnings, results: results.map(({ ok, status, reason }) => ({ ok, status, reason })) });
+    assert.equal(seen.includes(SECRET_MARKER), false);
+
+    const thrown = async (error) =>
+      (await new Notifier({ fetchImpl: recordingFetch(0, { error }), lookup: fakeDns(["10.1.1.1"]), log: silentLog }).send(channel(), fired())).error;
+    assert.equal(await thrown(Object.assign(new TypeError(SECRET_MARKER), { cause: { code: "ECONNRESET" } })), "connection failed (ECONNRESET)");
+    assert.equal(await thrown(Object.assign(new Error(SECRET_MARKER), { name: "TimeoutError" })), "timed out after 10s");
+    assert.equal(await thrown(new Error(SECRET_MARKER)), "request failed");
+  });
+
+  test("dispatch sends only to enabled channels whose minimum is met", async () => {
+    const stub = recordingFetch(202);
+    const notifier = new Notifier({ fetchImpl: stub, lookup: fakeDns(["192.168.7.7"]), log: silentLog });
+    const results = await notifier.dispatch(
+      [channel({ id: "on" }), channel({ id: "off", enabled: false }), channel({ id: "picky", minSeverity: "critical" })],
+      fired()
+    );
+    assert.deepEqual(results, [{ channelId: "on", ok: true, status: 202 }]);
+    assert.equal(stub.calls.length, 1);
+    assert.equal(notifier.status.get("on").lastError, null);
+  });
 });
