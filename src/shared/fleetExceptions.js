@@ -1,45 +1,63 @@
-/**
- * Fleet exceptions: the Overview strip's conditions (offline, thermal / hardware
- * throttle, disk, LLM, tailnet). One copy, read by the strip in the browser
- * (FleetAlertStrip.deriveAlerts) and by the server's alert notifications
- * (server/alerts/conditions.js), so the two can never disagree on what is wrong.
- */
+// Overview "exceptions": the per-unit problems the fleet strip shows and the
+// alert engine watches (docs/specs/alerts.md §2). Shared by browser and server
+// so both always agree. Evolved from herd's MIT FleetAlertStrip derive();
+// clean-room rewrite for LIC1.
 
-/** @param {number} c @param {"celsius"|"fahrenheit"} unit */
-export function formatTemperature(c, unit = "celsius") {
-  return unit === "fahrenheit" ? `${Math.round((c * 9) / 5 + 32)}°F` : `${Math.round(c)}°C`;
+/**
+ * Whole-degree temperature in the chosen unit, e.g. "71°C" or "161°F".
+ * @param {number} celsius
+ * @param {"celsius"|"fahrenheit"} [unit]
+ */
+export function formatTemperature(celsius, unit = "celsius") {
+  if (unit === "fahrenheit") return `${Math.round((celsius * 9) / 5 + 32)}°F`;
+  return `${Math.round(celsius)}°C`;
+}
+
+/** Text after the unit name for a throttling GPU, plus the supporting figures. */
+function throttleRow(gpu, unit) {
+  const flags = gpu?.throttle;
+  // A software power cap on its own is normal operation, not an exception.
+  if (!flags || !(flags.thermal || flags.hwSlowdown)) return null;
+  const facts = [];
+  if (typeof flags.detail === "string" && flags.detail) facts.push(flags.detail);
+  if (Number.isFinite(gpu.temperature)) facts.push(`GPU at ${formatTemperature(gpu.temperature, unit)}`);
+  if (flags.smClockMHz) {
+    const share = flags.smClockPct == null ? "" : ` (${Math.round(flags.smClockPct)}% of max)`;
+    facts.push(`SM clock ${(flags.smClockMHz / 1000).toFixed(1)} GHz${share}`);
+  }
+  return {
+    id: "throttle",
+    label: flags.thermal ? "is thermal throttling" : "has a hardware slowdown",
+    detail: facts.join(" · "),
+    severity: "critical",
+  };
+}
+
+function llmDown(spark) {
+  const ports = spark.metrics?.llm ?? [];
+  return spark.llmMonitoring !== false && ports.length > 0 && !ports.some((port) => port.available);
+}
+
+function tailnetDown(spark) {
+  const ts = spark.metrics?.tailscale;
+  return Boolean(spark.tailscaleMonitoring && ts && (!ts.available || ts.online === false));
 }
 
 /**
- * The exceptions one unit has right now, in the strip's order.
- * @param {any} spark a SparkMonitor snapshot
+ * Exceptions for one unit, in display order.
+ * @param {import("../api/types").SparkSnapshot} spark
  * @param {"celsius"|"fahrenheit"} [unit]
  * @returns {Array<{ id: "offline"|"throttle"|"disk"|"llm"|"tailnet", label: string, detail?: string, severity: "critical"|"warning" }>}
  */
 export function fleetExceptions(spark, unit = "celsius") {
-  const out = [];
-  if (!spark) return out;
-  const metrics = spark.metrics || {};
-  if (!spark.online) out.push({ id: "offline", label: "Host unreachable", severity: "critical" });
-  const th = metrics.gpu?.throttle;
-  // A software power cap on an idle GPU is normal; only thermal / hardware slowdown is an alert.
-  if (th?.thermal || th?.hwSlowdown) {
-    const bits = [];
-    const temp = metrics.gpu?.temperature;
-    if (temp) bits.push(`GPU at ${formatTemperature(temp, unit)}`);
-    if (th.smClockMHz) bits.push(`SM clock ${(th.smClockMHz / 1000).toFixed(1)} GHz${th.smClockPct != null ? ` (${Math.round(th.smClockPct)}% of max)` : ""}`);
-    out.push({
-      id: "throttle",
-      label: th.thermal ? "is thermal throttling" : "has a hardware slowdown",
-      detail: [th.detail, ...bits].filter(Boolean).join(" · "),
-      severity: "critical",
-    });
+  const found = [];
+  if (!spark.online) found.push({ id: "offline", label: "Host unreachable", severity: "critical" });
+  const throttle = throttleRow(spark.metrics?.gpu, unit);
+  if (throttle) found.push(throttle);
+  if ((spark.metrics?.storage ?? []).some((volume) => volume.percentage >= 90)) {
+    found.push({ id: "disk", label: "storage is at or above 90%", severity: "warning" });
   }
-  const storage = Array.isArray(metrics.storage) ? metrics.storage : [];
-  if (storage.some((disk) => disk.percentage >= 90)) out.push({ id: "disk", label: "storage is at or above 90%", severity: "warning" });
-  const llm = Array.isArray(metrics.llm) ? metrics.llm : [];
-  if (spark.llmMonitoring !== false && llm.length > 0 && llm.every((l) => !l.available)) out.push({ id: "llm", label: "LLM is unavailable", severity: "warning" });
-  const ts = metrics.tailscale;
-  if (spark.tailscaleMonitoring && ts && (!ts.available || ts.online === false)) out.push({ id: "tailnet", label: "tailnet is unavailable", severity: "warning" });
-  return out;
+  if (llmDown(spark)) found.push({ id: "llm", label: "LLM is unavailable", severity: "warning" });
+  if (tailnetDown(spark)) found.push({ id: "tailnet", label: "tailnet is unavailable", severity: "warning" });
+  return found;
 }

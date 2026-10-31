@@ -368,9 +368,10 @@ function recordEvent(event) {
   }
 }
 
-// Alert notifications over the Health findings and the Overview strip's exceptions.
-// Opt-in (settings.alertsEnabled): while off nothing is evaluated or sent, and
-// the config and test routes refuse. Every send is recorded in the event log.
+// Alerts (docs/specs/alerts.md): Health findings + Overview strip exceptions,
+// pushed to the configured channels. Gated by settings.alertsEnabled — when it
+// is false nothing is evaluated or sent and the write/test routes answer 409.
+// Each delivery attempt lands in the event log above.
 const alertsRuntime = createAlertsRuntime({
   filePath: ALERTS_JSON_PATH,
   isEnabled: () => getSettings().alertsEnabled === true,
@@ -2290,7 +2291,7 @@ function buildSnapshotPayload(sparks = orderedSnapshots()) {
     sparks,
     refreshInterval: getSettings().pollIntervalMs,
   };
-  // Only while alerts are on: the key's absence tells the UI to derive its own.
+  // Present only while alerts are on; without it the UI derives rows itself.
   const alerts = alertsRuntime.snapshotBlock();
   if (alerts) payload.alerts = alerts;
   return JSON.stringify(payload);

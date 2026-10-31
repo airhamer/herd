@@ -40,6 +40,8 @@ now **re-implementations from spec** (upstream commits read as documentation,
 written fresh in our style). That is the honest price of keeping MIT and is
 fine — their changelog is a free design spec.
 
+**LIC1 (2026-10-31):** the two verbatim Apache-2.0 ports that had landed anyway — monthly energy (upstream 2fd74e6 → herd 03dc8c4 + UI b385668) and alert notifications (upstream 2c2a1af + 51ced72 → herd df7fc7f + UI b548439) — were replaced on branch `license/cleanroom-ports` by re-implementations from specs (`docs/specs/monthly-energy.md`, `docs/specs/alerts.md`), checked with a line-similarity scan against the upstream commits (remaining matches are API/field names). Caveat: one-person clean room — the rewriting agent had seen the ported code. `src/shared/formatSince.ts` stays as is (upstream 1197009, MIT 1.8.9). Other post-2.0 ports (5d71341, 8995f65, 2550f01, c67859d incl. `server/util/atomicWrite.js` changes, the S1 multi-OS collectors) are not covered and still need the same treatment.
+
 ## 2. Target model — the four first-class objects
 
 Today the dashboard knows **nodes** (registry) and, as data, containers/engines.

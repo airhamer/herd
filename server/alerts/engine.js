@@ -1,386 +1,322 @@
-/**
- * Alert notifications — the timing layer on top of what sparkDash already
- * detects.
- *
- * How this coexists with HealthEvaluator and the Activity log (2.0):
- *   - Detection stays where it is. The conditions are HealthEvaluator's
- *     findings (snapshot.health) and the Overview strip's exceptions
- *     (src/shared/fleetExceptions.js); see conditions.js. Nothing here has a
- *     threshold of its own, so the Health chips, the strip and a notification
- *     always agree on what is wrong.
- *   - The Activity log keeps recording what happened (SparkMonitor writes
- *     health.*, spark.offline/online, gpu.throttle.* events as before). This
- *     layer adds only what it does itself: one `alert.notify.sent` or
- *     `alert.notify.failed` event per channel per notification, with no URL and
- *     no response body.
- *   - What this adds is delivery: a condition must hold for its `for` before it
- *     fires, and stay clear for the same `for` (at least MIN_CLEAR_MS) before it
- *     resolves; everything that changes in one evaluation goes out as one
- *     message; optional reminders while firing; and the firing set survives a
- *     restart, so a notification is not repeated and a duration does not reset.
- *
- *   inactive ──condition true──▶ pending ──true for `for`──▶ firing
- *       ▲                          │                           │
- *       └──────condition false─────┘    false for `for` ──▶ resolved
- *
- * A pending alert that goes false is dropped silently (it never fired). Severity
- * changes (warning ⇄ critical) also have to hold for `for`; an escalation to a
- * severity not yet notified sends a fresh "firing" message.
- *
- * `evaluate()` is synchronous and never throws into the caller; notifications
- * are dispatched without awaiting.
- */
-import { collectConditions, effectiveRuleConfig, ruleName, severityRank } from "./conditions.js";
-import { MAX_NAME_CHARS, capText } from "./text.js";
+// Alert state machine: turns per-unit conditions (conditions.js) into
+// pending → firing → resolved alerts and hands each evaluation's changes to
+// the notifier as one group. docs/specs/alerts.md §4.
+// Clean-room implementation (LIC1).
+import { collectConditions, effectiveRuleConfig } from "./conditions.js";
+import { MAX_NAME_CHARS, MAX_SUMMARY_CHARS, capText } from "./text.js";
 
-export const HISTORY_LIMIT = 200;
-/** A firing alert resolves only after this much clear time, even with `for` 0. */
+/** A firing alert must stay clear at least this long before it resolves. */
 export const MIN_CLEAR_MS = 30_000;
-/** Rewrite the firing set this often while non-empty, so its age is provable. */
-const STATE_HEARTBEAT_MS = 5 * 60_000;
-/** A persisted firing set older than this is too stale to resume from. */
+/** A saved firing set older than this is not trusted after a restart. */
 export const STATE_MAX_AGE_MS = 15 * 60_000;
+/** Firing/resolved transitions kept for GET /api/alerts. */
+export const HISTORY_LIMIT = 200;
 
-const keyOf = (unitId, ruleId) => `${unitId}:${ruleId}`;
+const SEVERITY_RANK = { warning: 1, critical: 2 };
+const rank = (severity) => SEVERITY_RANK[severity] ?? 0;
+const higher = (a, b) => (rank(b) > rank(a) ? b : a);
+const isSeverity = (s) => s === "warning" || s === "critical";
+
+/** The public view of one tracked alert. */
+function view(alert, status = alert.state, endsAt = null) {
+  return {
+    key: alert.key,
+    ruleId: alert.ruleId,
+    ruleName: alert.ruleName,
+    unitId: alert.unitId,
+    unitName: alert.unitName,
+    severity: alert.severity,
+    peakSeverity: alert.peakSeverity,
+    state: alert.state,
+    label: alert.label,
+    summary: alert.summary,
+    startsAt: alert.startsAt,
+    firingAt: alert.firingAt,
+    endsAt,
+    status,
+  };
+}
 
 export class AlertEngine {
-  /**
-   * @param {{
-   *   now?: () => number,
-   *   getConfig: () => { repeatIntervalMin: number, rules: object, channels: object[] },
-   *   notifier?: { dispatch: (channels: object[], group: object) => Promise<unknown> } | null,
-   *   persistState?: ((state: object) => void) | null,
-   *   log?: Pick<Console, "error" | "warn">,
-   * }} opts
-   */
-  constructor(opts) {
-    this._now = opts.now || Date.now;
-    this._getConfig = opts.getConfig;
-    this._notifier = opts.notifier || null;
-    this._persistState = opts.persistState || null;
-    this._log = opts.log || console;
-    /** @type {Map<string, object>} key → alert (pending or firing) */
-    this._alerts = new Map();
-    /** Newest first. */
+  constructor({ now = () => Date.now(), getConfig, notifier, persistState = () => {}, log = console } = {}) {
+    this._now = now;
+    this._config = typeof getConfig === "function" ? getConfig : () => ({});
+    this._notifier = notifier;
+    this._persist = persistState;
+    this._log = log;
+    /** @type {Map<string, object>} key → tracked alert (pending or firing) */
+    this._tracked = new Map();
     this._history = [];
-    this._historySeq = 0;
-    this._lastPersistAt = 0;
-    this._dirty = false;
+    this._eventSeq = 0;
   }
 
-  // ─── State restore / persist ────────────────────────────
-
-  /**
-   * Resume the firing set saved before a restart, when the save is recent
-   * enough to trust. Restored alerts keep firing without a new notification and
-   * resolve through the normal hysteresis if the condition is gone.
-   */
-  restore(state) {
-    if (!state || !Array.isArray(state.firing)) return 0;
-    const now = this._now();
-    if (!Number.isFinite(state.savedAt) || now - state.savedAt > STATE_MAX_AGE_MS) return 0;
-    let n = 0;
-    for (const a of state.firing) {
-      if (!a || typeof a.unitId !== "string" || typeof a.ruleId !== "string" || !Number.isFinite(a.startsAt)) continue;
-      if (!/^[a-z0-9-]{1,40}$/.test(a.ruleId)) continue;
-      const severity = a.severity === "critical" ? "critical" : "warning";
-      const key = keyOf(a.unitId, a.ruleId);
-      this._alerts.set(key, {
-        key,
-        ruleId: a.ruleId,
-        ruleName: ruleName(a.ruleId, a.ruleName),
-        unitId: a.unitId,
-        unitName: capText(a.unitName || a.unitId, MAX_NAME_CHARS),
-        severity,
-        peakSeverity: a.peakSeverity === "critical" ? "critical" : severity,
-        notifiedSeverity: a.notifiedSeverity === "critical" ? "critical" : severity,
-        label: capText(a.label),
-        summary: capText(a.summary),
-        state: "firing",
-        startsAt: a.startsAt,
-        firingAt: Number.isFinite(a.firingAt) ? a.firingAt : a.startsAt,
-        falseSince: null,
-        changeSince: null,
-        lastNotifiedAt: Number.isFinite(a.lastNotifiedAt) ? a.lastNotifiedAt : now,
-      });
-      n += 1;
-    }
-    return n;
+  active() {
+    return [...this._tracked.values()].filter((a) => a.state === "firing").map((a) => view(a));
   }
 
-  /** The firing set in its persisted shape. */
-  stateForSave() {
-    return {
-      savedAt: this._now(),
-      firing: [...this._alerts.values()]
-        .filter((a) => a.state === "firing")
-        .map((a) => ({
-          ruleId: a.ruleId,
-          ruleName: a.ruleName,
-          unitId: a.unitId,
-          unitName: a.unitName,
-          severity: a.severity,
-          peakSeverity: a.peakSeverity,
-          notifiedSeverity: a.notifiedSeverity,
-          label: a.label,
-          summary: a.summary,
-          startsAt: a.startsAt,
-          firingAt: a.firingAt,
-          lastNotifiedAt: a.lastNotifiedAt,
-        })),
-    };
+  pending() {
+    return [...this._tracked.values()].filter((a) => a.state === "pending").map((a) => view(a));
   }
 
-  _maybePersist() {
-    if (!this._persistState) return;
-    const now = this._now();
-    const firing = [...this._alerts.values()].some((a) => a.state === "firing");
-    const heartbeat = firing && now - this._lastPersistAt >= STATE_HEARTBEAT_MS;
-    if (!this._dirty && !heartbeat) return;
-    try {
-      this._persistState(this.stateForSave());
-      this._dirty = false;
-      this._lastPersistAt = now;
-    } catch (err) {
-      this._log.error?.(`[alerts] failed to save alert state: ${err.message}`);
-    }
+  recent() {
+    return this._history.map((entry) => ({ ...entry }));
   }
 
-  // ─── Evaluation ─────────────────────────────────────────
+  /** Forget every pending and firing alert (alerts were turned off). History stays. */
+  reset() {
+    this._tracked.clear();
+  }
 
-  /**
-   * Run over the fleet once. Returns the group it dispatched
-   * (`{ firing, resolved, reminders }`), for tests.
-   * @param {object[]} units SparkMonitor snapshots in tab order
-   */
+  /** One evaluation over the current unit snapshots. */
   evaluate(units) {
-    const now = this._now();
-    const config = this._getConfig();
-    const fired = [];
+    const at = this._now();
+    const config = this._config() ?? {};
+    const overrides = config.rules ?? {};
+    const ruleOn = (ruleId) => effectiveRuleConfig(ruleId, overrides).enabled;
+    const waitMs = (ruleId) => Math.max(0, effectiveRuleConfig(ruleId, overrides).forSec) * 1000;
+
+    const newlyFiring = [];
     const resolved = [];
-    const list = Array.isArray(units) ? units : [];
-    const unitIds = new Set();
-    const cfgCache = new Map();
-    const cfgFor = (ruleId) => {
-      if (!cfgCache.has(ruleId)) cfgCache.set(ruleId, effectiveRuleConfig(ruleId, config.rules?.[ruleId]));
-      return cfgCache.get(ruleId);
-    };
+    let changed = false;
+    const present = new Set();
 
-    for (const unit of list) {
-      if (!unit?.id) continue;
-      unitIds.add(unit.id);
-      let result;
-      try {
-        result = collectConditions(unit);
-      } catch (err) {
-        this._log.error?.(`[alerts] could not read ${unit.id}: ${err?.message}`);
-        continue;
-      }
-      const trueKeys = new Set();
-      for (const c of result.conditions) {
-        const cfg = cfgFor(c.ruleId);
-        if (!cfg.enabled) continue;
-        const key = keyOf(unit.id, c.ruleId);
-        trueKeys.add(key);
-        this._conditionTrue(key, unit, c, cfg.forSec * 1000, now, fired);
-      }
-      for (const a of [...this._alerts.values()]) {
-        if (a.unitId !== unit.id || trueKeys.has(a.key)) continue;
-        const cfg = cfgFor(a.ruleId);
-        // Turning a rule off ends its alerts now.
-        if (!cfg.enabled) this._end(a, now, resolved, "rule turned off");
-        else if (result.judged(a.ruleId)) this._conditionFalse(a, cfg.forSec * 1000, now, resolved);
-      }
-    }
+    for (const unit of units ?? []) {
+      if (!unit || unit.id == null) continue;
+      present.add(unit.id);
+      const { conditions, judged } = collectConditions(unit);
 
-    // Units removed from the fleet: their alerts end now.
-    for (const a of [...this._alerts.values()]) {
-      if (!unitIds.has(a.unitId)) this._end(a, now, resolved, "unit removed");
-    }
+      // Strongest condition per rule among enabled rules.
+      const now = new Map();
+      for (const c of conditions) {
+        if (!ruleOn(c.ruleId)) continue;
+        const prior = now.get(c.ruleId);
+        if (!prior || rank(c.severity) > rank(prior.severity)) now.set(c.ruleId, c);
+      }
 
-    // Repeat reminders for alerts still firing.
-    const reminders = [];
-    const repeatMs = (Number(config.repeatIntervalMin) || 0) * 60_000;
-    if (repeatMs > 0) {
-      for (const a of this._alerts.values()) {
-        if (a.state !== "firing" || fired.includes(a)) continue;
-        if (now - a.lastNotifiedAt >= repeatMs) {
-          a.lastNotifiedAt = now;
-          reminders.push(a);
-          this._dirty = true;
+      // Tracked alerts of this unit whose condition is absent this round.
+      for (const alert of this._tracked.values()) {
+        if (alert.unitId !== unit.id || now.has(alert.ruleId)) continue;
+        if (!ruleOn(alert.ruleId)) {
+          changed = this._end(alert, "rule turned off", at, resolved) || changed;
+          continue;
+        }
+        if (!judged(alert.ruleId)) continue; // stale reading: hold as is
+        if (alert.state === "pending") {
+          this._tracked.delete(alert.key);
+          continue;
+        }
+        alert.escalatingSince = null;
+        alert.clearSince ??= at;
+        if (at - alert.clearSince >= Math.max(waitMs(alert.ruleId), MIN_CLEAR_MS)) {
+          this._resolve(alert, alert.clearSince, resolved);
+          changed = true;
+        }
+      }
+
+      for (const [ruleId, c] of now) {
+        const key = `${unit.id}:${ruleId}`;
+        let alert = this._tracked.get(key);
+        if (!alert) {
+          alert = {
+            key,
+            ruleId,
+            unitId: unit.id,
+            state: "pending",
+            severity: c.severity,
+            peakSeverity: c.severity,
+            notifiedSeverity: null,
+            startsAt: at,
+            firingAt: null,
+            lastNotifiedAt: null,
+            clearSince: null,
+            escalatingSince: null,
+          };
+          this._tracked.set(key, alert);
+        }
+        alert.ruleName = c.ruleName;
+        alert.unitName = capText(unit.name ?? unit.id, MAX_NAME_CHARS);
+        alert.label = c.label;
+        alert.summary = capText(c.summary, MAX_SUMMARY_CHARS);
+        alert.clearSince = null;
+        const hold = waitMs(ruleId);
+
+        if (alert.state === "pending") {
+          alert.severity = c.severity;
+          alert.peakSeverity = higher(alert.peakSeverity, c.severity);
+          if (at - alert.startsAt >= hold) {
+            alert.state = "firing";
+            alert.firingAt = at;
+            alert.notifiedSeverity = alert.severity;
+            this._remember("firing", alert, at, null);
+            newlyFiring.push(alert);
+            changed = true;
+          }
+          continue;
+        }
+
+        if (rank(c.severity) > rank(alert.notifiedSeverity)) {
+          // Worse than what was announced: announce only once it has held.
+          alert.escalatingSince ??= at;
+          if (at - alert.escalatingSince >= hold) {
+            alert.escalatingSince = null;
+            alert.severity = c.severity;
+            alert.peakSeverity = higher(alert.peakSeverity, c.severity);
+            alert.notifiedSeverity = c.severity;
+            this._remember("firing", alert, at, null);
+            newlyFiring.push(alert);
+            changed = true;
+          }
+        } else {
+          // Same or milder than announced: follow it quietly.
+          alert.escalatingSince = null;
+          alert.severity = c.severity;
         }
       }
     }
 
-    const group = { firing: fired.map((a) => this._public(a)), resolved, reminder: false };
-    if (this._notifier && (group.firing.length || group.resolved.length)) {
-      this._dispatch(config.channels, group);
+    for (const alert of [...this._tracked.values()]) {
+      if (!present.has(alert.unitId)) changed = this._end(alert, "unit removed", at, resolved) || changed;
     }
-    if (this._notifier && reminders.length) {
-      this._dispatch(config.channels, { firing: reminders.map((a) => this._public(a)), resolved: [], reminder: true });
-    }
-    this._maybePersist();
-    return { ...group, reminders: reminders.map((a) => this._public(a)) };
-  }
 
-  _dispatch(channels, group) {
-    try {
-      Promise.resolve(this._notifier.dispatch(channels, group)).catch((err) => {
-        this._log.error?.(`[alerts] notification dispatch failed: ${err?.message}`);
+    const reminders = this._dueReminders(config, at, newlyFiring);
+    for (const alert of newlyFiring) alert.lastNotifiedAt = at;
+
+    const channels = Array.isArray(config.channels) ? config.channels : [];
+    if (newlyFiring.length > 0 || resolved.length > 0) {
+      this._send(channels, {
+        firing: newlyFiring.map((a) => view(a, "firing")),
+        resolved,
+        reminder: false,
       });
-    } catch (err) {
-      this._log.error?.(`[alerts] notification dispatch failed: ${err?.message}`);
     }
+    if (reminders.length > 0) {
+      this._send(channels, { firing: reminders.map((a) => view(a, "firing")), resolved: [], reminder: true });
+      changed = true;
+    }
+    if (changed) this._save();
   }
 
-  _conditionTrue(key, unit, c, forMs, now, fired) {
-    const severity = c.severity === "critical" ? "critical" : "warning";
-    let a = this._alerts.get(key);
-    if (!a) {
-      a = {
-        key,
-        ruleId: c.ruleId,
-        ruleName: c.ruleName,
-        unitId: unit.id,
-        unitName: capText(unit.name || unit.id, MAX_NAME_CHARS),
-        severity,
-        peakSeverity: severity,
-        notifiedSeverity: null,
-        label: c.label,
-        summary: c.summary,
-        state: "pending",
-        startsAt: now,
-        firingAt: null,
-        falseSince: null,
-        changeSince: null,
-        lastNotifiedAt: 0,
-      };
-      this._alerts.set(key, a);
-    }
-    a.unitName = capText(unit.name || unit.id, MAX_NAME_CHARS);
-    a.label = c.label;
-    a.summary = c.summary;
-    a.falseSince = null;
-
-    if (a.state === "pending") {
-      a.severity = severity;
-      if (now - a.startsAt >= forMs) {
-        a.state = "firing";
-        a.firingAt = now;
-        a.peakSeverity = severity;
-        a.notifiedSeverity = severity;
-        a.lastNotifiedAt = now;
-        this._record("firing", a, now);
-        fired.push(a);
-        this._dirty = true;
+  _dueReminders(config, at, skip) {
+    const everyMs = Number(config.repeatIntervalMin) * 60_000;
+    if (!(everyMs > 0)) return [];
+    const due = [];
+    for (const alert of this._tracked.values()) {
+      if (alert.state !== "firing" || skip.includes(alert)) continue;
+      if (alert.lastNotifiedAt !== null && at - alert.lastNotifiedAt >= everyMs) {
+        alert.lastNotifiedAt = at;
+        due.push(alert);
       }
-      return;
     }
-
-    // Firing: a severity change must hold for `for` too.
-    if (severity === a.severity) {
-      a.changeSince = null;
-      return;
-    }
-    if (a.changeSince == null) a.changeSince = now;
-    if (now - a.changeSince < forMs) return;
-    a.severity = severity;
-    a.changeSince = null;
-    this._dirty = true;
-    if (severityRank(severity) > severityRank(a.peakSeverity)) a.peakSeverity = severity;
-    if (severityRank(severity) > severityRank(a.notifiedSeverity)) {
-      a.notifiedSeverity = severity;
-      a.lastNotifiedAt = now;
-      this._record("firing", a, now);
-      fired.push(a);
-    }
+    return due;
   }
 
-  _conditionFalse(a, forMs, now, resolved) {
-    if (a.state === "pending") {
-      this._alerts.delete(a.key);
-      return;
-    }
-    a.changeSince = null;
-    if (a.falseSince == null) a.falseSince = now;
-    if (now - a.falseSince >= Math.max(forMs, MIN_CLEAR_MS)) this._end(a, now, resolved, null);
+  /** Stop tracking an alert for a reason other than its condition clearing. */
+  _end(alert, reason, at, resolved) {
+    this._tracked.delete(alert.key);
+    if (alert.state !== "firing") return false;
+    alert.summary = capText(`Ended: ${reason}`, MAX_SUMMARY_CHARS);
+    this._resolve(alert, at, resolved);
+    return true;
   }
 
-  /** Remove an alert; a firing one is recorded and notified as resolved. */
-  _end(a, now, resolved, reason) {
-    this._alerts.delete(a.key);
-    if (a.state !== "firing") return;
-    const endsAt = a.falseSince ?? now;
-    const pub = { ...this._public(a), status: "resolved", endsAt, ...(reason ? { reason } : {}) };
-    if (reason) pub.summary = capText(`${a.summary} (${reason})`);
-    this._record("resolved", a, now, endsAt, reason);
-    resolved.push(pub);
-    this._dirty = true;
+  _resolve(alert, endsAt, resolved) {
+    this._tracked.delete(alert.key);
+    this._remember("resolved", alert, this._now(), endsAt);
+    resolved.push(view(alert, "resolved", endsAt));
   }
 
-  _record(status, a, now, endsAt = null, reason = null) {
+  _remember(status, alert, at, endsAt) {
+    this._eventSeq += 1;
     this._history.unshift({
-      id: ++this._historySeq,
-      at: now,
+      id: this._eventSeq,
+      at,
       status,
-      key: a.key,
-      ruleId: a.ruleId,
-      ruleName: a.ruleName,
-      unitId: a.unitId,
-      unitName: a.unitName,
-      severity: a.severity,
-      label: a.label,
-      summary: reason ? capText(`${a.summary} (${reason})`) : a.summary,
-      startsAt: a.startsAt,
+      key: alert.key,
+      ruleId: alert.ruleId,
+      ruleName: alert.ruleName,
+      unitId: alert.unitId,
+      unitName: alert.unitName,
+      severity: alert.severity,
+      label: alert.label,
+      summary: alert.summary,
+      startsAt: alert.startsAt,
       endsAt,
     });
     if (this._history.length > HISTORY_LIMIT) this._history.length = HISTORY_LIMIT;
   }
 
-  _public(a) {
-    return {
-      key: a.key,
-      ruleId: a.ruleId,
-      ruleName: a.ruleName,
-      unitId: a.unitId,
-      unitName: a.unitName,
-      severity: a.severity,
-      peakSeverity: a.peakSeverity,
-      state: a.state,
-      label: a.label,
-      summary: a.summary,
-      startsAt: a.startsAt,
-      firingAt: a.firingAt,
-      endsAt: null,
-      status: "firing",
-    };
+  _send(channels, group) {
+    if (!this._notifier) return;
+    try {
+      Promise.resolve(this._notifier.dispatch(channels, group)).catch((err) =>
+        this._log?.error?.(`[alerts] dispatch failed: ${err?.message ?? err}`)
+      );
+    } catch (err) {
+      this._log?.error?.(`[alerts] dispatch failed: ${err?.message ?? err}`);
+    }
   }
 
-  // ─── Read side ──────────────────────────────────────────
-
-  /** Firing alerts, critical first then oldest first. */
-  active() {
-    return [...this._alerts.values()]
-      .filter((a) => a.state === "firing")
-      .sort((x, y) => severityRank(y.severity) - severityRank(x.severity) || x.startsAt - y.startsAt)
-      .map((a) => this._public(a));
+  _save() {
+    try {
+      this._persist(this.stateForSave());
+    } catch (err) {
+      this._log?.error?.(`[alerts] could not save alert state: ${err?.message ?? err}`);
+    }
   }
 
-  pending() {
-    return [...this._alerts.values()].filter((a) => a.state === "pending").map((a) => this._public(a));
+  /** What survives a restart: the firing set only. */
+  stateForSave() {
+    const firing = [];
+    for (const a of this._tracked.values()) {
+      if (a.state !== "firing") continue;
+      firing.push({
+        ruleId: a.ruleId,
+        ruleName: a.ruleName,
+        unitId: a.unitId,
+        unitName: a.unitName,
+        severity: a.severity,
+        peakSeverity: a.peakSeverity,
+        notifiedSeverity: a.notifiedSeverity,
+        label: a.label,
+        summary: a.summary,
+        startsAt: a.startsAt,
+        firingAt: a.firingAt,
+        lastNotifiedAt: a.lastNotifiedAt,
+      });
+    }
+    return { savedAt: this._now(), firing };
   }
 
-  recent(limit = HISTORY_LIMIT) {
-    return this._history.slice(0, limit);
-  }
-
-  /**
-   * Forget the live alerts (alerts switched off). Writes nothing now; the next
-   * evaluation — which only runs once alerts are on again — saves the empty set
-   * so a later restart does not resume what was firing before the switch-off.
-   */
-  reset() {
-    this._alerts.clear();
-    this._dirty = true;
+  /** Re-adopt a saved firing set without notifying again. Returns how many were restored. */
+  restore(saved) {
+    if (!saved || !Array.isArray(saved.firing) || !Number.isFinite(saved.savedAt)) return 0;
+    const age = this._now() - saved.savedAt;
+    if (age < 0 || age > STATE_MAX_AGE_MS) return 0;
+    let count = 0;
+    for (const item of saved.firing) {
+      if (!item || typeof item.ruleId !== "string" || typeof item.unitId !== "string") continue;
+      if (!isSeverity(item.severity) || !Number.isFinite(item.startsAt)) continue;
+      const key = `${item.unitId}:${item.ruleId}`;
+      this._tracked.set(key, {
+        key,
+        ruleId: item.ruleId,
+        ruleName: capText(item.ruleName ?? item.ruleId, MAX_SUMMARY_CHARS),
+        unitId: item.unitId,
+        unitName: capText(item.unitName ?? item.unitId, MAX_NAME_CHARS),
+        state: "firing",
+        severity: item.severity,
+        peakSeverity: isSeverity(item.peakSeverity) ? higher(item.peakSeverity, item.severity) : item.severity,
+        notifiedSeverity: isSeverity(item.notifiedSeverity) ? item.notifiedSeverity : item.severity,
+        label: capText(item.label, MAX_SUMMARY_CHARS),
+        summary: capText(item.summary, MAX_SUMMARY_CHARS),
+        startsAt: item.startsAt,
+        firingAt: Number.isFinite(item.firingAt) ? item.firingAt : item.startsAt,
+        lastNotifiedAt: Number.isFinite(item.lastNotifiedAt) ? item.lastNotifiedAt : null,
+        clearSince: null,
+        escalatingSince: null,
+      });
+      count += 1;
+    }
+    return count;
   }
 }

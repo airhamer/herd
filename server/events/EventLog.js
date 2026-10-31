@@ -1,94 +1,107 @@
+// Fleet event log: a bounded, newest-wins list of human-readable events
+// (alert deliveries today), kept in memory and mirrored to a JSON file.
+// docs/specs/alerts.md §9. Clean-room implementation (LIC1).
 import fs from "fs";
 import { atomicWrite, quarantineCorrupt } from "../util/atomicWrite.js";
 
-const SEVERITIES = new Set(["info", "warn", "error", "success"]);
-const DEDUPE_MS = 5000;
-const WRITE_DEBOUNCE_MS = 1500;
+const DEFAULT_MAX = 200;
+const KNOWN_SEVERITIES = ["info", "warn", "error", "success"];
+/** The same event for the same unit again within this window is dropped. */
+const REPEAT_WINDOW_MS = 5_000;
+/** Writes are batched: at most one file write per this interval. */
+const SAVE_DELAY_MS = 1_500;
+/** Above this many remembered repeat keys, stale ones are swept. */
+const REPEAT_KEYS_SWEEP_AT = 500;
 
-/**
- * Fleet event log: a capped, persisted ring of human-readable events
- * (offline/online, throttling, updates, bench runs, power, add/remove).
- * Recording never throws: callers sit inside poll loops.
- */
+const looksStored = (e) => e && Number.isInteger(e.id) && Number.isFinite(e.ts) && typeof e.message === "string";
+
 export class EventLog {
   /**
-   * @param {{ file?: string|null, max?: number, now?: () => number }} [opts]
+   * @param {{ file?: string|null, max?: number, now?: () => number }} [options]
+   *   `file` null keeps the log in memory only.
    */
-  constructor({ file = null, max = 200, now = Date.now } = {}) {
+  constructor({ file = null, max = DEFAULT_MAX, now = Date.now } = {}) {
     this.file = file;
-    this.max = Math.max(1, Math.floor(max) || 200);
+    this.max = Math.max(1, Math.floor(max) || DEFAULT_MAX);
     this._now = now;
-    /** @type {object[]} oldest first */
-    this._events = [];
-    this._nextId = 1;
-    this._subs = new Set();
-    this._timer = null;
-    this._dirty = false;
-    /** @type {Map<string, number>} dedupe key -> last ts */
-    this._recent = new Map();
-    /** @type {Map<string, string>} sparkId -> dedupe key of its latest accepted event */
-    this._lastKeyBySpark = new Map();
-    this._load();
+    /** Stored events, oldest at index 0. */
+    this._items = [];
+    this._idCounter = 1;
+    this._listeners = new Set();
+    this._saveTimer = null;
+    this._unsaved = false;
+    /** repeat key → when it was last accepted */
+    this._seenAt = new Map();
+    /** unit id ("" for none) → repeat key of the latest event accepted for it */
+    this._latestKey = new Map();
+    this._readFile();
   }
 
-  _load() {
+  _readFile() {
     if (!this.file) return;
+    let doc;
     try {
-      const raw = JSON.parse(fs.readFileSync(this.file, "utf8"));
-      const list = Array.isArray(raw?.events) ? raw.events : [];
-      const valid = list.filter(
-        (e) => e && Number.isInteger(e.id) && Number.isFinite(e.ts) && typeof e.message === "string"
-      );
-      this._events = valid.slice(-this.max);
-      const maxId = valid.reduce((m, e) => Math.max(m, e.id), 0);
-      this._nextId = Math.max(Number.isInteger(raw?.nextId) ? raw.nextId : 1, maxId + 1);
+      doc = JSON.parse(fs.readFileSync(this.file, "utf8"));
     } catch (err) {
       if (err instanceof SyntaxError) quarantineCorrupt(this.file, "EventLog", err);
-      this._events = [];
-      this._nextId = 1;
+      return;
+    }
+    const kept = (Array.isArray(doc?.events) ? doc.events : []).filter(looksStored);
+    this._items = kept.slice(Math.max(0, kept.length - this.max));
+    let highest = 0;
+    for (const e of kept) if (e.id > highest) highest = e.id;
+    const savedNext = Number.isInteger(doc?.nextId) ? doc.nextId : 1;
+    this._idCounter = Math.max(savedNext, highest + 1);
+  }
+
+  /** True when this event repeats the unit's latest one inside the window. */
+  _isRepeat(repeatKey, unitKey, at) {
+    if (this._latestKey.get(unitKey) !== repeatKey) return false;
+    const previous = this._seenAt.get(repeatKey);
+    return previous !== undefined && at >= previous && at - previous < REPEAT_WINDOW_MS;
+  }
+
+  _noteAccepted(repeatKey, unitKey, at) {
+    this._seenAt.set(repeatKey, at);
+    this._latestKey.set(unitKey, repeatKey);
+    if (this._seenAt.size <= REPEAT_KEYS_SWEEP_AT) return;
+    for (const [key, seen] of this._seenAt) {
+      if (at - seen >= REPEAT_WINDOW_MS) this._seenAt.delete(key);
     }
   }
 
   /**
-   * @param {{ type: string, severity?: string, sparkId?: string|null, sparkName?: string|null, message: string, data?: unknown }} input
-   * @returns {object|null} the stored event, or null when dropped (invalid / deduped)
+   * Add an event. Needs a string `type` and `message`; anything else, or a
+   * quick repeat, returns null. Never throws.
+   * @param {{ type: string, message: string, severity?: string, sparkId?: string|null, sparkName?: string|null, data?: unknown }} input
    */
   record(input) {
+    if (!input || typeof input.type !== "string" || typeof input.message !== "string") return null;
     try {
-      if (!input || typeof input.type !== "string" || typeof input.message !== "string") return null;
-      const ts = this._now();
+      const at = this._now();
       const sparkId = input.sparkId ?? null;
-      const key = `${input.type}\u0000${sparkId ?? ""}\u0000${input.message}`;
-      const last = this._recent.get(key);
-      // Only a repeat counts as a duplicate: if another event for this spark
-      // landed in between (offline -> online -> offline), it is a real change.
-      const interleaved = this._lastKeyBySpark.get(sparkId ?? "") !== key;
-      if (!interleaved && last != null && ts - last < DEDUPE_MS && ts >= last) return null;
-      this._recent.set(key, ts);
-      this._lastKeyBySpark.set(sparkId ?? "", key);
-      if (this._recent.size > 500) {
-        for (const [k, t] of this._recent) if (ts - t >= DEDUPE_MS) this._recent.delete(k);
-      }
+      const unitKey = sparkId ?? "";
+      const repeatKey = [input.type, unitKey, input.message].join("\u0000");
+      if (this._isRepeat(repeatKey, unitKey, at)) return null;
+      this._noteAccepted(repeatKey, unitKey, at);
+
       const event = {
-        id: this._nextId++,
-        ts,
+        id: this._idCounter,
+        ts: at,
         type: input.type,
-        severity: SEVERITIES.has(input.severity) ? input.severity : "info",
+        severity: KNOWN_SEVERITIES.includes(input.severity) ? input.severity : "info",
         sparkId,
         sparkName: input.sparkName ?? null,
         message: input.message,
       };
+      this._idCounter += 1;
       if (input.data !== undefined) event.data = input.data;
-      this._events.push(event);
-      if (this._events.length > this.max) this._events.splice(0, this._events.length - this.max);
-      this._schedulePersist();
-      for (const fn of [...this._subs]) {
-        try {
-          fn(event);
-        } catch {
-          /* subscriber errors never propagate */
-        }
-      }
+
+      this._items.push(event);
+      const overflow = this._items.length - this.max;
+      if (overflow > 0) this._items.splice(0, overflow);
+      this._queueSave();
+      this._notify(event);
       return event;
     } catch (err) {
       console.error("[EventLog] record failed:", err?.message);
@@ -96,38 +109,52 @@ export class EventLog {
     }
   }
 
-  /** Newest first. */
-  list({ limit = 50, sparkId, sinceId, beforeId } = {}) {
-    let out = this._events;
-    if (sparkId) out = out.filter((e) => e.sparkId === sparkId);
-    if (Number.isFinite(sinceId)) out = out.filter((e) => e.id > sinceId);
-    // Older page: events strictly before `beforeId` (newest first, like the default listing).
-    if (Number.isFinite(beforeId)) out = out.filter((e) => e.id < beforeId);
-    const n = Math.max(1, Math.min(Number.isFinite(limit) ? Math.floor(limit) : 50, this.max));
-    return out.slice(-n).reverse();
+  _notify(event) {
+    for (const listener of [...this._listeners]) {
+      try {
+        listener(event);
+      } catch {
+        // a listener's failure is its own problem
+      }
+    }
   }
 
   /**
-   * Delete history. With `olderThanMs`, only events at least that old go; without it, all of
-   * them. Ids keep counting up so pollers using `sinceId` never see old ids reused.
-   * @returns {number} how many events were removed
+   * Newest first. `sparkId` narrows to one unit; `sinceId` / `beforeId` page
+   * by id (exclusive); `limit` is clamped to 1…max (default 50).
+   */
+  list({ limit = 50, sparkId, sinceId, beforeId } = {}) {
+    const wanted = Math.min(this.max, Math.max(1, Number.isFinite(limit) ? Math.floor(limit) : 50));
+    const out = [];
+    for (let i = this._items.length - 1; i >= 0 && out.length < wanted; i -= 1) {
+      const e = this._items[i];
+      if (sparkId && e.sparkId !== sparkId) continue;
+      if (Number.isFinite(sinceId) && e.id <= sinceId) continue;
+      if (Number.isFinite(beforeId) && e.id >= beforeId) continue;
+      out.push(e);
+    }
+    return out;
+  }
+
+  /**
+   * Remove everything, or only events at least `olderThanMs` old. Ids are
+   * never reused afterwards. Returns how many were removed.
    */
   clear({ olderThanMs } = {}) {
     try {
-      const before = this._events.length;
+      const countBefore = this._items.length;
       if (Number.isFinite(olderThanMs) && olderThanMs > 0) {
-        const cutoff = this._now() - olderThanMs;
-        this._events = this._events.filter((e) => e.ts >= cutoff);
+        const keepFrom = this._now() - olderThanMs;
+        this._items = this._items.filter((e) => e.ts >= keepFrom);
       } else {
-        this._events = [];
+        this._items = [];
       }
-      const removed = before - this._events.length;
-      if (removed > 0) {
-        this._recent.clear();
-        this._lastKeyBySpark.clear();
-        this._dirty = true;
-        this.flush();
-      }
+      const removed = countBefore - this._items.length;
+      if (removed === 0) return 0;
+      this._seenAt.clear();
+      this._latestKey.clear();
+      this._unsaved = true;
+      this.flush();
       return removed;
     } catch (err) {
       console.error("[EventLog] clear failed:", err?.message);
@@ -135,41 +162,33 @@ export class EventLog {
     }
   }
 
-  /** Id of the oldest retained event, or null when empty. */
+  /** Id of the oldest event still held, or null. */
   oldestId() {
-    return this._events.length ? this._events[0].id : null;
+    return this._items[0]?.id ?? null;
   }
 
+  /** Call `fn(event)` for every new event; returns an unsubscribe function. */
   subscribe(fn) {
-    this._subs.add(fn);
-    return () => this._subs.delete(fn);
+    this._listeners.add(fn);
+    return () => this._listeners.delete(fn);
   }
 
-  _schedulePersist() {
+  _queueSave() {
     if (!this.file) return;
-    this._dirty = true;
-    if (this._timer) return;
-    this._timer = setTimeout(() => {
-      this._timer = null;
-      this.flush();
-    }, WRITE_DEBOUNCE_MS);
-    this._timer.unref?.();
+    this._unsaved = true;
+    if (this._saveTimer) return;
+    this._saveTimer = setTimeout(() => this.flush(), SAVE_DELAY_MS);
+    this._saveTimer.unref?.();
   }
 
-  /** Write pending changes now (graceful shutdown). */
+  /** Write now if anything changed (also used at shutdown). */
   flush() {
-    if (this._timer) {
-      clearTimeout(this._timer);
-      this._timer = null;
-    }
-    if (!this.file || !this._dirty) return;
+    clearTimeout(this._saveTimer);
+    this._saveTimer = null;
+    if (!this.file || !this._unsaved) return;
     try {
-      atomicWrite(
-        this.file,
-        JSON.stringify({ nextId: this._nextId, events: this._events }),
-        0o644
-      );
-      this._dirty = false;
+      atomicWrite(this.file, JSON.stringify({ nextId: this._idCounter, events: this._items }), 0o644);
+      this._unsaved = false;
     } catch (err) {
       console.error("[EventLog] persist failed:", err?.message);
     }

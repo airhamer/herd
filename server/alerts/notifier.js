@@ -1,99 +1,95 @@
-/**
- * Notification channels: ntfy, Discord, Slack and a generic JSON webhook.
- *
- * Everything that fires or resolves in one evaluation goes out as ONE message
- * per channel (Alertmanager-style grouping), filtered by the channel's minimum
- * severity. Sending never throws, and is deliberately narrow:
- *
- *   - the channel's host is resolved and checked against the outbound policy on
- *     every send, and the connection is pinned to the checked addresses
- *     (outbound.js);
- *   - redirects are never followed: any 3xx is a failed send;
- *   - a response body is never read. A failure is recorded as a status code or
- *     a fixed reason, so nothing a remote server says reaches the API, the
- *     channel status, the log or the Activity events.
- *
- * Failures are kept per channel (shown in the Alerts dialog), logged at most
- * once per channel every few minutes, and every send — delivered or not — is
- * reported to `onResult` for the Activity log.
- */
+// Turns an alert group into one request per channel type and delivers it.
+// Delivery re-checks the outbound policy on every send, pins the socket to the
+// checked address, never follows redirects and never keeps a response body.
+// docs/specs/alerts.md §5. Clean-room implementation (LIC1).
 import { Agent, fetch as undiciFetch } from "undici";
-import { severityRank } from "./conditions.js";
 import { OutboundPolicyError, pinnedLookup, resolveChannelTarget } from "./outbound.js";
-import { capText } from "./text.js";
 
-const DEFAULT_TIMEOUT_MS = 10_000;
-const LOG_INTERVAL_MS = 5 * 60_000;
-/** Discord rejects more than 10 embeds per message. */
-const DISCORD_MAX_EMBEDS = 10;
-/** Lines per message; the rest is summarised as "+N more". */
 const MAX_LINES = 20;
-const DISCORD_COLORS = { critical: 0xdc2626, warning: 0xf59e0b, resolved: 0x16a34a, test: 0x6366f1 };
-const NTFY_PRIORITY = { critical: "5", warning: "4", resolved: "3", test: "3" };
-const NTFY_TAGS = { critical: "rotating_light", warning: "warning", resolved: "white_check_mark", test: "test_tube" };
+const MAX_EMBEDS = 10;
+const SOURCE = "sparkDash";
 
-/** "3m", "2h 5m", "1d 4h". */
+const RANK = { warning: 1, critical: 2 };
+const TONE_STYLE = {
+  critical: { word: "Critical", priority: "5", tag: "rotating_light", color: 0xdc2626 },
+  warning: { word: "Warning", priority: "4", tag: "warning", color: 0xf59e0b },
+  resolved: { word: "Resolved", priority: "3", tag: "white_check_mark", color: 0x16a34a },
+  test: { word: "Test", priority: "3", tag: "test_tube", color: 0x6366f1 },
+};
+
+export const TEST_TITLE = `${SOURCE} test notification`;
+export const TEST_TEXT = `If you can read this, the channel works. Sent from the ${SOURCE} Alerts dialog.`;
+
+/** Compact duration: "45s", "12m", "3h 4m", "2d 5h". */
 export function formatAge(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ${m % 60}m`;
-  return `${Math.floor(h / 24)}d ${h % 24}h`;
+  const seconds = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ${minutes % 60}m`;
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
 
 const iso = (ms) => (Number.isFinite(ms) ? new Date(ms).toISOString() : null);
 
-/**
- * One group's messages, independent of the channel format.
- * @param {{ firing: object[], resolved: object[], reminder?: boolean, test?: boolean }} group
- */
+function lineFor(alert, resolved, now) {
+  if (resolved) {
+    const lasted = formatAge((alert.endsAt ?? now) - alert.startsAt);
+    return `RESOLVED ${alert.unitName} · ${alert.ruleName}: ${alert.summary} (lasted ${lasted})`;
+  }
+  return `${alert.severity.toUpperCase()} ${alert.unitName} · ${alert.ruleName}: ${alert.summary} (for ${formatAge(now - alert.startsAt)})`;
+}
+
+/** Title, tone and text lines shared by every channel type. */
 export function describeGroup(group, now = Date.now()) {
-  const firing = group.firing || [];
-  const resolved = group.resolved || [];
-  const tone = group.test
-    ? "test"
-    : firing.some((a) => a.severity === "critical")
-      ? "critical"
-      : firing.length > 0
-        ? "warning"
-        : "resolved";
+  if (group?.test) return { tone: "test", title: TEST_TITLE, lines: [TEST_TEXT], firing: [], resolved: [] };
+  const firing = group?.firing ?? [];
+  const resolved = group?.resolved ?? [];
+  let tone = "resolved";
+  if (firing.length > 0) tone = firing.some((a) => a.severity === "critical") ? "critical" : "warning";
+
   let title;
-  if (group.test) {
-    title = "sparkDash test notification";
-  } else if (firing.length + resolved.length === 1) {
-    const a = firing[0] || resolved[0];
-    const tag = firing.length ? (group.reminder ? "Still firing" : a.severity.toUpperCase()) : "RESOLVED";
-    title = `[${tag}] ${a.unitName}: ${a.label || a.ruleName}`;
+  if (firing.length + resolved.length === 1) {
+    const only = firing[0] ?? resolved[0];
+    let tag;
+    if (firing.length === 0) tag = "RESOLVED";
+    else if (group.reminder) tag = "Still firing";
+    else tag = only.severity.toUpperCase();
+    title = `[${tag}] ${only.unitName}: ${only.label}`;
   } else {
     const parts = [];
-    if (firing.length) parts.push(`${firing.length} ${group.reminder ? "still firing" : "firing"}`);
-    if (resolved.length) parts.push(`${resolved.length} resolved`);
-    title = `sparkDash: ${parts.join(", ")}`;
+    if (firing.length > 0) parts.push(`${firing.length} ${group.reminder ? "still firing" : "firing"}`);
+    if (resolved.length > 0) parts.push(`${resolved.length} resolved`);
+    title = `${SOURCE}: ${parts.join(", ")}`;
   }
-  const lines = [];
-  for (const a of firing) {
-    lines.push(`${a.severity.toUpperCase()} ${a.unitName} · ${a.ruleName}: ${a.summary} (for ${formatAge(now - a.startsAt)})`);
-  }
-  for (const a of resolved) {
-    lines.push(`RESOLVED ${a.unitName} · ${a.ruleName}: ${a.summary} (lasted ${formatAge((a.endsAt ?? now) - a.startsAt)})`);
-  }
-  if (lines.length > MAX_LINES) lines.splice(MAX_LINES, lines.length - MAX_LINES, `+${lines.length - MAX_LINES} more`);
-  if (group.test) lines.push("If you can read this, the channel works. Sent from the sparkDash Alerts dialog.");
-  return { tone, title: capText(title, 200), lines, firing, resolved };
+
+  const all = [...firing.map((a) => lineFor(a, false, now)), ...resolved.map((a) => lineFor(a, true, now))];
+  const lines = all.length > MAX_LINES ? [...all.slice(0, MAX_LINES), `+${all.length - MAX_LINES} more`] : all;
+  return { tone, title, lines, firing, resolved };
 }
 
-/** ntfy reads RFC 2047 encoded-words in headers; fetch refuses non-Latin-1 header values. */
-function headerSafe(value) {
-  const s = String(value).replace(/[\r\n]+/g, " ");
-  // eslint-disable-next-line no-control-regex
-  if (/^[\x20-\x7e]*$/.test(s)) return s;
-  return `=?UTF-8?B?${Buffer.from(s, "utf8").toString("base64")}?=`;
+function discordBody(d) {
+  if (d.tone === "test") {
+    const embeds = [{ title: d.title, description: d.lines[0], color: TONE_STYLE.test.color }];
+    return { username: SOURCE, content: d.title, embeds, allowed_mentions: { parse: [] } };
+  }
+  const embeds = [
+    ...d.firing.map((a) => ({ a, style: TONE_STYLE[a.severity] ?? TONE_STYLE.warning, at: a.startsAt })),
+    ...d.resolved.map((a) => ({ a, style: TONE_STYLE.resolved, at: a.endsAt ?? a.startsAt })),
+  ]
+    .slice(0, MAX_EMBEDS)
+    .map(({ a, style, at }) => ({
+      title: `${style.word} · ${a.unitName}: ${a.label}`,
+      description: a.summary,
+      color: style.color,
+      timestamp: iso(at),
+    }));
+  return { username: SOURCE, content: d.title, embeds, allowed_mentions: { parse: [] } };
 }
 
-function alertJson(a, status) {
-  return {
+function webhookBody(d, group, now) {
+  const entry = (a, status) => ({
     status,
     severity: a.severity,
     rule: a.ruleId,
@@ -104,238 +100,132 @@ function alertJson(a, status) {
     summary: a.summary,
     startsAt: iso(a.startsAt),
     endsAt: status === "resolved" ? iso(a.endsAt) : null,
+  });
+  return {
+    source: SOURCE,
+    status: d.tone === "test" ? "test" : d.firing.length > 0 ? "firing" : "resolved",
+    severity: d.tone === "critical" || d.tone === "warning" ? d.tone : null,
+    title: d.title,
+    reminder: Boolean(group?.reminder),
+    sentAt: iso(now),
+    alerts: [...d.firing.map((a) => entry(a, "firing")), ...d.resolved.map((a) => entry(a, "resolved"))],
   };
 }
 
-/**
- * Build the HTTP request for one channel. Pure — tests assert on this.
- * @returns {{ url: string, init: { method: string, headers: Record<string,string>, body: string } }}
- */
+/** The HTTP request a channel type expects for this group. */
 export function buildRequest(channel, group, now = Date.now()) {
   const d = describeGroup(group, now);
+  const json = (body) => ({ method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  let init;
   switch (channel.type) {
-    case "ntfy":
-      return {
-        url: channel.url,
-        init: {
-          method: "POST",
-          headers: {
-            "Content-Type": "text/plain; charset=utf-8",
-            Title: headerSafe(d.title),
-            Priority: NTFY_PRIORITY[d.tone],
-            Tags: NTFY_TAGS[d.tone],
-          },
-          body: d.lines.join("\n"),
-        },
+    case "ntfy": {
+      const style = TONE_STYLE[d.tone];
+      init = {
+        method: "POST",
+        headers: { "Content-Type": "text/plain; charset=utf-8", Title: d.title, Priority: style.priority, Tags: style.tag },
+        body: d.lines.join("\n"),
       };
-    case "discord": {
-      const items = [
-        ...d.firing.map((a) => ({ a, status: "firing" })),
-        ...d.resolved.map((a) => ({ a, status: "resolved" })),
-      ];
-      const embeds = group.test
-        ? [{ title: d.title, description: d.lines.join("\n"), color: DISCORD_COLORS.test }]
-        : items.slice(0, DISCORD_MAX_EMBEDS).map(({ a, status }) => ({
-            title: capText(`${status === "resolved" ? "Resolved" : a.severity === "critical" ? "Critical" : "Warning"} · ${a.unitName}: ${a.label || a.ruleName}`, 256),
-            description: capText(a.summary, 4000),
-            color: status === "resolved" ? DISCORD_COLORS.resolved : DISCORD_COLORS[a.severity] ?? DISCORD_COLORS.warning,
-            timestamp: iso(status === "resolved" ? a.endsAt : a.startsAt) ?? undefined,
-          }));
-      const more = items.length > DISCORD_MAX_EMBEDS ? ` (+${items.length - DISCORD_MAX_EMBEDS} more)` : "";
-      return {
-        url: channel.url,
-        init: {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            username: "sparkDash",
-            content: capText(`${d.title}${more}`, 2000),
-            embeds,
-            // Unit names are user text: never let one ping @everyone.
-            allowed_mentions: { parse: [] },
-          }),
-        },
-      };
+      break;
     }
+    case "discord":
+      init = json(discordBody(d));
+      break;
     case "slack":
-      return {
-        url: channel.url,
-        init: {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: [`*${d.title}*`, ...d.lines.map((l) => `• ${l}`)].join("\n") }),
-        },
-      };
-    case "webhook":
-    default: {
-      const alerts = [
-        ...d.firing.map((a) => alertJson(a, "firing")),
-        ...d.resolved.map((a) => alertJson(a, "resolved")),
-      ];
-      const status = group.test ? "test" : d.firing.length ? "firing" : "resolved";
-      const severity = d.firing.length ? (d.firing.some((a) => a.severity === "critical") ? "critical" : "warning") : null;
-      return {
-        url: channel.url,
-        init: {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            source: "sparkDash",
-            status,
-            severity,
-            title: d.title,
-            reminder: Boolean(group.reminder),
-            sentAt: iso(now),
-            alerts,
-          }),
-        },
-      };
-    }
+      init = json({ text: [`*${d.title}*`, ...d.lines.map((line) => `• ${line}`)].join("\n") });
+      break;
+    default:
+      init = json(webhookBody(d, group, now));
   }
+  return { url: channel.url, init };
 }
 
-/** The subset of a group this channel wants, or null when nothing is left. */
+/**
+ * The part of a group this channel wants: firing alerts at or above its
+ * minimum, resolved ones by the highest severity they reached. null if empty.
+ */
 export function filterGroupForChannel(channel, group) {
-  if (group.test) return group;
-  const min = severityRank(channel.minSeverity);
-  const firing = (group.firing || []).filter((a) => severityRank(a.severity) >= min);
-  // A resolved alert goes wherever its firing went: judge by its peak.
-  const resolved = (group.resolved || []).filter((a) => severityRank(a.peakSeverity || a.severity) >= min);
+  const floor = RANK[channel?.minSeverity] ?? RANK.warning;
+  const firing = (group?.firing ?? []).filter((a) => (RANK[a.severity] ?? 0) >= floor);
+  const resolved = (group?.resolved ?? []).filter((a) => (RANK[a.peakSeverity ?? a.severity] ?? 0) >= floor);
   if (firing.length === 0 && resolved.length === 0) return null;
   return { ...group, firing, resolved };
 }
 
-/**
- * Why a send failed, as fixed text: a status code, a timeout, a socket error
- * code or a policy refusal. Never the error's own message, which can carry a
- * URL or what the server answered.
- */
+/** A fixed, body-free reason for a failed request. */
 function failureReason(err, timeoutMs) {
-  if (err instanceof SendFailure || err instanceof OutboundPolicyError) return err.message;
+  if (err instanceof OutboundPolicyError) return err.reason;
   if (err?.name === "TimeoutError" || err?.name === "AbortError") return `timed out after ${Math.round(timeoutMs / 1000)}s`;
   const code = err?.cause?.code ?? err?.code;
-  if (typeof code === "string" && /^[A-Z0-9_]{2,40}$/.test(code)) return `connection failed (${code})`;
+  if (typeof code === "string" && /^[A-Z0-9_]+$/.test(code)) return `connection failed (${code})`;
   return "request failed";
 }
 
-class SendFailure extends Error {}
-
 export class Notifier {
-  /**
-   * @param {{
-   *   fetchImpl?: (url: string, init: object) => Promise<Response>,
-   *   lookup?: Function,
-   *   timeoutMs?: number,
-   *   now?: () => number,
-   *   log?: Pick<Console, "warn">,
-   *   logIntervalMs?: number,
-   *   onResult?: (result: { channel: object, group: object, ok: boolean, status?: number, reason?: string }) => void,
-   * }} [opts]
-   */
-  constructor(opts = {}) {
-    this._fetch = opts.fetchImpl || undiciFetch;
-    this._lookup = opts.lookup;
-    this._timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-    this._now = opts.now || Date.now;
-    this._log = opts.log || console;
-    this._logIntervalMs = opts.logIntervalMs ?? LOG_INTERVAL_MS;
-    this._onResult = opts.onResult || null;
+  constructor({ fetchImpl = null, lookup, timeoutMs = 10_000, log = console, onResult = null, now = () => Date.now() } = {}) {
+    this._now = now;
+    this._fetch = fetchImpl;
+    this._lookup = lookup;
+    this._timeoutMs = timeoutMs;
+    this._log = log;
+    this._onResult = onResult;
     /** @type {Map<string, { lastSentAt: number|null, lastError: string|null, lastErrorAt: number|null }>} */
     this.status = new Map();
-    /** @type {Map<string, { at: number, suppressed: number }>} */
-    this._lastLog = new Map();
   }
 
-  _status(id) {
-    let s = this.status.get(id);
-    if (!s) {
-      s = { lastSentAt: null, lastError: null, lastErrorAt: null };
-      this.status.set(id, s);
-    }
-    return s;
-  }
-
-  _logFailure(channel, message) {
-    const now = this._now();
-    const prev = this._lastLog.get(channel.id);
-    if (prev && now - prev.at < this._logIntervalMs) {
-      prev.suppressed += 1;
-      return;
-    }
-    const extra = prev?.suppressed ? ` (${prev.suppressed} more failures since the last report)` : "";
+  async _post(channel, group) {
+    const target = await resolveChannelTarget(channel.url, this._lookup ? { lookup: this._lookup } : {});
+    const { url, init } = buildRequest(channel, group, this._now());
+    const request = { ...init, redirect: "manual", signal: AbortSignal.timeout(this._timeoutMs) };
+    if (this._fetch) return this._fetch(url, request);
+    const dispatcher = new Agent({ connect: { lookup: pinnedLookup(target.addresses) } });
     try {
-      this._log.warn(`[alerts] channel "${channel.name}" (${channel.type}) failed: ${message}${extra}`);
-    } catch {
-      /* logging must never throw into the caller */
-    }
-    this._lastLog.set(channel.id, { at: now, suppressed: 0 });
-  }
-
-  _report(result) {
-    if (!this._onResult) return;
-    try {
-      this._onResult(result);
-    } catch {
-      /* a sink error never reaches the sender */
-    }
-  }
-
-  /**
-   * Send one group to one channel. Resolves `{ ok, status?, error? }`; never rejects.
-   * `error` is always one of the fixed reasons above.
-   */
-  async send(channel, group) {
-    const status = this._status(channel.id);
-    let agent = null;
-    try {
-      if (!channel.url) throw new SendFailure("no URL stored for this channel");
-      const { url, init } = buildRequest(channel, group, this._now());
-      const target = new URL(url);
-      const addresses = await resolveChannelTarget(target, this._lookup ? { lookup: this._lookup } : undefined);
-      agent = new Agent({ connect: { lookup: pinnedLookup(addresses) } });
-      const res = await this._fetch(url, {
-        ...init,
-        redirect: "manual",
-        dispatcher: agent,
-        signal: AbortSignal.timeout(this._timeoutMs),
-      });
-      // Never read what the server answered; just release the connection.
-      try {
-        await res.body?.cancel();
-      } catch {
-        /* ignore */
-      }
-      if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
-        throw new SendFailure(`redirect not followed (HTTP ${res.status || "3xx"})`);
-      }
-      if (!res.ok) throw new SendFailure(`HTTP ${res.status}`);
-      status.lastSentAt = this._now();
-      status.lastError = null;
-      this._report({ channel, group, ok: true, status: res.status });
-      return { ok: true, status: res.status };
-    } catch (err) {
-      const reason = failureReason(err, this._timeoutMs);
-      status.lastError = reason;
-      status.lastErrorAt = this._now();
-      this._logFailure(channel, reason);
-      this._report({ channel, group, ok: false, reason });
-      return { ok: false, error: reason };
+      const response = await undiciFetch(url, { ...request, dispatcher });
+      await response.body?.cancel().catch(() => {});
+      return response;
     } finally {
-      if (agent) agent.destroy().catch(() => {});
+      dispatcher.close().catch(() => {});
     }
   }
 
-  /**
-   * Fan one evaluation's group out to every enabled channel that wants it.
-   * Returns the settled sends (tests await it; the engine does not).
-   */
-  dispatch(channels, group) {
-    const sends = [];
-    for (const channel of channels || []) {
-      if (!channel?.enabled) continue;
-      const subset = filterGroupForChannel(channel, group);
-      if (subset) sends.push(this.send(channel, subset).then((r) => ({ channelId: channel.id, ...r })));
+  /** Deliver one group to one channel. Never throws. */
+  async send(channel, group) {
+    let result;
+    try {
+      const response = await this._post(channel, group);
+      const code = response.status;
+      if (code >= 300 && code < 400) result = { ok: false, error: `redirect not followed (HTTP ${code})` };
+      else if (code < 200 || code >= 300) result = { ok: false, error: `HTTP ${code}` };
+      else result = { ok: true, status: code };
+    } catch (err) {
+      result = { ok: false, error: failureReason(err, this._timeoutMs) };
     }
-    return Promise.all(sends);
+
+    const at = this._now();
+    const previous = this.status.get(channel.id) ?? { lastSentAt: null, lastError: null, lastErrorAt: null };
+    this.status.set(
+      channel.id,
+      result.ok
+        ? { lastSentAt: at, lastError: null, lastErrorAt: previous.lastErrorAt }
+        : { lastSentAt: previous.lastSentAt, lastError: result.error, lastErrorAt: at }
+    );
+    if (!result.ok) this._log?.warn?.(`[alerts] "${channel.name}" (${channel.type}): ${result.error}`);
+    try {
+      this._onResult?.({ channel, group, ok: result.ok, status: result.status, reason: result.error });
+    } catch {
+      // a reporting hook must not break delivery
+    }
+    return result;
+  }
+
+  /** Send to every enabled channel that wants part of the group, in parallel. */
+  async dispatch(channels, group) {
+    const jobs = [];
+    for (const channel of channels ?? []) {
+      if (!channel?.enabled) continue;
+      const part = filterGroupForChannel(channel, group);
+      if (!part) continue;
+      jobs.push(this.send(channel, part).then((r) => ({ channelId: channel.id, ...r })));
+    }
+    return Promise.all(jobs);
   }
 }
