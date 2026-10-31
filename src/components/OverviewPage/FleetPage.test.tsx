@@ -171,4 +171,20 @@ describe("FleetPage", () => {
     const off = render(<FleetPage {...makeProps()} energy={null} />);
     expect(off.container.querySelector('[data-testid="energy-slot"]')).toBeNull();
   });
+
+  it("renders the token totals slot (issue #38) beside energy, or alone when energy is off", () => {
+    const tokens = <section data-testid="tokens-slot">LLM token totals</section>;
+    const energy = <section data-testid="energy-slot">Fleet energy</section>;
+    const activity = <section data-testid="activity-slot">Recent activity</section>;
+    const both = render(<FleetPage {...makeProps()} tokens={tokens} energy={energy} activity={activity} />);
+    const row = both.container.querySelector('[data-testid="fleet-usage-row"]');
+    expect(row).not.toBeNull();
+    const kids = [...row!.children].map((el) => el.getAttribute("data-testid"));
+    expect(kids).toEqual(["tokens-slot", "energy-slot"]);
+    const activityEl = both.container.querySelector('[data-testid="activity-slot"]');
+    expect(row!.compareDocumentPosition(activityEl!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const alone = render(<FleetPage {...makeProps()} tokens={tokens} energy={null} />);
+    expect(alone.container.querySelector('[data-testid="fleet-usage-row"]')).toBeNull();
+    expect(alone.container.querySelector('[data-testid="tokens-slot"]')).not.toBeNull();
+  });
 });

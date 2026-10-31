@@ -371,6 +371,9 @@ sparkDash/
 | PUT | `/api/sparks/order` | Persist tab order |
 | GET | `/api/sparks/:id/metrics` | One-shot metrics snapshot |
 | GET | `/api/fleet-energy` | Estimated fleet watts, rolling energy, coverage, and Wh/output-token |
+| GET | `/api/llm-token-totals` | Fleet LLM token totals (`range=24h\|7d\|30d\|all`): generated / cached / prefill, per model and per endpoint |
+| GET | `/api/llm-token-totals/history` | Hourly (24h) or daily token buckets for a range |
+| DELETE | `/api/llm-token-totals` | Clear the token ledger (`confirm=delete-token-totals`) |
 | GET | `/api/events` | Activity log, newest first (`limit` ≤2000, `sparkId`, `sinceId`, `beforeId`, `type` comma list with `prefix.` matching, `severity`); new events are also pushed over `/ws` as `{ "type": "event", "event": … }` |
 | DELETE | `/api/events` | Clear the activity log (`olderThanMs` keeps anything newer) |
 | POST | `/api/sparks/test` | Ephemeral SSH + LLM (+ Comfy if enabled) test (no persist) |
@@ -404,6 +407,18 @@ re-scope live. Wh/output-token is reported when exactly one node has role `head`
 monotonic output-token counter and every host reported; otherwise the line is hidden. A cost
 estimate uses the configured electricity price. These values are estimates, not wall-meter
 measurements.
+
+`/api/llm-token-totals` is the fleet token ledger (FLEET3). Every 15 s it reads the cumulative
+generated / prompt / cached token counters of each LLM endpoint (`nodeId:port`): SSH Spark ports
+from the LLM probe, agent nodes from engine counters (agent 0.4+) or, where an engine has none, the
+agent's opt-in usage relay (agent 0.5+, `LLM_PROXY`). Deltas are credited to the model running at
+that moment; prefill = prompt − cached. A counter that goes backwards (engine restart) or changes
+source re-seeds without crediting. Hourly buckets (72 h), daily UTC buckets (35 days) and all-time
+totals per endpoint and model are persisted in `config/llm-token-totals.json` (mode `0600`,
+`LLM_TOKEN_TOTALS_JSON_PATH`), with counter baselines, so tokens produced while the dashboard was
+down (up to 24 h) are still counted once. An agent node on a Spark's LAN IP and port is counted
+under the Spark. When the ledger has tokens, the Fleet energy Wh/output-token figure uses its 24 h
+generated total instead of the single head Spark.
 
 ---
 
@@ -457,6 +472,7 @@ Copy `.env.example` to `.env` if needed:
 | `SSH_IDENTITY_FILE` | _(unset)_ | Path **inside the process** to a private key (`ssh -i`). Use when the bind-mount is not a default OpenSSH name. |
 | `SSH_CONTROL_PERSIST_SECONDS` | `60` | Reuse authenticated SSH transports for remote collectors. Set to `0` to disable multiplexing. |
 | `FLEET_ENERGY_JSON_PATH` | `config/fleet-energy.json` | Rolling fleet-energy persistence path |
+| `LLM_TOKEN_TOTALS_JSON_PATH` | `config/llm-token-totals.json` | LLM token ledger persistence path |
 
 > The listener and both Compose files default to `127.0.0.1`. Existing Docker users who opened
 > `http://<host-ip>:5555` must migrate to an SSH tunnel, authenticated reverse proxy, Tailscale

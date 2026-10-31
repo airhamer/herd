@@ -40,7 +40,10 @@ import { formatLlmBaseUrl, parseLlmTargetInput } from "../src/shared/llmTarget.j
 import { llmDaily } from "./collectors/LlmDaily.js";
 import { closeLlmStreamAgent } from "./collectors/LlmStreaming.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
-import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH, METRICS_HISTORY_JSON_PATH } from "./config.js";
+import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH, LLM_TOKEN_TOTALS_JSON_PATH, METRICS_HISTORY_JSON_PATH } from "./config.js";
+import { LlmTokenLedger } from "./llmtokens/LlmTokenLedger.js";
+import { collectTokenObservations } from "./llmtokens/observations.js";
+import { createLlmTokenRuntime, registerLlmTokenRoutes, withLedgerTokens } from "./llmtokens/LlmTokenRuntime.js";
 import { createAlertsRuntime, registerAlertRoutes } from "./alerts/runtime.js";
 import { EventLog } from "./events/EventLog.js";
 import { FleetEnergyTracker } from "./energy/FleetEnergyTracker.js";
@@ -333,19 +336,21 @@ function orderedSnapshots() {
     .map((m) => m.snapshot());
 }
 
+// Agent / agentless nodes, each with its registered LAN IP for de-duplication.
+// buildFleetSnapshot() lists nodes in listNodes() order; key on the registry id.
+function registeredFleetNodes() {
+  const records = listNodes();
+  return buildFleetSnapshot().nodes.map((node, index) => ({
+    ...node,
+    nodeId: records[index]?.id ?? node.nodeId,
+    registryLanIp: records[index]?.lanIp ?? null,
+  }));
+}
+
 const fleetEnergyInputs = createEnergyInputCollector({
   orderedSnapshots,
   monitors,
-  // Agent / agentless nodes, each with its registered LAN IP for de-duplication.
-  // buildFleetSnapshot() lists nodes in listNodes() order; key on the registry id.
-  fleetNodes: () => {
-    const records = listNodes();
-    return buildFleetSnapshot().nodes.map((node, index) => ({
-      ...node,
-      nodeId: records[index]?.id ?? node.nodeId,
-      registryLanIp: records[index]?.lanIp ?? null,
-    }));
-  },
+  fleetNodes: registeredFleetNodes,
   sparkLanIps: () => new Map(registry.sparks.map((spark) => [spark.id, spark.lanIp])),
   getSettings,
 });
@@ -355,6 +360,16 @@ const fleetEnergyRuntime = createFleetEnergyRuntime({
   orderedSnapshots,
   monitors,
   collectInputs: (atMs) => fleetEnergyInputs.collect(atMs),
+});
+
+// ─── LLM token ledger (FLEET3, issue #38) ───────────────
+// Every 15 s: cumulative token counters of SSH Spark LLM ports (LlmProbe) and
+// agent-node engines (STAT3 counters, STAT4 relay where no counter exists),
+// diffed into hourly / daily / all-time totals per model and endpoint.
+const llmTokenLedger = new LlmTokenLedger({ filePath: LLM_TOKEN_TOTALS_JSON_PATH });
+const llmTokenRuntime = createLlmTokenRuntime({
+  ledger: llmTokenLedger,
+  collect: () => collectTokenObservations({ sparks: orderedSnapshots(), nodes: registeredFleetNodes() }),
 });
 
 // ─── Unit history (docs/specs/unit-history.md) ──────────
@@ -641,9 +656,14 @@ function clientKey(req) {
 
 // ─── REST API ────────────────────────────────────────────
 registerFleetEnergyRoute(app, fleetEnergyTracker, {
+  // FLEET3: Wh/token from the fleet-wide token ledger when it has tokens.
   decorate: (snapshot) =>
-    buildFleetEnergyView(snapshot, { hosts: fleetEnergyInputs.hosts(), settings: getSettings() }),
+    withLedgerTokens(
+      buildFleetEnergyView(snapshot, { hosts: fleetEnergyInputs.hosts(), settings: getSettings() }),
+      llmTokenLedger.totals("24h")
+    ),
 });
+registerLlmTokenRoutes(app, llmTokenLedger);
 registerAlertRoutes(app, alertsRuntime);
 
 // Never return SSH passwords in any response
@@ -2503,6 +2523,7 @@ if (!startupPreflight.fatal) {
     startAllMonitors();
     alertsRuntime.start();
     fleetEnergyRuntime.start();
+    llmTokenRuntime.start();
     activityWatcher.start();
     void fleetConnection
       .start()
@@ -2539,6 +2560,7 @@ async function shutdown(signal) {
     console.error("[sparkDash] failed to flush LLM daily history:", err.message);
   }
   const energyPersistenceSucceeded = fleetEnergyRuntime.stop();
+  llmTokenRuntime.stop();
   activityWatcher.stop();
   eventLog.flush();
   try {

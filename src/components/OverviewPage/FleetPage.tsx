@@ -29,6 +29,8 @@ export interface FleetPageProps {
   onSelectNode?: (nodeId: string) => void;
   /** Rendered under the node cards (the Fleet energy card, issue #33). */
   energy?: ReactNode;
+  /** Rendered beside the energy card (the LLM token totals card, issue #38). */
+  tokens?: ReactNode;
   /** Rendered under the node cards (the Recent activity card, issue #32). */
   activity?: ReactNode;
 }
@@ -71,7 +73,7 @@ function sumRequests(byMachine: Record<string, RequestStat[]>) {
  * Fleet overview page: summary strip + one FleetCard per node, then the
  * optional energy and activity slots.
  */
-export function FleetPage({ nodes, topology, requests, memory, onSelectNode, energy, activity }: FleetPageProps) {
+export function FleetPage({ nodes, topology, requests, memory, onSelectNode, energy, tokens, activity }: FleetPageProps) {
   const onlineCount = nodes.filter((n) => n.online).length;
   const offlineCount = nodes.length - onlineCount;
   const reqs = sumRequests(requests.byMachine);
@@ -176,7 +178,21 @@ export function FleetPage({ nodes, topology, requests, memory, onSelectNode, ene
         </div>
       )}
 
-      {energy}
+      {tokens && energy ? (
+        <div
+          className="grid items-start lg:grid-cols-2"
+          style={{ gap: "var(--density-page-gap)" }}
+          data-testid="fleet-usage-row"
+        >
+          {tokens}
+          {energy}
+        </div>
+      ) : (
+        <>
+          {tokens}
+          {energy}
+        </>
+      )}
       {activity}
     </div>
   );

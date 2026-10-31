@@ -812,6 +812,8 @@ export interface FleetEnergy {
   coverage?: FleetEnergyCoverage;
   /** null when the electricity price is 0 (cost hidden). */
   cost?: FleetEnergyCost | null;
+  /** FLEET3: "ledger" when outputTokens24h / whPerOutputToken24h come from the fleet-wide token ledger. */
+  tokenSource?: "ledger";
 }
 
 export type GpuPowerSource = "nvidia-smi" | "amd-hwmon";
@@ -1305,6 +1307,14 @@ export type {
   NormalizedEngineValue,
   NormalizedEngineRecord,
   NormalizedEngineWindows,
+  // FLEET3 token ledger.
+  LlmTokenRange,
+  LlmTokenSplit,
+  LlmTokenModelRow,
+  LlmTokenEndpointRow,
+  LlmTokenTotals,
+  LlmTokenHistoryPoint,
+  LlmTokenHistory,
 } from "../../shared/types";
 
 // ─── Fleet updates (docs/SPEC-UPDATES.md §6/§9) ────
