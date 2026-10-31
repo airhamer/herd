@@ -57,8 +57,16 @@ export function runFleetEnergySamplerTick({
   orderedSnapshots,
   monitors,
   now = Date.now,
+  collectInputs = null,
 }) {
   const atMs = now();
+  if (typeof collectInputs === "function") {
+    // Issue #33: Sparks and agent nodes, already estimated per host
+    // (server/energy/inputs.js). The scope follows the live fleet.
+    const { inputs, scope } = collectInputs(atMs);
+    if (Array.isArray(scope) && typeof tracker.setNodeIds === "function") tracker.setNodeIds(scope);
+    return tracker.record(inputs, atMs);
+  }
   const snapshots = orderedSnapshots();
   const trackerInputs = snapshots.map((snapshot) => ({
     ...snapshot,
@@ -72,8 +80,11 @@ export function runFleetEnergySamplerTick({
 }
 
 /** Build the read-only Express handler around the tracker's canonical contract. */
-export function createFleetEnergyHandler(tracker) {
-  return (_req, res) => res.json(tracker.snapshot());
+export function createFleetEnergyHandler(tracker, decorate = null) {
+  return (_req, res) => {
+    const snapshot = tracker.snapshot();
+    res.json(typeof decorate === "function" ? decorate(snapshot) : snapshot);
+  };
 }
 
 const WIPE_CONFIRMATION = "delete-all-history";
@@ -102,7 +113,7 @@ function monthlyDeleteRequest(query = {}) {
  * Fleet-energy HTTP surface: the 31-day window is read-only; the monthly
  * history (docs/specs/monthly-energy.md) can be read and, explicitly, pruned.
  */
-export function registerFleetEnergyRoute(app, tracker) {
+export function registerFleetEnergyRoute(app, tracker, { decorate = null } = {}) {
   app.get("/api/fleet-energy/monthly", (_req, res) => {
     res.json(tracker.monthlySnapshot());
   });
@@ -114,7 +125,7 @@ export function registerFleetEnergyRoute(app, tracker) {
     }
     res.json({ removed: tracker.clearMonthly(target) });
   });
-  return app.get("/api/fleet-energy", createFleetEnergyHandler(tracker));
+  return app.get("/api/fleet-energy", createFleetEnergyHandler(tracker, decorate));
 }
 
 /** Preserve startup ordering without coupling the sampler to server or WS state. */
@@ -136,6 +147,7 @@ export function createFleetEnergyRuntime({
   tracker,
   orderedSnapshots,
   monitors,
+  collectInputs = null,
   now = Date.now,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
@@ -157,7 +169,7 @@ export function createFleetEnergyRuntime({
   const sample = () => {
     if (stopped) return;
     try {
-      runFleetEnergySamplerTick({ tracker, orderedSnapshots, monitors, now });
+      runFleetEnergySamplerTick({ tracker, orderedSnapshots, monitors, now, collectInputs });
     } catch (error) {
       reportError("fleet energy sample error", error);
     }

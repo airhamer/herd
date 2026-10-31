@@ -227,13 +227,13 @@ test("a foreign-scope file only contributes believable, well-formed minutes", (t
   const files = scratch(t);
   const stored = [
     minuteBucket(m(0)), // the only good minute
-    minuteBucket(m(1), 40), // far above what one unit can draw in a minute
+    minuteBucket(m(1), 400), // 24 kW: far above what one unit can draw in a minute
     minuteBucket(m(2), 1, { nodeCoverageMs: { x: MIN, y: 3 * MIN } }),
     minuteBucket(m(3), 1, { fleetCoverageMs: 2 * MIN }),
     minuteBucket(m(4), 1, { nodeWh: { x: 1, y: -2 } }),
     minuteBucket(m(5), 1, { fleetWattMs: -1 }),
     minuteBucket(m(6), 1, { fleetWattMs: 5e11 }),
-    minuteBucket(m(7), 1, { fleetWattMs: 2 }),
+    minuteBucket(m(7), 1, { fleetWattMs: 3 * 3_600_000 }), // fleet above the units' sum
     minuteBucket(m(8), 1, { nodeWh: { x: 1, y: null } }),
     minuteBucket(m(9), 1, { nodeWh: { y: 1 } }),
     minuteBucket(m(10), 1, { outputTokens: -1 }),

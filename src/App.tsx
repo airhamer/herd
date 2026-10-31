@@ -15,6 +15,8 @@ import { HermesUpdateDialog } from "./components/SparkPage/HermesUpdateDialog";
 import { OverviewPage } from "./components/OverviewPage/OverviewPage";
 import { FleetPage } from "./components/OverviewPage/FleetPage";
 import { RecentActivityCard } from "./components/Activity/RecentActivityCard";
+import { FleetEnergyCard } from "./components/OverviewPage/FleetEnergyCard";
+import { MonthlyEnergy } from "./components/OverviewPage/MonthlyEnergy";
 import { ActivityPage, type ActivityUnit } from "./components/Activity/ActivityPage";
 import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
 import { TopologyPage } from "./components/Topology/TopologyPage";
@@ -439,6 +441,7 @@ function DashboardApp() {
               fleet={fleet}
               fleetError={fleetError}
               sparks={sparks}
+              showFleetEnergy={settings?.showFleetEnergy ?? true}
               onSelectUnit={selectUnit}
               onNavigate={fleetNavigate}
               onActionError={(msg) => setActionError(msg)}
@@ -448,7 +451,6 @@ function DashboardApp() {
               sparks={displaySparks}
               hideOffline={settings?.autoHideOffline ?? false}
               hideWorkers={hideWorkers}
-              showFleetEnergy={settings?.showFleetEnergy ?? false}
               showFleetExceptions={settings?.showFleetExceptions ?? false}
               alertsEnabled={settings?.alertsEnabled ?? false}
               serverAlerts={serverAlerts}
@@ -592,6 +594,7 @@ function FleetViewPane({
   fleet,
   fleetError,
   sparks,
+  showFleetEnergy = true,
   onSelectUnit,
   onNavigate,
   onActionError,
@@ -600,6 +603,8 @@ function FleetViewPane({
   fleet: FleetSnapshot | null;
   fleetError: string | null;
   sparks: SparkSnapshot[];
+  /** Fleet energy card on the Fleet tab (issue #33); on by default. */
+  showFleetEnergy?: boolean;
   onSelectUnit: (unitId: string) => void;
   onNavigate: (v: FleetView | null) => void;
   onActionError: (msg: string) => void;
@@ -646,6 +651,13 @@ function FleetViewPane({
         requests={fleet.requests}
         memory={fleet.memory}
         onSelectNode={(nodeId) => onNavigate({ page: "node", nodeId })}
+        energy={
+          showFleetEnergy ? (
+            <FleetEnergyCard>
+              <MonthlyEnergy />
+            </FleetEnergyCard>
+          ) : null
+        }
         activity={
           <RecentActivityCard onViewAll={() => onNavigate({ page: "activity" })} onSelectUnit={onSelectUnit} />
         }

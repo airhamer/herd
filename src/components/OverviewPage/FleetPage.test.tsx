@@ -154,4 +154,21 @@ describe("FleetPage", () => {
     const empty = render(<FleetPage {...makeProps({ nodes: [] })} activity={slot} />);
     expect(empty.container.querySelector('[data-testid="activity-slot"]')).not.toBeNull();
   });
+
+  it("renders the energy slot (issue #33) after the cards and before activity, even with no agent nodes", () => {
+    const energy = <section data-testid="energy-slot">Fleet energy</section>;
+    const activity = <section data-testid="activity-slot">Recent activity</section>;
+    const withNodes = render(<FleetPage {...makeProps()} energy={energy} activity={activity} />);
+    const cards = withNodes.container.querySelector(".overview-page");
+    const energyEl = withNodes.container.querySelector('[data-testid="energy-slot"]');
+    const activityEl = withNodes.container.querySelector('[data-testid="activity-slot"]');
+    expect(energyEl).not.toBeNull();
+    expect(cards!.compareDocumentPosition(energyEl!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(energyEl!.compareDocumentPosition(activityEl!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // SSH-Spark-only fleets have no agent nodes but still get the card.
+    const empty = render(<FleetPage {...makeProps({ nodes: [] })} energy={energy} />);
+    expect(empty.container.querySelector('[data-testid="energy-slot"]')).not.toBeNull();
+    const off = render(<FleetPage {...makeProps()} energy={null} />);
+    expect(off.container.querySelector('[data-testid="energy-slot"]')).toBeNull();
+  });
 });
