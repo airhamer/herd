@@ -212,6 +212,35 @@ export async function readServerGenerationTokens(baseUrl, opts = {}) {
   return null;
 }
 
+/**
+ * Target abstraction (SHOW1, #39): one OpenAI-compatible endpoint, wherever
+ * it lives — an SSH Spark port (direct or SSH-tunnelled), a node-agent lane,
+ * or a custom host. Callers resolve reachability first and hand the
+ * resulting `{ host, port, tls? }` here to get the URLs every bench uses.
+ *
+ * @param {{ host: string, port: number, tls?: boolean, apiKey?: string | null }} target
+ * @returns {{ host: string, port: number, tls: boolean, apiKey: string | null, baseUrl: string, chatUrl: string }}
+ */
+export function llmEndpoint(target) {
+  const host = String(target?.host || "").trim();
+  const port = Number(target?.port);
+  if (!host) throw new Error("LLM target host is required");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid LLM port");
+  const tls = Boolean(target?.tls);
+  const hostPart = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const defaultPort = tls ? 443 : 80;
+  const baseUrl = `${tls ? "https" : "http"}://${hostPart}${port === defaultPort ? "" : `:${port}`}`;
+  const key = target?.apiKey != null ? String(target.apiKey).trim() : "";
+  return {
+    host,
+    port,
+    tls,
+    apiKey: key || null,
+    baseUrl,
+    chatUrl: `${baseUrl}/v1/chat/completions`,
+  };
+}
+
 /** Pick correlatable response headers for the debug trace. */
 export function pickDebugHeaders(headers) {
   /** @type {Record<string, string>} */
@@ -702,6 +731,9 @@ async function runStreamingRequestOnce(
 
   /** @type {Record<string, unknown>} */
   const out = {
+    /** "usage" when the engine reported usage.completion_tokens, else "estimate" (~4 chars/token). */
+    tokenSource: usageCompletionTokens != null && usageCompletionTokens > 0 ? "usage" : "estimate",
+    promptTokenSource: usagePromptTokens != null && usagePromptTokens > 0 ? "usage" : "estimate",
     ttftMs: round2(ttftMs),
     /** Time-to-first-answer-token (post-reasoning) in ms from request start. Null when the reply never leaves the reasoning phase. */
     ttftContentMs: tFirstContent != null ? round2(tFirstContent - t0) : null,

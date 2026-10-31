@@ -987,6 +987,13 @@ export function ShowcasePage({ sparkId }: ShowcasePageProps) {
                 >
                   History{history.length > 0 ? ` (${history.length})` : ""}
                 </button>
+                <a
+                  className="showcase-btn showcase-btn--ghost"
+                  href="/fleet/showcase"
+                  title="Run the showcase on several Sparks and agent nodes at once"
+                >
+                  Fleet
+                </a>
                 <button
                   type="button"
                   className="showcase-btn showcase-btn--ghost"

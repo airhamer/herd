@@ -4,12 +4,14 @@
  * records when the manager reports it.
  */
 
-import { fromDecodeJob, fromPrefillJob, fromShowcaseSession } from "./adapters.js";
+import { fromDecodeJob, fromFleetShowcaseSession, fromPrefillJob, fromShowcaseSession } from "./adapters.js";
 
 const ADAPTERS = {
   DecodeBench: { convert: fromDecodeJob, idOf: (o) => o?.benchId },
   PrefillBench: { convert: fromPrefillJob, idOf: (o) => o?.benchId },
   Showcase: { convert: fromShowcaseSession, idOf: (o) => o?.sessionId },
+  // SHOW1: one record per lane; provenance is { lanes: { [laneId]: Provenance } }.
+  FleetShowcase: { convert: fromFleetShowcaseSession, idOf: (o) => o?.sessionId },
 };
 
 const MAX_PENDING = 200;
@@ -23,7 +25,7 @@ export function createResultsRecorder({ store, log = (m) => console.warn(m) }) {
 
   return {
     /**
-     * @param {"DecodeBench"|"PrefillBench"|"Showcase"} bench
+     * @param {"DecodeBench"|"PrefillBench"|"Showcase"|"FleetShowcase"} bench
      * @param {string} id  benchId / sessionId
      * @param {any} provenance  describeProvenance(...) result
      */
@@ -34,7 +36,7 @@ export function createResultsRecorder({ store, log = (m) => console.warn(m) }) {
     },
 
     /**
-     * @param {"DecodeBench"|"PrefillBench"|"Showcase"} bench
+     * @param {"DecodeBench"|"PrefillBench"|"Showcase"|"FleetShowcase"} bench
      * @param {any} finished  public job / session record
      * @returns {{ added: number, updated: number, rejected: any[] } | null}
      */
@@ -51,7 +53,7 @@ export function createResultsRecorder({ store, log = (m) => console.warn(m) }) {
       return res;
     },
 
-    /** @param {"DecodeBench"|"PrefillBench"|"Showcase"} bench */
+    /** @param {"DecodeBench"|"PrefillBench"|"Showcase"|"FleetShowcase"} bench */
     sinkFor(bench) {
       return (finished) => this.record(bench, finished);
     },

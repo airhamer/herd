@@ -406,6 +406,123 @@ export function fromShowcaseSession(session, opts = {}) {
   ];
 }
 
+// ─── Fleet Showcase (SHOW1, #39) ──────────────────────────────────────
+
+export const FLEET_SHOWCASE_SUITE = Object.freeze({ suite: "herd.showcase.fleet", suite_version: "1" });
+
+/**
+ * One record per lane of a finished fleet Showcase session (bench
+ * "Showcase", suite herd.showcase.fleet, settings.source "showcase").
+ * Stream text is dropped from `raw`.
+ * @param {any} session  FleetShowcaseManager archive record
+ * @param {{ provenance?: { lanes?: Record<string, Provenance> } | null, recordedAt?: string }} [opts]
+ */
+export function fromFleetShowcaseSession(session, opts = {}) {
+  if (!session || !session.sessionId || !Array.isArray(session.lanes)) return [];
+  const byLane = opts.provenance?.lanes || {};
+  return session.lanes
+    .filter((lane) => lane && lane.laneId && lane.status !== "pending")
+    .map((lane) => {
+      const streams = Array.isArray(lane.streams) ? lane.streams : [];
+      const prov = byLane[lane.laneId] || null;
+      const base = baseRecord({
+        bench: "Showcase",
+        runId: `fleet-showcase:${session.sessionId}`,
+        startedAt: session.startedAt,
+        completedAt: session.completedAt,
+        status: lane.status === "completed" ? session.status : lane.status,
+        nodeId: lane.nodeId,
+        modelId: lane.modelId ?? null,
+        provenance: prov,
+      });
+      if (!base.host.node_name && lane.nodeName) base.host.node_name = lane.nodeName;
+      if (!base.lane.engine && lane.backend) base.lane.engine = lane.backend;
+
+      const ok = streams.filter((s) => s && s.status === "completed" && !s.error);
+      const estimated = ok.some((s) => s.tokenSource !== "usage");
+      const rates = ok.map((s) => s.decodeTps).filter(pos);
+      const metrics = [];
+      if (rates.length) {
+        metrics.push({
+          metric: "decode_tps_stream",
+          definition: "herd.showcase.stream_mean_estimated.v1",
+          source: "client",
+          value: round2(mean(rates)),
+          n: rates.length,
+          ...meanCi(rates),
+          approximate: estimated,
+        });
+      } else {
+        metrics.push(unmeasured("decode_tps_stream", "herd.showcase.stream_mean_estimated.v1"));
+      }
+      if (pos(lane.clientTps) && ok.length) {
+        metrics.push({
+          metric: "agg_window_tps",
+          definition: "herd.showcase.agg_window_estimated.v1",
+          source: "client",
+          value: round2(lane.clientTps),
+          n: ok.length,
+          approximate: estimated,
+        });
+      }
+      const prefills = ok.map((s) => s.prefillTps).filter(pos);
+      if (prefills.length) {
+        metrics.push({
+          metric: "prefill_tps",
+          definition: "herd.showcase.prefill_ttft.v1",
+          source: "client",
+          value: round2(mean(prefills)),
+          n: prefills.length,
+          approximate: ok.some((s) => s.promptTokenSource === "estimate"),
+        });
+      }
+      if (pos(lane.serverTps)) {
+        metrics.push({
+          metric: "server_generation_tps",
+          definition: "herd.engine.generation_tps_counter.v1",
+          source: "counter",
+          value: round2(lane.serverTps),
+          n: pos(lane.serverSamples) ? lane.serverSamples : null,
+        });
+      }
+      const ttfts = ok.map((s) => s.ttftMs).filter(pos);
+      if (ttfts.length) {
+        metrics.push({ metric: "ttft_p50", definition: "herd.ttft.client_first_token.v1", source: "client", value: round2(median(ttfts)), n: ttfts.length });
+        metrics.push({ metric: "ttft_p95", definition: "herd.ttft.client_first_token_p95.v1", source: "client", value: round2(percentile(ttfts, 95)), n: ttfts.length });
+      }
+
+      const rawLane = { ...lane, streams: streams.map((s) => { const c = { ...s }; delete c.content; delete c.reasoning; delete c.contentAppend; delete c.reasoningAppend; return c; }) };
+      return makeResult({
+        id: `fleet-showcase:${session.sessionId}:${lane.laneId}`,
+        recorded_at: opts.recordedAt,
+        run: { ...base.run, ...FLEET_SHOWCASE_SUITE },
+        host: base.host,
+        lane: base.lane,
+        conditions: {
+          concurrency: streams.length > 0 ? streams.length : null,
+          context_tokens: null,
+          max_tokens: Number.isInteger(session.maxTokens) ? session.maxTokens : null,
+          temperature: typeof session.temperature === "number" ? session.temperature : null,
+          thinking: typeof session.thinking === "boolean" ? session.thinking : null,
+          prompt_set: `showcase/${session.promptType || "custom"}`,
+          client_location: base.clientLocation ?? (lane.via ? "network" : null),
+        },
+        settings: {
+          source: "showcase",
+          fleet_session_id: session.sessionId,
+          lane_id: lane.laneId,
+          lane_count: session.lanes.length,
+          port: lane.port ?? null,
+          via: lane.via ?? null,
+          token_source: lane.tokenSource ?? null,
+          server_engine: lane.serverEngine ?? null,
+        },
+        metrics,
+        raw: { session: { sessionId: session.sessionId, status: session.status, prompts: session.prompts ?? null }, lane: rawLane },
+      });
+    });
+}
+
 // ─── Legacy history import ────────────────────────────────────────────
 
 /**

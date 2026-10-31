@@ -247,6 +247,19 @@ New UI views (reachable from the header tabs): `/fleet` (fleet overview), `/topo
 
 The node agent is installed on each Spark with `deploy/install-node-agent.sh` (Docker: `deploy/Dockerfile.node-agent`). The actions build (agent ≥0.2.0) ships `POST /actions` + `GET /audit`, and joins `services`/`memory`/`requests` into the telemetry snapshot; it needs host access (docker socket, `systemctl`, `nvidia-smi`, GPU devices) — the install script wires the mounts automatically (see `docs/NODE-AGENT.md`). The fleet layer is fully independent of the SSH-based Spark monitors above — both coexist.
 
+**Fleet Prompt Showcase (#39).** `/fleet/showcase` (linked from the Fleet Overview header and the per-Spark showcase) runs the Prompt Showcase on any mix of LLM lanes at once: every SSH Spark LLM port and every agent-node engine, whatever the engine or model. Each selected lane gets the same prompts and N terminals; all lanes stream concurrently. A tile grid above the terminals compares, per lane:
+
+- **client tok/s** (every engine): from the streams themselves. Tokens come from `usage` (`stream_options.include_usage`) or, when the engine sends none, the ~4 chars/token estimate (tile badge `≈ est.`). Per stream decode = (tokens − 1) / (t_last − t_first); lane tok/s = Σ decode tokens / (last token − first token across the lane's streams).
+- **TTFT** (median per lane) and **prefill** = prompt tokens / TTFT.
+- **server tok/s**: Δ generated-token counter / Δt, polled every 400 ms from the engine (`/metrics` for vLLM, SGLang, llama.cpp, ds4/q27/tensorfold/splash; `/health` for EXL3; `/server_info` for SGLang without metrics). The counter is engine-wide, so other traffic on the same engine counts too. Ollama and LM Studio have no counter and show **client only**.
+
+Spark lanes go over the LAN, falling back to an SSH tunnel; agent lanes go over the LAN and, for nodes registered with `protocol: "ssh"`, fall back to an SSH tunnel. Each finished lane writes one bench result (bench `Showcase`, suite `herd.showcase.fleet`, `settings.source: "showcase"`) and the session is kept in a short history (`config/fleet-showcase-history.json`, last 10 runs). One fleet session runs at a time, and it refuses Sparks that are running a decode / prefill bench or a per-Spark showcase (and vice versa).
+
+- `GET /api/fleet/showcase/targets` — selectable lanes (`laneId` = `spark:<id>:<port>` or `node:<id>:<port>`) and limits
+- `POST /api/fleet/showcase` — `{ laneIds, prompts, maxTokens?, temperature?, thinking?, promptType? }` → 202 `{ sessionId }`
+- `GET /api/fleet/showcase/:sessionId?since=<rev>` — live state; with `since`, stream text comes as appends. Poll at least every 5 s or the run is cancelled
+- `DELETE /api/fleet/showcase/:sessionId` — cancel; `GET /api/fleet/showcase` — active run + history; `DELETE /api/fleet/showcase` — clear history
+
 **Tailscale (agent ≥0.3.0).** Each node also reports its own tailnet view as the `tailscale` field on `/telemetry`: hostname, MagicDNS name, Tailscale IP, backend state, and config (socket, state file, conf/env). The install script mounts the tailscale CLI, socket, `/var/lib/tailscale`, and `/etc/tailscale` so the agent can read `tailscale status --json`. Best-effort: a node without tailscaled still boots and reports `tailscale: null` (degraded, not broken).
 
 ---
@@ -389,6 +402,7 @@ sparkDash/
 | GET | `/api/sparks/:id/llm/daily` | Daily busy decode/prefill tok/s (`port`, `days`) |
 | POST | `/api/sparks/:id/llm/bench` | Start decode benchmark (202); poll/cancel/clear on the same path |
 | POST | `/api/sparks/:id/llm/prefill-bench` | Start prefill + TTFT context sweep (202); poll/cancel/clear on the same path |
+| POST | `/api/fleet/showcase` | Start a fleet-wide Prompt Showcase over Spark and agent lanes (202); targets, poll, cancel, history under `/api/fleet/showcase` |
 | GET | `/api/settings` | Global settings |
 | PUT | `/api/settings` | Update global settings |
 | WS | `/ws` | Real-time metrics stream |
@@ -473,6 +487,7 @@ Copy `.env.example` to `.env` if needed:
 | `SSH_CONTROL_PERSIST_SECONDS` | `60` | Reuse authenticated SSH transports for remote collectors. Set to `0` to disable multiplexing. |
 | `FLEET_ENERGY_JSON_PATH` | `config/fleet-energy.json` | Rolling fleet-energy persistence path |
 | `LLM_TOKEN_TOTALS_JSON_PATH` | `config/llm-token-totals.json` | LLM token ledger persistence path |
+| `FLEET_SHOWCASE_HISTORY_PATH` | `config/fleet-showcase-history.json` | Fleet Prompt Showcase history (last 10 runs) |
 
 > The listener and both Compose files default to `127.0.0.1`. Existing Docker users who opened
 > `http://<host-ip>:5555` must migrate to an SSH tunnel, authenticated reverse proxy, Tailscale

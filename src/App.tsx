@@ -20,6 +20,7 @@ import { FleetTokenTotals } from "./components/OverviewPage/FleetTokenTotals";
 import { MonthlyEnergy } from "./components/OverviewPage/MonthlyEnergy";
 import { ActivityPage, type ActivityUnit } from "./components/Activity/ActivityPage";
 import { ShowcasePage } from "./components/ShowcasePage/ShowcasePage";
+import { FleetShowcasePage } from "./components/ShowcasePage/FleetShowcasePage";
 import { TopologyPage } from "./components/Topology/TopologyPage";
 import { UpdatesPage } from "./components/Updates/UpdatesPage";
 import { FleetUpdatesProvider } from "./components/Updates/FleetUpdatesContext";
@@ -797,6 +798,9 @@ function App() {
   const route = useAppRoute();
   if (route.mode === "showcase" && route.showcaseSparkId) {
     return <ShowcasePage sparkId={route.showcaseSparkId} />;
+  }
+  if (route.mode === "fleet-showcase") {
+    return <FleetShowcasePage />;
   }
   return <DashboardApp />;
 }

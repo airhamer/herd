@@ -10,6 +10,10 @@ import type {
   EventsResponse,
   DecodeBenchListResponse,
   FleetEnergy,
+  FleetShowcaseListResponse,
+  FleetShowcaseSessionState,
+  FleetShowcaseStartRequest,
+  FleetShowcaseTargetsResponse,
   LlmTokenHistory,
   LlmTokenRange,
   LlmTokenTotals,
@@ -361,6 +365,40 @@ export function clearShowcaseHistory(
   id: string
 ): Promise<{ success: boolean }> {
   return apiFetch(`/api/sparks/${id}/llm/showcase`, { method: "DELETE" });
+}
+
+// ─── Fleet Prompt Showcase (SHOW1) ───────────────────────
+export function getFleetShowcaseTargets(): Promise<FleetShowcaseTargetsResponse> {
+  return apiFetch("/api/fleet/showcase/targets");
+}
+
+export function startFleetShowcase(
+  body: FleetShowcaseStartRequest
+): Promise<{ sessionId: string; status: string }> {
+  return apiFetch("/api/fleet/showcase", { method: "POST", body: JSON.stringify(body) });
+}
+
+export function listFleetShowcase(): Promise<FleetShowcaseListResponse> {
+  return apiFetch("/api/fleet/showcase");
+}
+
+export function getFleetShowcase(
+  sessionId: string,
+  opts?: { since?: number }
+): Promise<FleetShowcaseSessionState> {
+  const q =
+    opts?.since != null && Number.isFinite(opts.since)
+      ? `?since=${encodeURIComponent(String(opts.since))}`
+      : "";
+  return apiFetch(`/api/fleet/showcase/${encodeURIComponent(sessionId)}${q}`);
+}
+
+export function cancelFleetShowcase(sessionId: string): Promise<FleetShowcaseSessionState> {
+  return apiFetch(`/api/fleet/showcase/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+}
+
+export function clearFleetShowcaseHistory(): Promise<{ success: boolean }> {
+  return apiFetch("/api/fleet/showcase", { method: "DELETE" });
 }
 
 // ─── LLM probe ports (per Spark) ─────────────────────────
