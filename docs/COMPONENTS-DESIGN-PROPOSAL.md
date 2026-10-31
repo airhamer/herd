@@ -457,3 +457,24 @@ format (§1–§6) and the action method (§7.1–§7.9) stand as designed; the
 *observability* half (proxy truth, unit-aware versions, class report,
 recipe hygiene) must land with or before SC10, or every added recipe
 inherits 1c2c's blindness. No schema rewrite, no second design.
+
+## 7.11 SC4: proven-history storage (issue #13, batch 13)
+
+Provenance update for the category seam. SC2 left `proven` as a verdict with
+no data behind it ("proven is history, not definition" — stacks-catalog.js).
+SC4 lands that history: `agent/catalog/history.js` stores recorded stack runs
+(`ProvenHistoryEntry` / `CategoryHistory` / `ProvenHistoryFile`,
+shared/types.ts) — stackId, membership, TP size, actual boot vs. ETA,
+success, notes, timestamp — in `agent/config/stack-history.json`, append-only
+with a rolling cap, fail-soft like stacks.json.
+
+- **Proven verdict:** `hasProven(stackId)` (≥1 successful recorded run) is
+  the `isProven` input StackStore's calculator already expects.
+- **ETA refinement (decision):** storage/query only in this slice —
+  `recentProven()` returns the rows; averaging/windowing is deliberately not
+  computed here (the SC5+ consumer owns that policy, matching §1's
+  bootstrap-hardcodes-refined-after-history rule).
+- **Snapshot seam:** `enrichSnapshot` attaches `stackHistory` (keyed by
+  stackId, null when empty/failed) so SC5+ drives UI/ETA from the snapshot
+  alone. No UI changes; the stack-history.js prototype (component-set keyed,
+  unwired) is superseded by this stack-id-keyed contract.
