@@ -1236,6 +1236,130 @@ export interface ShowcaseSessionState {
   fromHistory?: boolean;
 }
 
+// ─── Fleet Prompt Showcase (SHOW1, #39) ──────────────────
+/** One LLM lane the fleet showcase can target (SSH Spark port or agent-node engine). */
+export interface FleetShowcaseTarget {
+  laneId: string;
+  kind: "spark" | "node";
+  nodeId: string;
+  nodeName: string;
+  host: string | null;
+  port: number;
+  modelId: string | null;
+  backend: string | null;
+  available: boolean;
+  /** False for engines with no generation counter (Ollama, LM Studio): client timing only. */
+  serverCounters: boolean;
+  /** How Herd reaches it: local, LAN with SSH-tunnel fallback, or LAN only. */
+  access: "local" | "lan-or-ssh" | "lan";
+}
+
+export interface FleetShowcaseLimits {
+  maxLanes: number;
+  maxPrompts: number;
+  maxStreams: number;
+  minMaxTokens: number;
+  maxMaxTokens: number;
+  defaultMaxTokens: number;
+  defaultTemperature: number;
+  heartbeatTimeoutMs: number;
+}
+
+export interface FleetShowcaseTargetsResponse {
+  targets: FleetShowcaseTarget[];
+  limits: FleetShowcaseLimits;
+}
+
+export interface FleetShowcaseStartRequest {
+  laneIds: string[];
+  prompts: string[];
+  maxTokens?: number;
+  temperature?: number;
+  thinking?: boolean;
+  promptType?: ShowcasePromptType | null;
+}
+
+export interface FleetShowcaseStreamState extends ShowcaseStreamState {
+  tokenSource?: "usage" | "estimate" | null;
+  prefillTps?: number | null;
+}
+
+export interface FleetShowcaseLaneState {
+  laneId: string;
+  kind: "spark" | "node";
+  nodeId: string;
+  nodeName: string;
+  host: string | null;
+  port: number;
+  modelId: string | null;
+  backend: string | null;
+  /** "lan", "direct", "ssh-tunnel" … once resolved. */
+  via: string | null;
+  status: "pending" | "connecting" | "running" | "completed" | "error" | "cancelled";
+  statusText?: string | null;
+  error: string | null;
+  serverCounters: boolean;
+  serverTps: number | null;
+  serverTpsMax: number | null;
+  serverSamples: number;
+  serverEngine?: string | null;
+  /** Lane tok/s: live sum while streaming, then Σ decode tokens / window. */
+  clientTps: number | null;
+  streamTpsMean: number | null;
+  ttftP50Ms: number | null;
+  prefillTps: number | null;
+  totalTokens: number;
+  streamsDone: number;
+  streamsOk: number;
+  streamCount: number;
+  tokenSource: "usage" | "estimate" | "mixed" | null;
+  streams: FleetShowcaseStreamState[];
+}
+
+export interface FleetShowcaseSessionState {
+  sessionId: string;
+  status: "running" | "completed" | "cancelled" | "error";
+  rev: number;
+  maxTokens: number;
+  temperature: number;
+  thinking: boolean;
+  promptType: ShowcasePromptType | null;
+  prompts: string[];
+  startedAt: number;
+  completedAt: number | null;
+  error: string | null;
+  lanes: FleetShowcaseLaneState[];
+  fromHistory?: boolean;
+}
+
+export interface FleetShowcaseHistorySummary {
+  sessionId: string;
+  status: string;
+  startedAt: number | null;
+  completedAt: number | null;
+  promptType: ShowcasePromptType | null;
+  maxTokens: number | null;
+  laneCount: number;
+  streamsPerLane: number;
+  lanes: {
+    laneId: string;
+    nodeName: string;
+    port: number;
+    modelId: string | null;
+    backend: string | null;
+    clientTps: number | null;
+    serverTps: number | null;
+    ttftP50Ms: number | null;
+    status: string;
+  }[];
+  error: string | null;
+}
+
+export interface FleetShowcaseListResponse {
+  active: { sessionId: string; status: string } | null;
+  history: FleetShowcaseHistorySummary[];
+}
+
 /** List-row for finished showcase runs (no stream bodies). */
 export interface ShowcaseHistorySummary {
   sessionId: string;

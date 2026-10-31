@@ -1,14 +1,18 @@
 import { useEffect, useCallback, useRef, useState } from "react";
 import { OVERVIEW_ID } from "../constants";
 
-export type RouteMode = "app" | "showcase";
+export type RouteMode = "app" | "showcase" | "fleet-showcase";
 export interface AppRoute {
   mode: RouteMode;
   /** Spark id for showcase mode */
   showcaseSparkId: string | null;
 }
 
-function parsePath(pathname: string): AppRoute {
+export function parsePath(pathname: string): AppRoute {
+  // SHOW1: fleet-wide showcase, full screen like the per-Spark one.
+  if (/^\/fleet\/showcase\/?$/.test(pathname)) {
+    return { mode: "fleet-showcase", showcaseSparkId: null };
+  }
   const showcase = pathname.match(/^\/showcase\/([^/]+)/);
   if (showcase) {
     return {
@@ -42,6 +46,7 @@ export function useAppRoute(): AppRoute {
  *   /             → Overview
  *   /spark/:id    → Spark detail page
  *   /showcase/:id → full-screen showcase (handled separately via useAppRoute)
+ *   /fleet/showcase → full-screen fleet showcase (also via useAppRoute)
  *
  * Call `navigate(id)` to switch views — it updates both the URL and
  * the internal activeId state. Back/forward buttons work via popstate.
@@ -57,7 +62,7 @@ export function useRoute(
     initialised.current = true;
 
     const path = window.location.pathname;
-    if (path.startsWith("/showcase/")) return;
+    if (path.startsWith("/showcase/") || path.startsWith("/fleet/showcase")) return;
 
     const match = path.match(/^\/spark\/([^/]+)/);
     if (match) {
@@ -71,7 +76,7 @@ export function useRoute(
   useEffect(() => {
     const handler = () => {
       const path = window.location.pathname;
-      if (path.startsWith("/showcase/")) return;
+      if (path.startsWith("/showcase/") || path.startsWith("/fleet/showcase")) return;
       const match = path.match(/^\/spark\/([^/]+)/);
       setActiveId(match ? match[1] : OVERVIEW_ID);
     };

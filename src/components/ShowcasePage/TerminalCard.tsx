@@ -10,6 +10,11 @@ export interface TerminalCardProps {
   error: string | null;
   onCopy?: () => void;
   copied?: boolean;
+  /** Extra header text, e.g. "TTFT 120 ms" (fleet showcase). */
+  meta?: string | null;
+  /** Small header badge, e.g. "est." when tokens are estimated. */
+  badge?: string | null;
+  badgeTitle?: string;
 }
 
 function statusClass(status: string): string {
@@ -37,6 +42,9 @@ export function TerminalCard({
   error,
   onCopy,
   copied,
+  meta,
+  badge,
+  badgeTitle,
 }: TerminalCardProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -61,6 +69,12 @@ export function TerminalCard({
           {label || "Terminal"}
         </span>
         <span className={`showcase-term__status ${statusClass(status)}`}>{status}</span>
+        {meta ? <span className="showcase-term__meta font-tabular">{meta}</span> : null}
+        {badge ? (
+          <span className="showcase-term__badge" title={badgeTitle}>
+            {badge}
+          </span>
+        ) : null}
         <span
           className="showcase-term__tps font-tabular"
           title={
