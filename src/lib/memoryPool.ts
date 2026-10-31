@@ -149,3 +149,37 @@ export function poolScaleGiB(totalMB: number): number[] {
   for (let m = 0; m < g - 12; m += 32) marks.push(m);
   return marks;
 }
+
+export type MemBudgetTone = "success" | "warning" | "danger";
+
+/**
+ * The Fleet card's "Mem Budget" stat, kept consistent with the pool bar
+ * (#26): headroom above the floor = available − floor (clamped at 0) in GiB,
+ * toned on available with the bar's thresholds, danger whenever the budget
+ * needs a make-room plan. Prefers the pool; falls back to the budget's own
+ * freeMB/totalMB only when there is no pool breakdown.
+ */
+export function memBudgetStat(
+  pool: MemoryPool | null,
+  budget: { freeMB: number; totalMB: number; needMakeRoom?: boolean } | null,
+): { value: string; tone: MemBudgetTone; title: string } | null {
+  const src = pool
+    ? { availableMB: pool.availableMB, totalMB: pool.totalMB, floorMB: pool.floorMB }
+    : budget
+      ? { availableMB: nn(budget.freeMB), totalMB: nn(budget.totalMB), floorMB: DEFAULT_FLOOR_MB }
+      : null;
+  if (!src) return null;
+  const above = Math.max(0, src.availableMB - src.floorMB);
+  const tone: MemBudgetTone =
+    budget?.needMakeRoom || src.availableMB < CRIT_AVAILABLE_MB
+      ? "danger"
+      : src.availableMB < LOW_AVAILABLE_MB
+        ? "warning"
+        : "success";
+  const floorGiB = (src.floorMB / 1024).toFixed(0);
+  return {
+    value: `${gib(above)} GiB above floor`,
+    tone,
+    title: `available ${gib(src.availableMB)} GiB · floor ${floorGiB} GiB · total ${gib(src.totalMB)} GiB`,
+  };
+}

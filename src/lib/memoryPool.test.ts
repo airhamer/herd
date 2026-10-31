@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gib, gpuHolderLabel, isUnifiedGpu, memoryPool, poolClassGB, poolScaleGiB, shortModel } from "./memoryPool";
+import { gib, gpuHolderLabel, isUnifiedGpu, memBudgetStat, memoryPool, poolClassGB, poolScaleGiB, shortModel } from "./memoryPool";
 
 // Hasso's reference screenshot (ASUS Ascent GX10): 109.9 of 121.6 GiB in use,
 // 11.8 available, 8.8 above the 3 GiB floor; model 99.2, system 10.7,
@@ -126,5 +126,31 @@ describe("poolClassGB / poolScaleGiB", () => {
     expect(poolScaleGiB(124560)).toEqual([0, 32, 64, 96]);
     expect(poolScaleGiB(60000)).toEqual([0, 32]);
     expect(poolScaleGiB(0)).toEqual([]);
+  });
+});
+
+describe("memBudgetStat (#26)", () => {
+  const pool = (availableMB: number) => memoryPool({ totalMB: 124560, availableMB, unified: true })!;
+  const budget = { freeMB: 32000, totalMB: 128000, needMakeRoom: false };
+  it("reads headroom above the floor off the pool, not the budget", () => {
+    expect(memBudgetStat(pool(12040), budget)).toEqual({
+      value: "8.8 GiB above floor",
+      tone: "success",
+      title: "available 11.8 GiB · floor 3 GiB · total 121.6 GiB",
+    });
+  });
+  it("uses the bar's thresholds and clamps at 0", () => {
+    expect(memBudgetStat(pool(9215), budget)?.tone).toBe("warning");
+    expect(memBudgetStat(pool(9216), budget)?.tone).toBe("success");
+    expect(memBudgetStat(pool(4095), budget)?.tone).toBe("danger");
+    expect(memBudgetStat(pool(1024), budget)?.value).toBe("0.0 GiB above floor");
+  });
+  it("is danger whenever make-room is needed", () => {
+    expect(memBudgetStat(pool(60000), { ...budget, needMakeRoom: true })?.tone).toBe("danger");
+  });
+  it("falls back to the budget's freeMB without a pool, and to nothing without either", () => {
+    expect(memBudgetStat(null, budget)?.value).toBe("28.3 GiB above floor");
+    expect(memBudgetStat(null, { ...budget, freeMB: 6000 })?.tone).toBe("warning");
+    expect(memBudgetStat(null, null)).toBeNull();
   });
 });

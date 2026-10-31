@@ -199,8 +199,11 @@ describe("FleetCard", () => {
     // Requests
     expect(text).toContain("q1 · r2 · f10");
 
-    // Memory budget
-    expect(text).toContain("31.3 GB free");
+    // Memory budget (#26): headroom above the 3 GiB floor off the same pool as the bar
+    const budget = container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
+    expect(budget.textContent).toBe("82.9 GiB above floor"); // 88000 − 3072 MB
+    expect(budget.className).toContain("text-success");
+    expect(budget.getAttribute("title")).toBe("available 85.9 GiB · floor 3 GiB · total 125.0 GiB");
 
     // PolledAt
     expect(container.querySelector('[data-testid="fleet-card-polledat"]')?.textContent).toContain("1m ago");
@@ -301,7 +304,47 @@ describe("FleetCard", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("Make room needed");
     expect(text).toContain("stop: comfy");
-    expect(text).toContain("1000 MB free");
+    // Value still comes off the pool; tone is danger whenever make-room is needed.
+    const budget = container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
+    expect(budget.textContent).toBe("82.9 GiB above floor");
+    expect(budget.className).toContain("text-danger");
+  });
+
+  it("Mem Budget (#26): matches the bar on Hasso's numbers and tones on available", () => {
+    const hasso = (availableMB: number) =>
+      makeCard({
+        gpu: { ...gpu(), vramTotalMB: 124560, gpuAllocMB: 101581, unifiedMemory: true },
+        mem: { usedMB: 124560 - availableMB, totalMB: 124560, availableMB, percentage: 90, cachedMB: 11264 },
+        memory: memoryBudget({ totalMB: 124560, usedMB: 124560 - availableMB, freeMB: availableMB }),
+      });
+    const ok = render(<FleetCard {...hasso(12040)} />);
+    const okStat = ok.container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
+    expect(okStat.textContent).toBe("8.8 GiB above floor");
+    expect(ok.container.querySelector('[data-testid="memory-pool-floor-text"]')?.textContent).toBe(
+      "8.8 above the 3 GiB floor"
+    );
+    expect(okStat.className).toContain("text-success");
+    expect(okStat.getAttribute("title")).toBe("available 11.8 GiB · floor 3 GiB · total 121.6 GiB");
+
+    const low = render(<FleetCard {...hasso(6 * 1024)} />);
+    const lowStat = low.container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
+    expect(lowStat.textContent).toBe("3.0 GiB above floor");
+    expect(lowStat.className).toContain("text-warning");
+
+    const crit = render(<FleetCard {...hasso(2 * 1024)} />);
+    const critStat = crit.container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
+    expect(critStat.textContent).toBe("0.0 GiB above floor"); // clamped, not negative
+    expect(critStat.className).toContain("text-danger");
+  });
+
+  it("Mem Budget (#26): falls back to the budget's freeMB when there is no pool", () => {
+    const { container } = render(
+      <FleetCard {...makeCard({ mem: null, memory: memoryBudget({ freeMB: 32000, totalMB: 128000 }) })} />
+    );
+    const stat = container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
+    expect(stat.textContent).toBe("28.3 GiB above floor"); // 32000 − 3072 MB
+    expect(stat.className).toContain("text-success");
+    expect(stat.getAttribute("title")).toBe("available 31.3 GiB · floor 3 GiB · total 125.0 GiB");
   });
 
   it("renders waiting placeholder for an online node with no metrics", () => {
