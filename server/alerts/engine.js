@@ -38,8 +38,10 @@ function view(alert, status = alert.state, endsAt = null) {
 }
 
 export class AlertEngine {
-  constructor({ now = () => Date.now(), getConfig, notifier, persistState = () => {}, log = console } = {}) {
+  constructor({ now = () => Date.now(), getConfig, notifier, persistState = () => {}, log = console, onTransition = null } = {}) {
     this._now = now;
+    /** Told about every alert that starts firing or resolves (activity feed, #32). */
+    this._onTransition = typeof onTransition === "function" ? onTransition : null;
     this._config = typeof getConfig === "function" ? getConfig : () => ({});
     this._notifier = notifier;
     this._persist = persistState;
@@ -180,6 +182,14 @@ export class AlertEngine {
 
     const reminders = this._dueReminders(config, at, newlyFiring);
     for (const alert of newlyFiring) alert.lastNotifiedAt = at;
+
+    if (this._onTransition && (newlyFiring.length > 0 || resolved.length > 0)) {
+      try {
+        this._onTransition({ firing: newlyFiring.map((a) => view(a, "firing")), resolved });
+      } catch {
+        // the feed is best effort
+      }
+    }
 
     const channels = Array.isArray(config.channels) ? config.channels : [];
     if (newlyFiring.length > 0 || resolved.length > 0) {

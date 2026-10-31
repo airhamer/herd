@@ -223,3 +223,35 @@ test("names and summaries are capped", () => {
   assert.ok([...a.unitName].length <= 60);
   assert.ok([...a.summary].length <= 120);
 });
+
+describe("onTransition (activity feed, issue #32)", () => {
+  test("told once per alert that fires and once when it resolves; a throwing hook is ignored", () => {
+    const rules = Object.fromEntries(RULES.map((r) => [r.id, { enabled: false }]));
+    rules.offline = { enabled: true, forSec: 0 };
+    const seen = [];
+    const now = manualClock();
+    let explode = true;
+    const engine = new AlertEngine({
+      now,
+      log: silentLog,
+      getConfig: () => ({ repeatIntervalMin: 0, rules, channels: [] }),
+      notifier: { dispatch: async () => {} },
+      onTransition: ({ firing, resolved }) => {
+        seen.push({ firing: firing.map((a) => a.key), resolved: resolved.map((a) => a.key) });
+        if (explode) {
+          explode = false;
+          throw new Error("feed down");
+        }
+      },
+    });
+    engine.evaluate([offlineUnit()]);
+    engine.evaluate([offlineUnit()]);
+    assert.deepEqual(seen, [{ firing: ["spark-1:offline"], resolved: [] }]);
+    assert.equal(engine.active().length, 1, "a throwing hook does not undo the firing");
+    for (let i = 0; i < 40 && seen.length === 1; i++) {
+      now.tick(60_000);
+      engine.evaluate([makeUnit()]);
+    }
+    assert.deepEqual(seen[1], { firing: [], resolved: ["spark-1:offline"] });
+  });
+});

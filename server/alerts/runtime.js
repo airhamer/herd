@@ -2,6 +2,7 @@
 // the notifier, gated by Settings → alertsEnabled, plus the /api/alerts routes.
 // docs/specs/alerts.md §8. Clean-room implementation (LIC1).
 import { loadAlertChannelUrls, saveAlertChannelUrls } from "../secretsStore.js";
+import { activity } from "../events/activity.js";
 import { AlertEngine } from "./engine.js";
 import { Notifier } from "./notifier.js";
 import { OutboundPolicyError, POLICY_BLOCKED, resolveChannelTarget } from "./outbound.js";
@@ -143,6 +144,10 @@ export function createAlertsRuntime({
     notifier,
     getConfig: () => config,
     persistState: (state) => saveAlertsFile(filePath, config, state),
+    onTransition: ({ firing, resolved }) => {
+      for (const a of firing) report(activity.alertFired(a));
+      for (const a of resolved) report(activity.alertResolved(a));
+    },
   });
 
   let wasOn = false;

@@ -69,6 +69,8 @@ import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
 import { buildComponentAction, proxyComponentAction } from "./fleet/componentActions.js";
 import { loadComponentCatalog, joinComponentState } from "./fleet/componentCatalog.js";
 import { createWaveSequencer } from "./fleet/waveSequencer.js";
+import { activity, createActivityWatcher, withUnitNames } from "./events/activity.js";
+import { registerEventRoutes } from "./events/routes.js";
 
 dotenv.config();
 
@@ -352,22 +354,36 @@ const unitHistoryRuntime = createUnitHistoryRuntime({
 });
 unitHistoryRuntime.start();
 
-// ─── Event log (alert delivery records) ───────────────────
-// This fork has no Activity page yet; the log exists so every alert send,
-// delivered or failed, is recorded (upstream invariant) and browsable on disk.
+// ─── Event log (fleet activity, issue #32) ────────────────
+// Every alert send (delivered or failed), alert firing/resolving, unit and
+// service transition, power/update/component action and benchmark run lands
+// here. Served by GET /api/events, pushed live over the ws as
+// {type:"event"}, and shown in the Fleet tab's Recent activity card and on
+// the Activity page.
 const eventLog = new EventLog({
   file: process.env.EVENTS_JSON_PATH || path.join(ROOT, "config", "events.json"),
   max: 2000,
 });
 
+/** Display name for a fleet-wide unit id (Spark id or node agent id). */
+function unitNameFor(id) {
+  return registry.getSpark(id)?.name || getNode(id)?.name || null;
+}
+
+const recordNamed = withUnitNames((event) => eventLog.record(event), unitNameFor);
+
 /** Record an event; never throws (callers sit in poll loops and routes). */
 function recordEvent(event) {
   try {
-    return eventLog.record(event);
+    return recordNamed(event);
   } catch {
     return null;
   }
 }
+
+decodeBenchManager.setEventSink((job) => recordEvent(activity.bench("decode", job)));
+prefillBenchManager.setEventSink((job) => recordEvent(activity.bench("prefill", job)));
+showcaseManager.setEventSink((session) => recordEvent(activity.showcase(session)));
 
 // Alerts (docs/specs/alerts.md): Health findings + Overview strip exceptions,
 // pushed to the configured channels. Gated by settings.alertsEnabled — when it
@@ -669,6 +685,7 @@ app.post("/api/sparks", (req, res) => {
     const spark = registry.addSpark(req.body);
     fleetEnergyTracker.invalidateMembership(registry.sparkIds);
     startMonitor(spark);
+    recordEvent(activity.sparkAdded(spark));
     res.json({ success: true, spark: registry.toPublic(spark) });
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
@@ -732,6 +749,7 @@ app.delete("/api/sparks/:id", (req, res) => {
     fleetEnergyTracker.invalidateMembership(registry.sparkIds);
     stopMonitor(req.params.id);
     unitHistory.remove(req.params.id);
+    recordEvent(activity.sparkRemoved(removed));
     res.json({ success: true, removed });
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
@@ -776,6 +794,7 @@ app.post("/api/fleet/nodes", (req, res) => {
   try {
     const node = addNode(req.body || {});
     restartFleetConnection();
+    recordEvent(activity.nodeAdded(node));
     res.json({ success: true, node });
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
@@ -838,6 +857,7 @@ app.delete("/api/fleet/nodes/:id", (req, res) => {
     const removed = removeNode(req.params.id);
     if (!removed) return res.status(404).json({ error: "Node not found" });
     restartFleetConnection();
+    recordEvent(activity.nodeRemoved(typeof removed === "object" ? removed : { id: req.params.id }));
     res.json({ success: true, removed });
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
@@ -853,6 +873,11 @@ app.delete("/api/fleet/nodes/:id", (req, res) => {
 app.post("/api/fleet/nodes/:id/actions", async (req, res) => {
   const rec = listNodes().find((n) => n.id === req.params.id);
   if (!rec) return res.status(404).json({ error: "Node not found" });
+  const actionInfo = {
+    action: String(req.body?.type ?? req.body?.action ?? "action"),
+    service: req.body?.service ?? req.body?.serviceName ?? req.body?.name ?? null,
+  };
+  const noteAction = (ok, error) => recordEvent(activity.serviceAction(rec, { ...actionInfo, ok, error }));
   const endpoint = (rec.endpoint || `${rec.lanIp}:${rec.agentPort}`).replace(/\/+$/, "");
   try {
     const upstream = await fetch(`http://${endpoint}/actions`, {
@@ -868,18 +893,22 @@ app.post("/api/fleet/nodes/:id/actions", async (req, res) => {
     });
     const body = await upstream.json().catch(() => null);
     if (upstream.status === 405) {
+      noteAction(false, "agent has no /actions endpoint");
       return res.status(501).json({
         error:
           "The node agent on this node is a telemetry-only build (no /actions endpoint yet). Service start/stop is available once the agent actions build is deployed.",
       });
     }
     if (!upstream.ok) {
+      noteAction(false, body?.error || `agent responded ${upstream.status}`);
       return res.status(502).json({
         error: body?.error || `Node agent responded ${upstream.status}`,
       });
     }
+    noteAction(true);
     res.json(body ?? { ok: true });
   } catch (err) {
+    noteAction(false, `agent unreachable: ${err.message}`);
     res.status(502).json({ error: `Node agent unreachable: ${err.message}` });
   }
 });
@@ -903,6 +932,15 @@ app.post("/api/fleet/nodes/:id/component-actions", async (req, res) => {
   });
   if (!built.ok) return res.status(built.status).json({ error: built.error });
   const { status, body } = await proxyComponentAction(rec, built.request);
+  recordEvent(
+    activity.componentAction(rec, {
+      type: built.request.type,
+      componentId: built.request.componentId,
+      dryRun: built.request.dryRun,
+      ok: status === 200,
+      error: body?.error,
+    }),
+  );
   res.status(status).json(body);
 });
 
@@ -1006,6 +1044,7 @@ app.post("/api/fleet/nodes/:id/updates/now", async (req, res) => {
   const rec = updatesNodeOr404(req, res);
   if (!rec) return;
   const result = await proxyUpdatesAction(rec, { type: "dgx-update-now" });
+  recordEvent(activity.updateStarted(rec, { ok: result.status === 200, error: result.body?.error }));
   if (result.status === 200) {
     const plan = updatePlanStore.read();
     if (plan && plan.startedAt == null) {
@@ -1034,6 +1073,7 @@ app.post("/api/fleet/nodes/:id/updates/schedule", async (req, res) => {
     cron,
     mirrorCron,
   });
+  if (result.status === 200) recordEvent(activity.updateScheduled(rec, { kind, at, cron }));
   res.status(result.status).json(result.body);
 });
 
@@ -1045,6 +1085,7 @@ app.delete("/api/fleet/nodes/:id/updates/schedule/:sid", async (req, res) => {
     type: "cancel-schedule",
     scheduleId: req.params.sid,
   });
+  if (result.status === 200) recordEvent(activity.updateScheduled(rec, null));
   res.status(result.status).json(result.body);
 });
 
@@ -2136,6 +2177,8 @@ app.post("/api/sparks/shutdown-all", async (_req, res) => {
       // Local dashboard host: acknowledge before power-off kills this process.
       if (spark.isLocal) {
         results.push({ id: spark.id, ok: true, message: "Shutdown initiated" });
+        recordEvent(activity.powerShutdown(spark));
+        eventLog.flush();
         setImmediate(() => {
           void initiateSparkShutdown(spark).catch((err) => {
             console.error(`[shutdown-all] local ${spark.id}:`, err.message);
@@ -2145,8 +2188,10 @@ app.post("/api/sparks/shutdown-all", async (_req, res) => {
       }
       await initiateSparkShutdown(spark);
       results.push({ id: spark.id, ok: true });
+      recordEvent(activity.powerShutdown(spark));
     } catch (err) {
       results.push({ id: spark.id, ok: false, error: err.message || String(err) });
+      recordEvent(activity.powerShutdown(spark, { ok: false, error: err.message || String(err) }));
     }
   }
   res.json({ success: true, results });
@@ -2168,8 +2213,10 @@ app.post("/api/sparks/wake-all", async (_req, res) => {
       const broadcast = broadcastForLanIp(spark.lanIp);
       const sent = await sendWol(cleanMac, broadcast);
       results.push({ id: spark.id, ok: true, mac: sent.mac, broadcast: sent.broadcast });
+      recordEvent(activity.powerWake(spark));
     } catch (err) {
       results.push({ id: spark.id, ok: false, error: err.message || String(err) });
+      recordEvent(activity.powerWake(spark, { ok: false, error: err.message || String(err) }));
     }
   }
   res.json({ success: true, results });
@@ -2183,6 +2230,8 @@ app.post("/api/sparks/:id/shutdown", async (req, res) => {
     // Local: send JSON first, then power off — otherwise the process dies mid-response
     // and the UI shows "Failed to fetch".
     if (spark.isLocal) {
+      recordEvent(activity.powerShutdown(spark));
+      eventLog.flush();
       res.json({ success: true, message: "Shutdown initiated" });
       setImmediate(() => {
         void initiateSparkShutdown(spark).catch((err) => {
@@ -2194,9 +2243,11 @@ app.post("/api/sparks/:id/shutdown", async (req, res) => {
 
     try {
       const message = await initiateSparkShutdown(spark);
+      recordEvent(activity.powerShutdown(spark));
       res.json({ success: true, message, output: message });
     } catch (err) {
       const msg = err.message || String(err);
+      recordEvent(activity.powerShutdown(spark, { ok: false, error: msg }));
       res.status(shutdownErrorStatus(msg)).json({
         error: shutdownErrorStatus(msg) === 503 ? `Spark unreachable: ${msg}` : msg,
       });
@@ -2228,6 +2279,7 @@ app.post("/api/sparks/:id/wake", async (req, res) => {
     const broadcast = broadcastForLanIp(spark.lanIp);
     try {
       const sent = await sendWol(cleanMac, broadcast);
+      recordEvent(activity.powerWake(spark));
       res.json({
         success: true,
         message: `Magic packet sent to ${sent.mac} via ${sent.broadcast}`,
@@ -2235,11 +2287,50 @@ app.post("/api/sparks/:id/wake", async (req, res) => {
         broadcast: sent.broadcast,
       });
     } catch (err) {
+      recordEvent(activity.powerWake(spark, { ok: false, error: err.message || String(err) }));
       res.status(500).json({ error: `WoL send failed: ${err.message || String(err)}` });
     }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// ─── Activity (issue #32) ─────────────────────────────────
+registerEventRoutes(app, { eventLog });
+
+/**
+ * Per-node state the activity watcher diffs: online, enrollment, containers
+ * and services, keyed on the registry id. Lighter than buildFleetSnapshot()
+ * (no topology, request or memory aggregation).
+ */
+function fleetNodeStates() {
+  return listNodes().map((rec) => {
+    const snap =
+      fleetConnection.getSnapshot(rec.id) ??
+      sshFleet.getSnapshot(rec.id) ??
+      macosSshFleet.getSnapshot(rec.id) ??
+      windowsFleet.getSnapshot(rec.id) ??
+      null;
+    return {
+      nodeId: rec.id,
+      nodeName: snap?.nodeName || rec.name,
+      online:
+        fleetConnection.isOnline(rec.id) ||
+        sshFleet.isOnline(rec.id) ||
+        macosSshFleet.isOnline(rec.id) ||
+        windowsFleet.isOnline(rec.id),
+      enrollment: rec.status === "pending" ? "pending" : "claimed",
+      containers: Array.isArray(snap?.containers) ? snap.containers : [],
+      services: Array.isArray(snap?.services) ? snap.services : [],
+    };
+  });
+}
+
+const activityWatcher = createActivityWatcher({
+  getSparks: orderedSnapshots,
+  getNodes: fleetNodeStates,
+  record: recordEvent,
+  warmupMs: 30_000,
 });
 
 // ─── Static files (built frontend) ───────────────────────
@@ -2266,6 +2357,12 @@ const wss = new WebSocketServer({
   path: "/ws",
   verifyClient: ({ req }, done) => done(authorizeUpgrade(req)),
 });
+// Live activity push: every recorded event goes to open clients as
+// {type:"event", event}; the browser merges it into the feed.
+eventLog.subscribe((event) => {
+  broadcastPayload(JSON.stringify({ type: "event", event }));
+});
+
 wss.on("connection", (ws) => {
   console.log("[ws] client connected");
   // This snapshot belongs only to the new client. Broadcasting it would add a
@@ -2379,6 +2476,7 @@ if (!startupPreflight.fatal) {
     startAllMonitors();
     alertsRuntime.start();
     fleetEnergyRuntime.start();
+    activityWatcher.start();
     void fleetConnection
       .start()
       .catch((err) => console.error("[fleet] initial poll failed:", err.message));
@@ -2414,6 +2512,8 @@ async function shutdown(signal) {
     console.error("[sparkDash] failed to flush LLM daily history:", err.message);
   }
   const energyPersistenceSucceeded = fleetEnergyRuntime.stop();
+  activityWatcher.stop();
+  eventLog.flush();
   try {
     unitHistoryRuntime.stop();
   } catch (err) {
