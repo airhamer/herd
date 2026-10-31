@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { compareBenchResults, getBenchResult, listBenchResults } from "./client";
+import { compareBenchResults, getBenchResult, listBenchReferences, listBenchResults, nearestBenchReferences } from "./client";
 
 function stubFetch(payload: unknown = {}) {
   const fn = vi.fn(async (_input: string, _init?: RequestInit) => ({ ok: true, status: 200, json: async () => payload }));
@@ -37,5 +37,15 @@ describe("bench results client", () => {
     expect(fn.mock.calls[0][0]).toBe("/api/bench-results/compare?baseline=a%3A1&candidate=b%3A2");
     expect(out.comparable).toBe(false);
     expect(out.reasons).toEqual(["hw_bucket differs"]);
+  });
+
+  it("reads the reference registry and a result's nearest references", async () => {
+    const fn = stubFetch({ loaded: true, total: 0, results: [], entries: [], not_seeded: [] });
+    await listBenchReferences();
+    expect(fn.mock.calls[0][0]).toBe("/api/bench-results/references");
+    await nearestBenchReferences("decode:abc:c8", 2);
+    expect(fn.mock.calls[1][0]).toBe("/api/bench-results/decode%3Aabc%3Ac8/references?limit=2");
+    await nearestBenchReferences("decode:abc:c8");
+    expect(fn.mock.calls[2][0]).toBe("/api/bench-results/decode%3Aabc%3Ac8/references");
   });
 });

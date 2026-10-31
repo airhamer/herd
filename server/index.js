@@ -40,6 +40,7 @@ import { BenchResultsStore } from "./bench/results/store.js";
 import { createResultsRecorder } from "./bench/results/recorder.js";
 import { describeProvenance } from "./bench/results/provenance.js";
 import { registerBenchResultsRoutes } from "./bench/results/routes.js";
+import { readRegistry, registryRecords, syncRegistryIntoStore } from "./bench/references/loader.js";
 import { llmProbeHost } from "./collectors/llmHost.js";
 import { onceClose, resolveLlmHttpTarget } from "./collectors/llmTunnel.js";
 import { formatLlmBaseUrl, parseLlmTargetInput } from "../src/shared/llmTarget.js";
@@ -586,7 +587,22 @@ try {
 } catch (err) {
   console.warn(`[bench-results] legacy history import failed: ${err.message}`);
 }
-registerBenchResultsRoutes(app, { store: benchResultsStore });
+// Published reference figures (BENCH5): stored as origin "reference", never as Herd results.
+let referenceRegistry = null;
+try {
+  const doc = readRegistry();
+  const records = registryRecords(doc);
+  referenceRegistry = doc;
+  const seeded = syncRegistryIntoStore(benchResultsStore, records);
+  if (seeded.added || seeded.updated || seeded.removed) {
+    console.log(
+      `[bench-results] reference registry: ${seeded.added} added, ${seeded.updated} updated, ${seeded.removed} removed`
+    );
+  }
+} catch (err) {
+  console.warn(`[bench-results] reference registry: ${err.message}`);
+}
+registerBenchResultsRoutes(app, { store: benchResultsStore, registry: referenceRegistry });
 
 /** Host + lane provenance for a bench run starting now (null on failure). */
 function benchProvenance(spark, monitor, port, ports, customHost = false) {

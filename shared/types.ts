@@ -1327,6 +1327,52 @@ export interface BenchCompareResponse {
   quality: BenchMcNemar | null;
 }
 
+/** GET /api/bench-results/references: the published reference registry (BENCH5, #45). */
+export interface BenchReferencesResponse {
+  loaded: boolean;
+  registry_version: number | null;
+  retrieved_at: string | null;
+  /** Sources deliberately not seeded yet, with why. */
+  not_seeded: Array<{ source: string; reason: string }>;
+  entries: Array<{
+    id: string;
+    source: string;
+    title: string;
+    url: string;
+    measured_on: string | null;
+    figures: number;
+  }>;
+  total: number;
+  /** Stored records, all `run.origin: "reference"`; never Herd results. */
+  results: BenchResult[];
+}
+
+/** GET /api/bench-results/:id/references: nearest published figures, same definition group only. */
+export interface BenchNearestReferencesResponse {
+  id: string;
+  origin: BenchOrigin;
+  metrics: Array<{
+    metric: BenchMetric;
+    definition: string;
+    value: number | null;
+    unit: string;
+    references: Array<{
+      id: string;
+      origin: "reference";
+      url: string;
+      title: string | null;
+      source: string | null;
+      value: number;
+      unit: string;
+      n: number | null;
+      definition: string;
+      score: number;
+      /** What still differs (hardware, suite, conditions, lane): shown beside, never diffed. */
+      differences: string[];
+    }>;
+  }>;
+}
+
 /** Exact McNemar between two per-item pass/fail vectors (Quality bench, #42). */
 export interface BenchMcNemar {
   /** Items scored in both runs. */
