@@ -2,6 +2,8 @@ import type { NodeAgentSnapshot, TopologyInfo } from "../../../shared/types";
 import { FleetCard } from "./FleetCard";
 import { GroupCard } from "./GroupCard";
 import { collectGroups, groupHolder } from "./FleetPage";
+import { GroupSinglesPanel } from "./GroupSinglesPanel";
+import type { CatalogComponent } from "../../api/client";
 
 export interface GroupDetailPageProps {
   groupId: string;
@@ -9,13 +11,15 @@ export interface GroupDetailPageProps {
   topologyNodes: TopologyInfo[];
   onSelectNode?: (nodeId: string) => void;
   onBack?: () => void;
+  /** SC5e: component catalog loader (tests inject one; default GET /api/components). */
+  loadComponents?: () => Promise<{ components: CatalogComponent[] }>;
 }
 
 /**
  * Group drill-down (SC5d, #75): the group's aggregated card on top, then
  * each member's own Fleet card with its own bars.
  */
-export function GroupDetailPage({ groupId, nodes, topologyNodes, onSelectNode, onBack }: GroupDetailPageProps) {
+export function GroupDetailPage({ groupId, nodes, topologyNodes, onSelectNode, onBack, loadComponents }: GroupDetailPageProps) {
   const group = collectGroups(nodes, topologyNodes).find((g) => g.groupId === groupId) ?? null;
   if (!group) {
     return (
@@ -88,6 +92,10 @@ export function GroupDetailPage({ groupId, nodes, topologyNodes, onSelectNode, o
           );
         })}
       </div>
+      <GroupSinglesPanel
+        members={group.members.map(({ snapshot: m }) => ({ nodeId: m.nodeId, nodeName: m.nodeName, mem: m.mem, gpu: m.gpu }))}
+        {...(loadComponents ? { loadComponents } : {})}
+      />
     </div>
   );
 }
