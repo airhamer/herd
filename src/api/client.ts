@@ -762,6 +762,20 @@ export function saveStack(body: { id?: string; name: string; componentNames: str
   });
 }
 
+/** SC5b: read-only downtime preview for switching a node's target to a stack. */
+export function previewStack(
+  stackId: string,
+  nodeId: string | null
+): Promise<{ preview: import("../../shared/types").StackPreview; live: import("../../shared/types").LiveComponentAction[] }> {
+  const q = nodeId ? `?node=${encodeURIComponent(nodeId)}` : "";
+  return apiFetch(`/api/stacks/${encodeURIComponent(stackId)}/preview${q}`, { method: "POST" });
+}
+
+/** SC5b: component actions running right now (elapsed vs ETA). */
+export function fetchLiveActions(): Promise<{ running: import("../../shared/types").LiveComponentAction[] }> {
+  return apiFetch("/api/component-actions/live");
+}
+
 /** Download URL of the stacks file export (GET /api/stacks/export). */
 export const STACKS_EXPORT_URL = "/api/stacks/export";
 

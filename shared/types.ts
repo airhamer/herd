@@ -659,6 +659,8 @@ export interface Stack {
   lastCalculatedAt?: number;
   /** Optional free-form notes. */
   notes?: string;
+  /** SC5b: the stack's steps may run in parallel. When absent, the downtime preview runs them one after another. */
+  parallel?: boolean;
   /** For 'proven': history of successful joint runs (no OOM, completed successfully). */
   provenRuns?: Array<{
     timestamp: number;
@@ -716,6 +718,59 @@ export interface StacksView {
   facets: { tp: number[]; sources: string[]; engines: string[]; purposes: string[] };
   /** Load problems of config/stacks.json (fail-soft). */
   errors: string[];
+}
+
+/** SC5b (#73): where an ETA came from. */
+export interface StepEta {
+  ms: number;
+  /** "history" = median of the last 5 successful runs (once there are 5 or more); "estimate" = flat bootstrap. */
+  source: 'history' | 'estimate';
+  /** Successful runs on record for this component and verb. */
+  runs: number;
+}
+
+/** SC5b: one step of a stack downtime preview (an SC8 step plus its ETA). */
+export interface StackPreviewStep {
+  stackId: string;
+  nodeId: string;
+  componentId: string;
+  type: 'start' | 'stop' | 'restart';
+  /** Bytes a stop frees (null for starts or when unknown). */
+  freesBytes: number | null;
+  eta: StepEta;
+}
+
+/** SC5b: POST /api/stacks/:id/preview result. Read-only; nothing is dispatched. */
+export interface StackPreview {
+  stackId: string;
+  name: string;
+  tp: number;
+  target: { groupId: string | null; nodeIds: string[] };
+  category: StackCategory;
+  categoryReason: string;
+  /** true when the stack declares parallel steps; otherwise one step per wave. */
+  parallel: boolean;
+  alreadyRunning: Array<{ componentId: string; nodeId: string }>;
+  /** Waves run in order; steps inside one wave run in parallel. */
+  shutdownSequence: StackPreviewStep[][];
+  startupSequence: StackPreviewStep[][];
+  feasible: boolean;
+  freeBytesProjected: number;
+  targetFreeBytes: number;
+  /** Sum over waves of each wave's slowest step. */
+  totalEtaMs: number;
+  totalSource: 'history' | 'estimate' | 'mixed' | 'none';
+  notes: string[];
+}
+
+/** SC5b: a component action in flight (the live timer). */
+export interface LiveComponentAction {
+  componentId: string;
+  nodeId: string;
+  type: 'start' | 'stop' | 'restart';
+  startedAt: number;
+  elapsedMs: number;
+  etaMs: number;
 }
 
 /** Lightweight definition used when the UI is building a stack (before save). */
