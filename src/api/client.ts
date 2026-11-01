@@ -720,6 +720,8 @@ export interface CatalogComponent {
   servedModelName: string | null;
   memoryPerSparkMB: number | null;
   description: string;
+  /** SC5a recipe source facet: hasso / mia-ai-lab / aeon / custom / unknown. Optional for older servers. */
+  recipeSource?: string;
   /** Nodes where the component is currently observed (empty = not running anywhere). */
   nodes: { nodeId: string; nodeName: string; state: string }[];
 }
@@ -735,23 +737,33 @@ export function fetchComponents(): Promise<{ components: CatalogComponent[]; war
 // (tp=1 single machine, tp=x for an x-machine group). Read-only listing —
 // actions still ride the per-node component-actions seam above.
 
-/** One bootstrap stack landing scope (Stack + server/fleet/stacksBootstrap.js extras). */
-export interface FleetStack {
-  id: string;
-  name: string;
-  componentNames: string[];
-  category: string;
-  notes?: string;
-  /** Defaulted tensor-parallel size: 1 single machine, x = group size. */
-  tp: number;
-  /** Machines the stack lands on for this tp default. */
-  target: { groupId: string | null; nodeIds: string[] };
+/** One stack on one landing target, with its live SC5a category. */
+export type FleetStack = import("../../shared/types").CategorizedStack;
+export type StacksView = import("../../shared/types").StacksView;
+
+/** Stacks available to the stacks UI: tp defaulted per fleet scope, category per target. */
+export async function fetchStacks(): Promise<StacksView> {
+  const v = await apiFetch<Partial<StacksView>>("/api/stacks");
+  // An older server sends only { stacks } without categories or facets.
+  return {
+    stacks: v.stacks ?? [],
+    facets: v.facets ?? { tp: [], sources: [], engines: [], purposes: [] },
+    errors: v.errors ?? [],
+  };
 }
 
-/** Stacks available to the stacks UI, tp defaulted per fleet scope. */
-export function fetchStacks(): Promise<{ stacks: FleetStack[] }> {
-  return apiFetch("/api/stacks");
+/** SC5a: save a user-defined stack in the dashboard's config/stacks.json. */
+export function saveStack(body: { id?: string; name: string; componentNames: string[]; notes?: string }): Promise<{
+  stack: import("../../shared/types").Stack;
+}> {
+  return apiFetch("/api/stacks", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
 }
+
+/** Download URL of the stacks file export (GET /api/stacks/export). */
+export const STACKS_EXPORT_URL = "/api/stacks/export";
 
 /** Fields the browser owns on a v2 ComponentActionRequest; the server mints
  *  actionId, pins nodeId from the route and stamps actor (server/fleet/

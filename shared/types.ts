@@ -668,6 +668,56 @@ export interface Stack {
   }>;
 }
 
+/**
+ * SC5a (#72): one landing node's verdict inside a CategorizedStack
+ * (server/fleet/stackCategories.js).
+ */
+export interface StackNodeVerdict {
+  nodeId: string;
+  /** Never 'proven': proven is a stack-level verdict from history. */
+  category: Exclude<StackCategory, 'proven'>;
+  /** true for a hard block (wrong machine class), not a memory verdict. */
+  hard: boolean;
+  /** Human reason, e.g. "fits: needs 40.0 GiB per spark, 100.2 GiB usable on 1c2c". */
+  reason: string;
+  /** Sum of member memory_estimate_mb.perSpark (unknown estimates count as 0). */
+  footprintMB: number;
+  totalMB: number | null;
+  /** Used memory with this stack's own running members credited back. */
+  usedMB: number | null;
+}
+
+/** SC5a filter facets of one stack. A missing value reads "unknown". */
+export interface StackFacets {
+  tp: number;
+  sources: string[];
+  engines: string[];
+  purposes: string[];
+}
+
+/**
+ * SC5a (#72): GET /api/stacks entry. A Stack scoped to one landing target
+ * (SC10) with its category recomputed live for that target.
+ */
+export interface CategorizedStack extends Stack {
+  /** Defaulted tensor-parallel size: 1 single machine, x = group size. */
+  tp: number;
+  target: { groupId: string | null; nodeIds: string[] };
+  /** Why the category is what it is (the blocking reason for 'blocked'). */
+  categoryReason: string;
+  perNode: StackNodeVerdict[];
+  facets: StackFacets;
+}
+
+/** SC5a: GET /api/stacks response. */
+export interface StacksView {
+  stacks: CategorizedStack[];
+  /** Filter-bar options: the full vocabulary plus every value seen. */
+  facets: { tp: number[]; sources: string[]; engines: string[]; purposes: string[] };
+  /** Load problems of config/stacks.json (fail-soft). */
+  errors: string[];
+}
+
 /** Lightweight definition used when the UI is building a stack (before save). */
 export interface StackDraft {
   name: string;

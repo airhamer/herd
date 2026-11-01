@@ -74,7 +74,7 @@ import { testSparkConnectivity } from "./connectivity.js";
 import { inspectStartupPreflight, logStartupPreflight } from "./startupPreflight.js";
 import { randomUUID } from "node:crypto";
 import { loadNodes, listNodes, getNode, addNode, updateNode, removeNode, claimNode } from "./fleet/registry.js";
-import { bootstrapStacksForFleet } from "./fleet/stacksBootstrap.js";
+import { createDashboardStackStore, registerStackRoutes } from "./fleet/stacksRoutes.js";
 import { hasNodeSshPassword, setNodeSshPassword, deleteNodeSshPassword } from "./fleet/nodeCredentials.js";
 import { createFleetConnection } from "./fleet/connection.js";
 import { createLinuxSshFleet } from "./fleet/linuxSshCollector.js";
@@ -1217,15 +1217,37 @@ app.get("/api/components", (_req, res) => {
 });
 
 /**
- * SC10 stacks (issue #19): the hardcoded pre-defined bootstrap stacks (POC
- * step 1, the Hasso recipes — agent/catalog/stacks-catalog.js) scoped over
- * the fleet/node registry, each entry defaulted tp=1 for a single machine /
- * tp=x for an x-machine group. Read-only projection; the stacks UI consumes
- * this to list available stacks. Server/fleet/stacksBootstrap.js.
+ * SC10 stacks (issue #19) + SC5a categories (issue #72): the pre-defined
+ * stacks (config/stacks.json, seeded with the bootstrap Hasso stacks) scoped
+ * over the fleet (tp=1 single machine / tp=x for an x-machine group), each
+ * with a live category per landing target (server/fleet/stackCategories.js).
+ * Routes live in server/fleet/stacksRoutes.js.
  */
-app.get("/api/stacks", (_req, res) => {
+function getAnySnapshot(id) {
+  return (
+    fleetConnection.getSnapshot(id) ??
+    sshFleet.getSnapshot(id) ??
+    macosSshFleet.getSnapshot(id) ??
+    windowsFleet.getSnapshot(id) ??
+    null
+  );
+}
+const stackStore = createDashboardStackStore();
+registerStackRoutes(app, {
+  store: stackStore,
   // SC5d: group scopes come from the persisted spark groups (group-first).
-  res.json({ stacks: bootstrapStacksForFleet(groupedNodes(listNodes())) });
+  listNodes: () => groupedNodes(listNodes()),
+  getSnapshot: getAnySnapshot,
+  loadComponents: () => {
+    const { components } = loadComponentCatalog();
+    const nodeSnaps = Object.values({
+      ...fleetConnection.getAllSnapshots(),
+      ...sshFleet.getAllSnapshots(),
+      ...macosSshFleet.getAllSnapshots(),
+      ...windowsFleet.getAllSnapshots(),
+    }).filter((s) => s && s.nodeId);
+    return joinComponentState(components, nodeSnaps);
+  },
 });
 
 // SC5d (#75): spark groups edited on the Topology tab + the computed RoCE
