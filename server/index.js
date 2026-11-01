@@ -91,6 +91,7 @@ import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
 import { buildComponentAction, proxyComponentAction } from "./fleet/componentActions.js";
 import { loadComponentCatalog, joinComponentState } from "./fleet/componentCatalog.js";
 import { createWaveSequencer } from "./fleet/waveSequencer.js";
+import { createTrafficLog, registerTrafficRoutes } from "./fleet/traffic.js";
 import { activity, createActivityWatcher, withUnitNames } from "./events/activity.js";
 import { registerEventRoutes } from "./events/routes.js";
 
@@ -461,6 +462,8 @@ const alertsRuntime = createAlertsRuntime({
 // sparkdash-node-agent (default :30091) and the dashboard polls its
 // /telemetry endpoint over plain HTTP. Registry: config/nodes.json
 // (missing file → empty fleet, not an error — mirrors SparkRegistry).
+// SC5c (#74): recent relay requests per node (in memory, last 200).
+const trafficLog = createTrafficLog();
 let fleetConnection = attachFleetEnrollment(createFleetConnection(loadNodes()));
 // S1.4: the agentless-Linux SSH lane — same 7-method surface, scoped to
 // protocol:"ssh" records (the HTTP poller above skips exactly those). Built
@@ -623,6 +626,8 @@ function buildFleetSnapshot() {
  * Attached at every connection construction (boot + registry mutations).
  */
 function attachFleetEnrollment(conn) {
+  // SC5c (#74): keep the last 200 relay requests per node across polls.
+  conn.onSnapshot((nodeId, snap) => trafficLog.ingest(nodeId, snap));
   conn.onSnapshot((nodeId) => {
     const rec = getNode(nodeId);
     if (rec && rec.status === "pending") {
@@ -1048,6 +1053,13 @@ app.get("/metrics", (_req, res) => {
 
 // GRP1 (#82): records carry the resolved group (config/groups.json), not the raw registry seed.
 registerNodeListRoute(app, { listNodes, groupStore });
+
+// SC5c (#74): per-lane traffic + recent relay requests for the Traffic sub-tab.
+registerTrafficRoutes(app, {
+  getNode,
+  getSnapshot: (id) => fleetConnection.getSnapshot(id) ?? null,
+  log: trafficLog,
+});
 
 app.post("/api/fleet/nodes", (req, res) => {
   try {

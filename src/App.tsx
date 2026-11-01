@@ -27,6 +27,7 @@ import { groupsApi } from "./api/client";
 import { UpdatesPage } from "./components/Updates/UpdatesPage";
 import { FleetUpdatesProvider } from "./components/Updates/FleetUpdatesContext";
 import { ServiceManagerPage } from "./components/ServiceManager/ServiceManagerPage";
+import { TrafficPage } from "./components/ServiceManager/TrafficPage";
 import { RequestsPage } from "./components/Requests/RequestsPage";
 import { ManageNodesDialog } from "./components/Nodes/ManageNodesDialog";
 import { ThemeSwitch } from "./components/ThemeSwitch";
@@ -717,8 +718,22 @@ function FleetViewPane({
         active={view.page === "node-requests"}
         onClick={() => onNavigate({ page: "node-requests", nodeId: node.nodeId })}
       />
+      <NodeSubTab
+        label="Traffic"
+        active={view.page === "node-traffic"}
+        onClick={() => onNavigate({ page: "node-traffic", nodeId: node.nodeId })}
+      />
     </div>
   );
+
+  if (view.page === "node-traffic") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-page-gap)" }}>
+        {subNav}
+        <TrafficPage nodeId={node.nodeId} nodeName={node.nodeName} />
+      </div>
+    );
+  }
 
   if (view.page === "node") {
     return (

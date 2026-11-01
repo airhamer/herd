@@ -107,6 +107,7 @@ export function useRoute(
 //   /node/:id             → node detail
 //   /node/:id/services    → service manager (start/stop/switch)
 //   /node/:id/requests    → requests visualization
+//   /node/:id/traffic     → SC5c traffic (per-lane stats + recent relay requests)
 
 export type FleetView =
   | { page: "fleet" }
@@ -117,7 +118,8 @@ export type FleetView =
   | { page: "group"; groupId: string }
   | { page: "node"; nodeId: string }
   | { page: "node-services"; nodeId: string }
-  | { page: "node-requests"; nodeId: string };
+  | { page: "node-requests"; nodeId: string }
+  | { page: "node-traffic"; nodeId: string };
 
 export function fleetViewToPath(v: FleetView): string {
   switch (v.page) {
@@ -139,6 +141,8 @@ export function fleetViewToPath(v: FleetView): string {
       return `/node/${encodeURIComponent(v.nodeId)}/services`;
     case "node-requests":
       return `/node/${encodeURIComponent(v.nodeId)}/requests`;
+    case "node-traffic":
+      return `/node/${encodeURIComponent(v.nodeId)}/traffic`;
   }
 }
 
@@ -150,11 +154,12 @@ export function parseFleetPath(pathname: string): FleetView | null {
   if (pathname === "/activity") return { page: "activity" };
   const g = pathname.match(/^\/group\/([^/]+)$/);
   if (g) return { page: "group", groupId: decodeURIComponent(g[1]) };
-  const m = pathname.match(/^\/node\/([^/]+)(?:\/(services|requests))?$/);
+  const m = pathname.match(/^\/node\/([^/]+)(?:\/(services|requests|traffic))?$/);
   if (!m) return null;
   const nodeId = decodeURIComponent(m[1]);
   if (m[2] === "services") return { page: "node-services", nodeId };
   if (m[2] === "requests") return { page: "node-requests", nodeId };
+  if (m[2] === "traffic") return { page: "node-traffic", nodeId };
   return { page: "node", nodeId };
 }
 

@@ -1568,6 +1568,78 @@ export interface FleetUpdatePlan {
   waveStates: Array<"pending" | "running" | "rebooting" | "slow" | "healthy">;
 }
 
+// ─── Traffic sub-tab (SC5c, issue #74) ─────────────────────────
+// GET /api/fleet/nodes/:id/traffic (server/fleet/traffic.js).
+
+/** One windowed value with the tier it came from (null when unmeasured, never 0). */
+export interface TrafficValue {
+  value: number | null;
+  source: EngineSourceTier | null;
+}
+
+export interface TrafficWindow {
+  coveredS: number | null;
+  decodeTps: TrafficValue;
+  prefillTps: TrafficValue;
+  throughputTps: TrafficValue;
+  ttftS: TrafficValue;
+}
+
+/** Where a lane's token numbers came from: engine counters, the relay's usage, or the relay counting content events. */
+export type TrafficTokenSource = "engine" | "proxy" | "estimate";
+
+export interface TrafficLane {
+  port: number;
+  backend: string | null;
+  modelId: string | null;
+  /** An opt-in usage relay (LLM_PROXY) forwards to this port. */
+  proxied: boolean;
+  listenPort: number | null;
+  tokenSource: TrafficTokenSource | null;
+  /** Lifetime finished requests (engine counter, else relay count). */
+  requests: number | null;
+  requestsSource: "engine" | "proxy" | null;
+  /** Relay-seen errors; null without a relay (engines do not count them). */
+  errors: number | null;
+  inFlight: number | null;
+  promptTokens: number | null;
+  cachedTokens: number | null;
+  generatedTokens: number | null;
+  windows: Record<"60" | "300", TrafficWindow>;
+}
+
+/** One relay request: metadata only, with no prompt or response text. */
+export interface TrafficRequestRow {
+  wallMs: number;
+  listenPort: number | null;
+  upstreamPort: number | null;
+  client: string;
+  path: string | null;
+  model: string | null;
+  status: number;
+  aborted: boolean;
+  stream: boolean;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  cachedTokens: number | null;
+  completionEstimated: boolean;
+  ttftS: number | null;
+  decodeS: number | null;
+  e2eS: number | null;
+}
+
+export interface TrafficView {
+  nodeId: string | null;
+  polledAt: number | null;
+  /** false = no relay runs on the node (LLM_PROXY unset): engine stats only. */
+  proxyEnabled: boolean;
+  relays: Array<{ listenPort: number | null; upstreamPort: number | null; requests: number; errors: number; inFlight: number; clients: number }>;
+  lanes: TrafficLane[];
+  /** Newest first, at most recentMax (200), in memory on the dashboard server. */
+  recent: TrafficRequestRow[];
+  recentMax: number;
+}
+
 // ─── LLM token ledger (FLEET3, issue #38) ────────────────
 // GET /api/llm-token-totals?range=… and /history (server/llmtokens/*).
 
