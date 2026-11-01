@@ -88,3 +88,26 @@ describe("/api/stacks", () => {
     assert.equal(slugId("  Hello, World! "), "hello-world");
   });
 });
+
+describe("POST /api/stacks/:id/preview", () => {
+  test("returns a read-only preview for the node's target", async () => {
+    const before = fs.readFileSync(file, "utf8");
+    const r = await call("POST", "/api/stacks/hasso-flash-next/preview?node=n1");
+    assert.equal(r.status, 200);
+    assert.equal(r.body.preview.stackId, "hasso-flash-next");
+    assert.deepEqual(r.body.preview.startupSequence.flat().map((s) => s.componentId), ["qwen38-flash-next-sglang-tp1-gx10"]);
+    assert.equal(r.body.preview.startupSequence[0][0].eta.source, "estimate");
+    assert.deepEqual(r.body.live, []);
+    assert.equal(fs.readFileSync(file, "utf8"), before);
+  });
+
+  test("404 for an unknown stack or a node outside every target", async () => {
+    assert.equal((await call("POST", "/api/stacks/nope/preview")).status, 404);
+    assert.equal((await call("POST", "/api/stacks/hasso-flash-next/preview?node=zz")).status, 404);
+  });
+
+  test("GET /api/component-actions/live", async () => {
+    const r = await call("GET", "/api/component-actions/live");
+    assert.deepEqual(r.body, { running: [] });
+  });
+});

@@ -75,6 +75,7 @@ import { inspectStartupPreflight, logStartupPreflight } from "./startupPreflight
 import { randomUUID } from "node:crypto";
 import { loadNodes, listNodes, getNode, addNode, updateNode, removeNode, claimNode } from "./fleet/registry.js";
 import { createDashboardStackStore, registerStackRoutes } from "./fleet/stacksRoutes.js";
+import { createDurationStore } from "./fleet/actionDurations.js";
 import { hasNodeSshPassword, setNodeSshPassword, deleteNodeSshPassword } from "./fleet/nodeCredentials.js";
 import { createFleetConnection } from "./fleet/connection.js";
 import { createLinuxSshFleet } from "./fleet/linuxSshCollector.js";
@@ -1185,6 +1186,8 @@ app.post("/api/fleet/nodes/:id/actions", async (req, res) => {
  * non-ok/transport → 502. Boot-class timeouts (long sglang boots) live in
  * proxyComponentAction, not the 60 s updates window.
  */
+// SC5b (#73): component action durations (config/component-durations.json).
+const componentDurations = createDurationStore();
 app.post("/api/fleet/nodes/:id/component-actions", async (req, res) => {
   const rec = listNodes().find((n) => n.id === req.params.id);
   if (!rec) return res.status(404).json({ error: "Node not found" });
@@ -1193,7 +1196,21 @@ app.post("/api/fleet/nodes/:id/component-actions", async (req, res) => {
     actor: req.auth?.actor ?? req.headers["x-actor"] ?? null,
   });
   if (!built.ok) return res.status(built.status).json({ error: built.error });
-  const { status, body } = await proxyComponentAction(rec, built.request);
+  // SC5b: real (non-dry-run) actions are timed for the ETA history and
+  // listed as live while they run.
+  const timing = built.request.dryRun
+    ? null
+    : componentDurations.begin({ componentId: built.request.componentId, nodeId: rec.id, type: built.request.type });
+  let proxied;
+  try {
+    proxied = await proxyComponentAction(rec, built.request);
+  } catch (err) {
+    if (timing) componentDurations.end(timing, false);
+    throw err;
+  }
+  const { status, body } = proxied;
+  // Only a clean, finished success feeds the ETA; anything else is logged as failed.
+  if (timing) componentDurations.end(timing, status === 200 && body?.ok === true);
   recordEvent(
     activity.componentAction(rec, {
       type: built.request.type,
@@ -1244,6 +1261,7 @@ function getAnySnapshot(id) {
 const stackStore = createDashboardStackStore();
 registerStackRoutes(app, {
   store: stackStore,
+  durations: componentDurations,
   // SC5d: group scopes come from the persisted spark groups (group-first).
   listNodes: () => groupedNodes(listNodes()),
   getSnapshot: getAnySnapshot,

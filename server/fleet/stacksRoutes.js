@@ -3,10 +3,16 @@
 //
 //   GET  /api/stacks         → { stacks: CategorizedStack[], facets, errors }
 //   POST /api/stacks         → save a user-defined stack in config/stacks.json
-//        body { id?, name, componentNames: string[], notes? } → 201 { stack }
+//        body { id?, name, componentNames: string[], notes?, parallel? } → 201 { stack }
 //   GET  /api/stacks/export  → the stacks file { version: 1, stacks }
 //   POST /api/stacks/import  → merge an external stacks file (incoming wins)
 //        body { version, stacks } or Stack[] → merge report
+//   POST /api/stacks/:id/preview?node=  → SC5b read-only downtime preview for
+//        switching that node's target (its group, or the node itself) to
+//        the stack → { preview, live }. With no node, the first target
+//        that is not blocked is used.
+//   GET  /api/component-actions/live    → { running } component actions in
+//        flight, with elapsed time and ETA (the SC5b live timer)
 //
 // Storage (decision #5 on #72): the dashboard server's config/stacks.json is
 // a StackStore (agent/catalog/stacks-catalog.js). On first run it is seeded
@@ -18,6 +24,8 @@ import { StackStore, validateStack } from "../../agent/catalog/stacks-catalog.js
 import { RECIPE_SOURCES } from "./componentCatalog.js";
 import { bootstrapStacksForFleet } from "./stacksBootstrap.js";
 import { LLM_PURPOSES, categorizeStacks } from "./stackCategories.js";
+import { buildStackPreview } from "./stackPreview.js";
+import { BOOTSTRAP_ETA_MS } from "./actionDurations.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const DEFAULT_DASHBOARD_STACKS_PATH =
@@ -53,14 +61,17 @@ const union = (a, b) => [...new Set([...a, ...b])];
  *   listNodes: () => object[],            // registry records, groups overlaid
  *   getSnapshot: (id: string) => object|null|undefined,
  *   loadComponents: () => object[],      // catalog joined with live state
+ *   durations?: ReturnType<import("./actionDurations.js").createDurationStore>,
  * }} deps
  */
 export function registerStackRoutes(app, deps) {
   const { store, listNodes, getSnapshot, loadComponents } = deps;
+  const durations = deps.durations ?? null;
+  const eta = (componentId, type) =>
+    durations ? durations.eta(componentId, type) : { ms: BOOTSTRAP_ETA_MS[type] ?? BOOTSTRAP_ETA_MS.start, source: "estimate", runs: 0 };
 
-  function view() {
+  function view(components = loadComponents()) {
     const nodes = listNodes();
-    const components = loadComponents();
     const { stacks, facets } = categorizeStacks(bootstrapStacksForFleet(nodes, store.list()), {
       componentsById: new Map(components.map((c) => [c.id, c])),
       nodesById: new Map(nodes.map((n) => [n.id, n])),
@@ -94,12 +105,30 @@ export function registerStackRoutes(app, deps) {
       componentNames: Array.isArray(body.componentNames) ? body.componentNames : [],
       category: "calculated",
       ...(typeof body.notes === "string" && body.notes.trim() ? { notes: body.notes.trim() } : {}),
+      ...(body.parallel === true ? { parallel: true } : {}),
     };
     const errors = validateStack(stack);
     if (errors.length) return res.status(400).json({ error: errors.join("; ") });
     if (!store.writable) return res.status(503).json({ error: "stacks file is not writable" });
     const saved = store.upsert(stack);
     res.status(201).json({ stack: saved });
+  });
+
+  app.post("/api/stacks/:id/preview", (req, res) => {
+    const components = loadComponents();
+    const all = view(components).stacks.filter((s) => s.id === req.params.id);
+    if (!all.length) return res.status(404).json({ error: `unknown stack "${req.params.id}"` });
+    const node = typeof req.query.node === "string" ? req.query.node : "";
+    const pick = node
+      ? all.find((s) => s.target.nodeIds.includes(node))
+      : all.find((s) => s.category !== "blocked") ?? all[0];
+    if (!pick) return res.status(404).json({ error: `stack "${req.params.id}" has no target on node "${node}"` });
+    const preview = buildStackPreview(pick, { components, getSnapshot, eta });
+    res.json({ preview, live: durations ? durations.live() : [] });
+  });
+
+  app.get("/api/component-actions/live", (_req, res) => {
+    res.json({ running: durations ? durations.live() : [] });
   });
 
   app.post("/api/stacks/import", (req, res) => {

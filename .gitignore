@@ -25,6 +25,8 @@ config/fleet-update-plan.json
 config/groups.json
 config/groups.json.*.tmp
 config/stacks.json
+config/component-durations.json
+config/component-durations.json.*.tmp
 config/.fleet-energy.json.*.tmp
 config/gpu-memory.json
 config/gpu-memory.json.*

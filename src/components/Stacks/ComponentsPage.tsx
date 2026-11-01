@@ -14,6 +14,7 @@ import {
 import type { ComponentActionResult } from "../../api/types";
 import { StackBuilder } from "./StackBuilder";
 import { StackCards } from "./StackCards";
+import { StackPreviewPanel } from "./StackPreviewPanel";
 import {
   DEFAULT_FILTERS,
   componentBlockedReason,
@@ -119,6 +120,8 @@ export function ComponentsPage() {
   // SC5a: filter state persists in localStorage (decision #6 on #72).
   const [filters, setFilters] = useState<StackFilters>(() => loadFilters());
   const [building, setBuilding] = useState(false);
+  // SC5b: the stack target whose switch preview is open.
+  const [previewOf, setPreviewOf] = useState<{ stackId: string; nodeId: string | null } | null>(null);
   const [action, setAction] = useState<ActionState>({ busy: null, plan: null, result: null, error: null });
 
   const reload = useCallback(async () => {
@@ -274,7 +277,27 @@ export function ComponentsPage() {
             nodeNames={nodeNames}
             selected={filters.stack}
             onSelect={(id) => setFilter("stack", id)}
+            extra={(s) =>
+              s.target.nodeIds.length > 0 && (
+                <button
+                  type="button"
+                  data-testid={`preview-${s.id}-${s.target.nodeIds[0]}`}
+                  onClick={() => setPreviewOf({ stackId: s.id, nodeId: s.target.nodeIds[0] })}
+                  className="self-start rounded border border-border bg-surface px-2 py-0.5 text-[11px] text-muted hover:border-accent hover:text-text"
+                >
+                  Preview switch…
+                </button>
+              )
+            }
           />
+          {previewOf && (
+            <StackPreviewPanel
+              stackId={previewOf.stackId}
+              nodeId={previewOf.nodeId}
+              nodeNames={nodeNames}
+              onClose={() => setPreviewOf(null)}
+            />
+          )}
           <h3 className="panel-title" style={{ marginBottom: "var(--density-panel-title-mb)" }}>
             Components ({visible.length})
           </h3>
