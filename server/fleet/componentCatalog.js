@@ -45,8 +45,35 @@ const CATALOG_DIR = path.join(
  * @property {string|null} servedModelName model id as served
  * @property {number|null} memoryPerSparkMB memory_estimate_mb.perSpark
  * @property {string} description definition description
+ * @property {string} recipeSource SC5a filter facet: hasso / mia-ai-lab /
+ *   aeon / custom / "unknown" (see recipeSourceOf)
  * @property {string[]} nodes node ids where this component is currently observed
  */
+
+/**
+ * SC5a recipe-source vocabulary (decision #2 on issue #72). It is extendable:
+ * a definition may set an explicit `recipeSource` string, which wins.
+ * Otherwise `source.origin` is mapped by name, and a definition with no
+ * source at all reads "unknown" (decision #3).
+ */
+export const RECIPE_SOURCES = ["hasso", "mia-ai-lab", "aeon", "custom"];
+
+/**
+ * @param {object} raw component definition JSON
+ * @returns {string} recipe source facet
+ */
+export function recipeSourceOf(raw) {
+  if (raw && typeof raw.recipeSource === "string" && raw.recipeSource.trim() !== "") {
+    return raw.recipeSource.trim().toLowerCase();
+  }
+  const src = raw?.source;
+  const origin = typeof src === "string" ? src : typeof src?.origin === "string" ? src.origin : "";
+  if (!origin.trim()) return "unknown";
+  if (/hasso/i.test(origin)) return "hasso";
+  if (/mia/i.test(origin)) return "mia-ai-lab";
+  if (/aeon/i.test(origin)) return "aeon";
+  return "custom";
+}
 
 /**
  * Load all component definitions from the catalog directory.
@@ -94,6 +121,7 @@ export function loadComponentCatalog(dir = CATALOG_DIR) {
           ? raw.memory_estimate_mb.perSpark
           : null,
       description: typeof raw.description === "string" ? raw.description : "",
+      recipeSource: recipeSourceOf(raw),
       nodes: [], // filled by joinComponentState
     });
   }

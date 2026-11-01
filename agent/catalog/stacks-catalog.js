@@ -41,7 +41,7 @@ import path from "path";
  * blocked: >95% of effective usable; not_recommended: >80%; else calculated.
  * proven overrides (from stack-history, SC4).
  */
-function calculateStackCategory(components, totalMB, floorMB = 3072, currentUsedMB = 0, isProven = false) {
+export function calculateStackCategory(components, totalMB, floorMB = 3072, currentUsedMB = 0, isProven = false) {
   if (isProven) return "proven";
   if (!components || components.length === 0) return "calculated";
   const sumFootprint = components.reduce((acc, c) => acc + (c.footprintMB || 0), 0);
@@ -349,6 +349,7 @@ export function createStackStore(stacksPath, calc) {
 
 export default {
   DEFAULT_STACKS_PATH,
+  calculateStackCategory,
   STACK_CATEGORIES,
   validateStack,
   validateStacksFile,

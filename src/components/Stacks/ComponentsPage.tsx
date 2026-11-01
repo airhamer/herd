@@ -3,12 +3,26 @@ import {
   fetchComponents,
   fetchFleetNodes,
   fetchStacks,
+  saveStack,
   sendComponentAction,
+  STACKS_EXPORT_URL,
   type CatalogComponent,
   type ComponentActionSendRequest,
   type FleetStack,
+  type StacksView,
 } from "../../api/client";
 import type { ComponentActionResult } from "../../api/types";
+import { StackBuilder } from "./StackBuilder";
+import { StackCards } from "./StackCards";
+import {
+  DEFAULT_FILTERS,
+  componentBlockedReason,
+  filterComponents,
+  filterStacks,
+  loadFilters,
+  saveFilters,
+  type StackFilters,
+} from "./stackFilters";
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -75,6 +89,7 @@ function FilterSelect({
         className="rounded border border-border bg-surface-elevated px-1.5 py-0.5 text-[11px] normal-case tracking-normal text-text"
       >
         <option value="all">all</option>
+        {value !== "all" && !options.includes(value) && <option value={value}>{value}</option>}
         {options.map((o) => (
           <option key={o} value={o}>
             {o}
@@ -86,7 +101,9 @@ function FilterSelect({
 }
 
 /**
- * ComponentsPage — POC Components tab (issue #7). Lists the POC1 catalog
+ * ComponentsPage — POC Components tab (issue #7), with the SC5a (#72)
+ * filter bar (tp / recipe source / engine / purpose / stack, persisted in
+ * localStorage) and stack cards with live category badges. Lists the POC1 catalog
  * (GET /api/components: definitions + live per-node state) and drives
  * start/stop/restart through the POC2 v2 action seam: pressing a verb first
  * fires a dry-run preview (ComponentActionRequest.dryRun), "Confirm" replays
@@ -96,11 +113,12 @@ function FilterSelect({
 export function ComponentsPage() {
   const [components, setComponents] = useState<CatalogComponent[] | null>(null);
   const [stacks, setStacks] = useState<FleetStack[]>([]);
-  const [stackFilter, setStackFilter] = useState<string>("all");
+  const [facets, setFacets] = useState<StacksView["facets"]>({ tp: [], sources: [], engines: [], purposes: [] });
   const [nodeNames, setNodeNames] = useState<NamesById>({});
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [kindFilter, setKindFilter] = useState<string>("all");
-  const [tpFilter, setTpFilter] = useState<string>("all");
+  // SC5a: filter state persists in localStorage (decision #6 on #72).
+  const [filters, setFilters] = useState<StackFilters>(() => loadFilters());
+  const [building, setBuilding] = useState(false);
   const [action, setAction] = useState<ActionState>({ busy: null, plan: null, result: null, error: null });
 
   const reload = useCallback(async () => {
@@ -110,10 +128,13 @@ export function ComponentsPage() {
         fetchFleetNodes(),
         // SC10 stacks fail-soft: an older server without /api/stacks must
         // never take the Components tab down with it.
-        fetchStacks().then((r) => r.stacks).catch(() => []),
+        fetchStacks().catch(
+          (): StacksView => ({ stacks: [], facets: { tp: [], sources: [], engines: [], purposes: [] }, errors: [] })
+        ),
       ]);
       setComponents(comps.components);
-      setStacks(stks);
+      setStacks(stks.stacks);
+      setFacets(stks.facets);
       const names: NamesById = {};
       for (const n of nodes.nodes) names[n.id] = n.name;
       setNodeNames(names);
@@ -127,25 +148,23 @@ export function ComponentsPage() {
     void reload();
   }, [reload]);
 
-  const kinds = useMemo(
-    () => Array.from(new Set((components ?? []).map((c) => c.kind))).sort(),
-    [components]
+  useEffect(() => {
+    saveFilters(filters);
+  }, [filters]);
+  const setFilter = useCallback(
+    <K extends keyof StackFilters>(key: K, value: StackFilters[K]) => setFilters((f) => ({ ...f, [key]: value })),
+    []
   );
-  const tps = useMemo(
-    () => Array.from(new Set((components ?? []).map((c) => String(c.tp)))).sort(),
-    [components]
+
+  const shownStacks = useMemo(() => filterStacks(stacks, filters), [stacks, filters]);
+  const hiddenBlocked = useMemo(
+    () => (filters.showBlocked ? 0 : filterStacks(stacks, { ...filters, showBlocked: true }).length - shownStacks.length),
+    [stacks, filters, shownStacks]
   );
-  const visible = useMemo(() => {
-    // SC10: stacks act as a filter on the component list (plan decision #6);
-    // a stack with no catalog members yet filters to nothing — still shown.
-    const stack = stackFilter === "all" ? null : stacks.find((s) => s.id === stackFilter) ?? null;
-    return (components ?? []).filter(
-      (c) =>
-        (!stack || stack.componentNames.includes(c.id)) &&
-        (kindFilter === "all" || c.kind === kindFilter) &&
-        (tpFilter === "all" || String(c.tp) === tpFilter)
-    );
-  }, [components, stacks, stackFilter, kindFilter, tpFilter]);
+  const visible = useMemo(() => filterComponents(components ?? [], stacks, filters), [components, stacks, filters]);
+  const stackIds = useMemo(() => Array.from(new Set(stacks.map((s) => s.id))), [stacks]);
+  const filtered =
+    JSON.stringify({ ...filters, showBlocked: false }) !== JSON.stringify({ ...DEFAULT_FILTERS, showBlocked: false });
 
   /** One action against one node: preview (dryRun) or the confirmed real run. */
   const runAction = useCallback(
@@ -193,24 +212,72 @@ export function ComponentsPage() {
         </div>
       ) : (
         <div className="panel" style={{ padding: "var(--density-panel-pad)" }}>
-          <StacksPanel stacks={stacks} nodeNames={nodeNames} selected={stackFilter} onSelect={setStackFilter} />
           <div
             className="flex flex-wrap items-center gap-3"
             style={{ marginBottom: "var(--density-panel-title-mb)" }}
+            data-testid="stack-filter-bar"
           >
-            <h3 className="panel-title">Components ({visible.length})</h3>
-            <FilterSelect label="kind" value={kindFilter} onChange={setKindFilter} options={kinds} />
-            <FilterSelect label="tp" value={tpFilter} onChange={setTpFilter} options={tps} />
-            <button
-              type="button"
-              className="ml-auto text-xs text-accent underline"
-              onClick={() => {
-                void reload();
-              }}
-            >
-              Refresh
-            </button>
+            <FilterSelect label="tp" value={filters.tp} onChange={(v) => setFilter("tp", v)} options={facets.tp.map(String)} />
+            <FilterSelect label="source" value={filters.source} onChange={(v) => setFilter("source", v)} options={facets.sources} />
+            <FilterSelect label="engine" value={filters.engine} onChange={(v) => setFilter("engine", v)} options={facets.engines} />
+            <FilterSelect label="purpose" value={filters.purpose} onChange={(v) => setFilter("purpose", v)} options={facets.purposes} />
+            <FilterSelect label="stack" value={filters.stack} onChange={(v) => setFilter("stack", v)} options={stackIds} />
+            <label className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-muted">
+              <input
+                type="checkbox"
+                checked={filters.showBlocked}
+                onChange={(e) => setFilter("showBlocked", e.target.checked)}
+              />
+              show blocked
+            </label>
+            {filtered && (
+              <button
+                type="button"
+                className="text-xs text-muted underline"
+                onClick={() => setFilters((f) => ({ ...DEFAULT_FILTERS, showBlocked: f.showBlocked }))}
+              >
+                Clear
+              </button>
+            )}
+            <span className="ml-auto flex gap-3">
+              <button type="button" className="text-xs text-accent underline" onClick={() => setBuilding((b) => !b)}>
+                New stack
+              </button>
+              <a className="text-xs text-accent underline" href={STACKS_EXPORT_URL} download="stacks.json">
+                Export
+              </a>
+              <button
+                type="button"
+                className="text-xs text-accent underline"
+                onClick={() => {
+                  void reload();
+                }}
+              >
+                Refresh
+              </button>
+            </span>
           </div>
+          {building && (
+            <StackBuilder
+              components={(components ?? []).map((c) => ({ id: c.id, name: c.name }))}
+              onCancel={() => setBuilding(false)}
+              onSave={async (draft) => {
+                await saveStack(draft);
+                setBuilding(false);
+                await reload();
+              }}
+            />
+          )}
+          <StackCards
+            stacks={shownStacks}
+            hiddenBlocked={hiddenBlocked}
+            nodeNames={nodeNames}
+            selected={filters.stack}
+            onSelect={(id) => setFilter("stack", id)}
+          />
+          <h3 className="panel-title" style={{ marginBottom: "var(--density-panel-title-mb)" }}>
+            Components ({visible.length})
+          </h3>
           {visible.length === 0 ? (
             <p className="text-xs text-muted">No components match the catalog filters.</p>
           ) : (
@@ -219,6 +286,7 @@ export function ComponentsPage() {
                 <ComponentRow
                   key={comp.id}
                   comp={comp}
+                  blockedReason={componentBlockedReason(comp, stacks)}
                   nodeNames={nodeNames}
                   action={action}
                   onAction={(nodeId, type, token) => void runAction(comp, nodeId, type, token)}
@@ -233,66 +301,17 @@ export function ComponentsPage() {
   );
 }
 
-/**
- * SC10 stacks panel — the stacks UI, unlocked: lists the bootstrap
- * pre-defined stacks available to this fleet, each with its defaulted tp
- * (tp=1 single machine, tp=x for an x-machine group) and landing target.
- * Selecting a stack filters the component list below (stacks-as-filter).
- */
-function StacksPanel({
-  stacks,
-  nodeNames,
-  selected,
-  onSelect,
-}: {
-  stacks: FleetStack[];
-  nodeNames: NamesById;
-  selected: string;
-  onSelect: (id: string) => void;
-}) {
-  if (stacks.length === 0) return null;
-  // Dedupe by id for selection (a stack is offered once per fleet scope).
-  const ids = Array.from(new Set(stacks.map((s) => s.id)));
-  return (
-    <div className="mb-3 rounded-lg border border-border bg-surface-elevated p-3">
-      <h3 className="panel-title mb-2">Stacks ({ids.length})</h3>
-      <div className="flex flex-col gap-1.5">
-        {stacks.map((s) => {
-          const key = `${s.id}|${s.target.groupId ?? ""}|${s.target.nodeIds.join(",")}`;
-          const active = selected === s.id;
-          const where = s.target.nodeIds.length
-            ? s.target.nodeIds.map((n) => nodeNames[n] ?? n).join(" + ")
-            : "no fleet nodes yet";
-          return (
-            <button
-              key={key}
-              type="button"
-              onClick={() => onSelect(active ? "all" : s.id)}
-              className={`flex flex-wrap items-baseline gap-2 rounded border px-2 py-1 text-left text-xs transition-colors ${
-                active ? "border-accent/60 bg-accent-soft" : "border-border hover:border-accent/40"
-              }`}
-            >
-              <span className="font-semibold text-text-strong">{s.name}</span>
-              <span className="font-mono text-[10px] text-muted">{s.id}</span>
-              <span className="ml-auto text-[10px] uppercase tracking-wide text-muted">
-                tp{s.tp} · {s.category} · {where}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 /** One catalog component: definition facts, live per-node state, action controls. */
 function ComponentRow({
   comp,
+  blockedReason,
   nodeNames,
   action,
   onAction,
 }: {
   comp: CatalogComponent;
+  /** Shown when "show blocked" reveals a blocked component. */
+  blockedReason: string | null;
   nodeNames: NamesById;
   action: ActionState;
   onAction: (nodeId: string, type: ActionType, confirmationToken: string | null) => void;
@@ -304,10 +323,11 @@ function ComponentRow({
         <span className="text-xs font-semibold text-text-strong">{comp.name}</span>
         <span className="font-mono text-[10px] text-muted">{comp.id}</span>
         <span className="ml-auto text-[10px] uppercase tracking-wide text-muted">
-          {comp.kind} · {comp.purpose} · tp{comp.tp} · {comp.engine ?? "?"}
+          {comp.kind} · {comp.purpose} · tp{comp.tp} · {comp.engine ?? "unknown"} · {comp.recipeSource ?? "unknown"}
           {comp.memoryPerSparkMB != null ? ` · ${Math.round(comp.memoryPerSparkMB / 1024)} GiB` : ""}
         </span>
       </div>
+      {blockedReason && <p className="mt-1 text-[11px] text-danger">Blocked: {blockedReason}</p>}
       {comp.description && <p className="mt-1 text-[11px] text-muted">{comp.description}</p>}
       <div className="mt-2 flex flex-col gap-1.5">
         {targets.map((nodeId) => {
