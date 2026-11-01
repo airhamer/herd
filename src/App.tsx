@@ -519,6 +519,7 @@ function DashboardApp() {
         onChanged={() => {
           void refreshFromApi();
         }}
+        onOpenTopology={() => fleetNavigate({ page: "topology" })}
       />
     </div>
     </FleetUpdatesProvider>
