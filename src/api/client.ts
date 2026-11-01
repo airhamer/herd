@@ -115,6 +115,11 @@ export function fetchLlmTokenTotals(range: LlmTokenRange = "24h"): Promise<LlmTo
   return apiFetch(`/api/llm-token-totals?range=${encodeURIComponent(range)}`);
 }
 
+/** SC5c (#74): one node's per-lane traffic and recent relay requests. */
+export function fetchNodeTraffic(nodeId: string): Promise<import("../../shared/types").TrafficView> {
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(nodeId)}/traffic`);
+}
+
 /** FLEET3 (#38): hourly (24h) or daily token buckets for the details view. */
 export function fetchLlmTokenHistory(range: LlmTokenRange = "24h"): Promise<LlmTokenHistory> {
   return apiFetch(`/api/llm-token-totals/history?range=${encodeURIComponent(range)}`);
