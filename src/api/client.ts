@@ -674,7 +674,13 @@ export interface NodeLink {
   up: boolean;
 }
 
-/** One node record in config/nodes.json (the fleet registry). */
+/**
+ * One node record in config/nodes.json (the fleet registry), as served by
+ * GET /api/fleet/nodes. GRP1 (#82): role / rank / groupId / headId /
+ * groupName are the RESOLVED spark group from config/groups.json (edited on
+ * the Topology tab), the same values Topology and Fleet show — not the raw
+ * registry seed. Node add / update never writes them (see nodeWritableFields).
+ */
 export interface NodeRecord {
   id: string;
   name: string;
@@ -684,6 +690,8 @@ export interface NodeRecord {
   rank: number | null;
   groupId: string | null;
   headId: string | null;
+  /** Display name of the resolved group (absent for standalone nodes). */
+  groupName?: string | null;
   links: NodeLink[];
   agentPort: number;
   isLocal: boolean;
@@ -783,22 +791,37 @@ export function fetchFleetNodes(): Promise<{ nodes: NodeRecord[] }> {
   return apiFetch("/api/fleet/nodes");
 }
 
-/** Add a fleet node (persisted to config/nodes.json). */
-export function addFleetNode(node: NodeRecord): Promise<{ success: boolean; node: NodeRecord }> {
+/** Group keys owned by config/groups.json (GRP1, #82); the server ignores them on node writes. */
+export const NODE_GROUP_KEYS = ["role", "rank", "groupId", "headId", "groupName"] as const;
+export type NodeGroupKey = (typeof NODE_GROUP_KEYS)[number];
+/** A node add / update body: everything but the group keys. */
+export type NodeRecordInput = Omit<NodeRecord, NodeGroupKey>;
+
+/** Drop the group keys from a node record before sending it as an add / update body. */
+export function nodeWritableFields<T extends Partial<NodeRecord>>(node: T): Omit<T, NodeGroupKey> {
+  const out: Record<string, unknown> = { ...node };
+  for (const k of NODE_GROUP_KEYS) delete out[k];
+  return out as Omit<T, NodeGroupKey>;
+}
+
+/** Add a fleet node (persisted to config/nodes.json). Group keys are not sent. */
+export function addFleetNode(
+  node: NodeRecordInput | NodeRecord
+): Promise<{ success: boolean; node: NodeRecord }> {
   return apiFetch("/api/fleet/nodes", {
     method: "POST",
-    body: JSON.stringify(node),
+    body: JSON.stringify(nodeWritableFields(node)),
   });
 }
 
-/** Update a fleet node by id. */
+/** Update a fleet node by id. Group keys are not sent (edit groups on the Topology tab). */
 export function updateFleetNode(
   id: string,
   patch: Partial<NodeRecord>
 ): Promise<{ success: boolean; node: NodeRecord }> {
   return apiFetch(`/api/fleet/nodes/${encodeURIComponent(id)}`, {
     method: "PUT",
-    body: JSON.stringify(patch),
+    body: JSON.stringify(nodeWritableFields(patch)),
   });
 }
 

@@ -14,6 +14,15 @@ interface ManageNodesDialogProps {
   onClose: () => void;
   /** Called after a successful add/update/delete so the parent can refresh. */
   onChanged?: () => void;
+  /** GRP1: open the Topology tab, where spark groups are edited. */
+  onOpenTopology?: () => void;
+}
+
+/** One-line summary of a node's resolved spark group (config/groups.json). */
+export function groupSummary(n: Pick<NodeRecord, "role" | "rank" | "groupId" | "groupName">): string {
+  if (!n.groupId) return "Standalone";
+  const role = n.role === "head" ? "head" : n.role === "worker" ? "worker" : n.role;
+  return `${n.groupName || n.groupId} · ${role}${n.rank != null ? ` · rank ${n.rank}` : ""}`;
 }
 
 function useEscape(onClose: () => void) {
@@ -58,10 +67,14 @@ const labelCls = "mb-1 block text-xs text-muted";
 
 /**
  * ManageNodesDialog — read/write the fleet node registry (config/nodes.json)
- * from the UI. Add, edit, and remove nodes; set role/rank/groupId/headId;
- * configure RoCE links. Mirrors the AddSparkDialog / EditSparkDialog patterns.
+ * from the UI. Add, edit, and remove nodes; configure RoCE links. Mirrors
+ * the AddSparkDialog / EditSparkDialog patterns.
+ *
+ * GRP1 (#82): a node's spark group (role / rank / groupId / headId) is shown
+ * read-only — it is the resolved value from config/groups.json, edited on the
+ * Topology tab — and is never sent on save, so the two cannot diverge.
  */
-export function ManageNodesDialog({ open, onClose, onChanged }: ManageNodesDialogProps) {
+export function ManageNodesDialog({ open, onClose, onChanged, onOpenTopology }: ManageNodesDialogProps) {
   const [nodes, setNodes] = useState<NodeRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState<NodeRecord | null>(null);
@@ -248,9 +261,7 @@ export function ManageNodesDialog({ open, onClose, onChanged }: ManageNodesDialo
                         <div className="flex items-center justify-between">
                           <span className="font-medium text-text-strong">{n.name || n.id}</span>
                           <span className="text-muted">
-                            {n.role}
-                            {n.rank != null ? ` · rank ${n.rank}` : ""}
-                            {n.groupId ? ` · ${n.groupId}` : ""}
+                            {groupSummary(n)}
                             {n.status === "pending" ? " · pending" : ""}
                           </span>
                         </div>
@@ -335,70 +346,38 @@ export function ManageNodesDialog({ open, onClose, onChanged }: ManageNodesDialo
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className={labelCls}>Role</label>
-                        <select
-                          value={editing.role}
-                          onChange={(e) =>
-                            update({ role: e.target.value as NodeRecord["role"] })
-                          }
-                          className={inputCls}
-                        >
-                          <option value="standalone">Standalone</option>
-                          <option value="head">Head</option>
-                          <option value="worker">Worker</option>
-                        </select>
+                    <div
+                      className="rounded border border-border bg-surface px-3 py-2"
+                      data-testid="manage-node-group"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className={labelCls + " mb-0"}>Spark group</span>
+                        <span className="text-xs text-text" data-testid="manage-node-group-summary">
+                          {isNew ? "Standalone" : groupSummary(editing)}
+                        </span>
                       </div>
-                      <div>
-                        <label className={labelCls}>Rank (TP, 0 = head)</label>
-                        <input
-                          type="number"
-                          value={editing.rank ?? ""}
-                          onChange={(e) =>
-                            update({
-                              rank: e.target.value === "" ? null : parseInt(e.target.value, 10),
-                            })
-                          }
-                          className={inputCls}
-                          placeholder="0"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-2 gap-2">
-                      <div>
-                        <label className={labelCls}>Group ID</label>
-                        <input
-                          type="text"
-                          value={editing.groupId ?? ""}
-                          onChange={(e) =>
-                            update({ groupId: e.target.value || null })
-                          }
-                          className={inputCls}
-                          placeholder="tp2"
-                        />
-                        <p className="mt-1 text-[10px] text-muted">
-                          Groups nodes into a TP cluster (dashed box). Blank =
-                          standalone.
-                        </p>
-                      </div>
-                      <div>
-                        <label className={labelCls}>Head ID</label>
-                        <input
-                          type="text"
-                          value={editing.headId ?? ""}
-                          onChange={(e) =>
-                            update({ headId: e.target.value || null })
-                          }
-                          className={inputCls}
-                          placeholder="gx10-102c"
-                        />
-                        <p className="mt-1 text-[10px] text-muted">
-                          Which node this one reports to (workers point at
-                          their head).
-                        </p>
-                      </div>
+                      {!isNew && editing.headId ? (
+                        <p className="mt-1 text-[10px] text-muted">Head: {editing.headId}</p>
+                      ) : null}
+                      <p className="mt-1 text-[10px] text-muted">
+                        Groups, roles and ranks are edited on the{" "}
+                        {onOpenTopology ? (
+                          <button
+                            type="button"
+                            className="text-accent underline"
+                            data-testid="manage-node-open-topology"
+                            onClick={() => {
+                              onClose();
+                              onOpenTopology();
+                            }}
+                          >
+                            Topology tab
+                          </button>
+                        ) : (
+                          "Topology tab"
+                        )}
+                        .
+                      </p>
                     </div>
 
                     <div className="grid grid-cols-2 gap-2">

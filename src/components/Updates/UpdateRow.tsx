@@ -108,7 +108,7 @@ export function UpdateRow(props: UpdateRowProps) {
           {statusLabel(view)}
         </td>
         <td className="py-1.5 pr-3 font-tabular text-muted">
-          {node?.groupId ?? "—"}
+          <span data-testid="update-row-group">{node?.groupName ?? node?.groupId ?? "—"}</span>
           {view.waveIndex != null ? ` · wave ${view.waveIndex + 1}` : ""}
         </td>
         <td className="py-1.5 text-right">

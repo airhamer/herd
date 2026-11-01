@@ -81,7 +81,8 @@ import { createLinuxSshFleet } from "./fleet/linuxSshCollector.js";
 import { createMacosSshFleet } from "./fleet/macosSshCollector.js";
 import { createWindowsFleet } from "./fleet/windowsSshCollector.js";
 import { buildTopology } from "./fleet/topology.js";
-import { applyGroupsToNodes, createGroupStore } from "./fleet/groups.js";
+import { createGroupStore } from "./fleet/groups.js";
+import { registerNodeListRoute, resolvedNodes, withoutGroupFields } from "./fleet/nodeRecords.js";
 import { registerGroupRoutes } from "./fleet/groupsRoutes.js";
 import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
 import { renderFleetMetrics } from "./fleet/metrics.js";
@@ -505,9 +506,14 @@ refreshUpdatesLayer();
 // config/groups.json (seeded from the registry's groupId designation on first
 // run) is the source of truth for TopologyInfo groupId / role / rank / headId.
 const groupStore = createGroupStore();
-/** Registry records with the persisted spark groups overlaid. */
+/** Registry records with the persisted spark groups overlaid (GRP1: the one resolution path). */
 function groupedNodes(nodes) {
-  return applyGroupsToNodes(nodes, groupStore.read(nodes));
+  return resolvedNodes(nodes, groupStore);
+}
+
+/** One node record with its resolved group; resolves against the whole registry (never seeds from a single node). */
+function resolvedNodeRecord(node) {
+  return groupedNodes(listNodes()).find((n) => n.id === node.id) ?? node;
 }
 
 /** Minimal NodeAgentSnapshot for a registered node that has never polled successfully. */
@@ -1039,16 +1045,17 @@ app.get("/metrics", (_req, res) => {
   res.type("text/plain; version=0.0.4; charset=utf-8").send(renderFleetMetrics(buildFleetSnapshot()));
 });
 
-app.get("/api/fleet/nodes", (_req, res) => {
-  res.json({ nodes: listNodes() });
-});
+// GRP1 (#82): records carry the resolved group (config/groups.json), not the raw registry seed.
+registerNodeListRoute(app, { listNodes, groupStore });
 
 app.post("/api/fleet/nodes", (req, res) => {
   try {
-    const node = addNode(req.body || {});
+    // GRP1: groups are edited on the Topology tab only; group keys in the body are ignored.
+    const { body, ignored } = withoutGroupFields(req.body);
+    const node = addNode(body);
     restartFleetConnection();
     recordEvent(activity.nodeAdded(node));
-    res.json({ success: true, node });
+    res.json({ success: true, node: resolvedNodeRecord(node), ...(ignored.length ? { ignoredFields: ignored } : {}) });
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
   }
@@ -1097,9 +1104,11 @@ app.delete("/api/fleet/nodes/:id/ssh-password", (req, res) => {
 
 app.put("/api/fleet/nodes/:id", (req, res) => {
   try {
-    const node = updateNode(req.params.id, req.body || {});
+    // GRP1: groups are edited on the Topology tab only; group keys in the body are ignored.
+    const { body, ignored } = withoutGroupFields(req.body);
+    const node = updateNode(req.params.id, body);
     restartFleetConnection();
-    res.json({ success: true, node });
+    res.json({ success: true, node: resolvedNodeRecord(node), ...(ignored.length ? { ignoredFields: ignored } : {}) });
   } catch (err) {
     res.status(err.status || 400).json({ error: err.message });
   }
