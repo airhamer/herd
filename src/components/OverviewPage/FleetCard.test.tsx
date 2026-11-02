@@ -429,4 +429,49 @@ describe("FleetCard", () => {
     expect(container.querySelector('[data-testid="fleet-card-models-empty"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="fleet-card-models"]')).toBeNull();
   });
+
+  // CONT1 (#96): Containers rows read by engine family, not raw names.
+  it("Containers: tooltip labels each container by engine family, raw name kept", () => {
+    const { container } = render(<FleetCard {...makeCard()} />);
+    const tip = container.querySelector('[data-testid="fleet-card-containers"]')?.getAttribute("title") ?? "";
+    // Families: sglang / qdrant(basename) / vllm — each unique on this node.
+    expect(tip).toContain("sglang · running · sglang");
+    expect(tip).toContain("vllm · stopped · old-worker");
+    expect(tip).toContain("qdrant · running · qdrant");
+    // The count value is unchanged.
+    expect(container.querySelector('[data-testid="fleet-card-containers"]')?.textContent).toBe("3 (2 running)");
+  });
+
+  it("Containers: two sglang containers get distinguishable family labels", () => {
+    const collision: ContainerInfo[] = [
+      {
+        name: "qwen38-flash",
+        image: "lmsysorg/sglang:v1.2.0",
+        imageDigest: null,
+        status: "running",
+        uptimeSeconds: 100,
+        ports: ["8080:8080"],
+        memUsedMB: 1,
+        memLimitMB: null,
+        cpuPercent: 1,
+      },
+      {
+        name: "aeon-tp2-262k",
+        image: "lmsysorg/sglang:v1.2.0",
+        imageDigest: null,
+        status: "exited",
+        uptimeSeconds: null,
+        ports: ["8081:8081"],
+        memUsedMB: null,
+        memLimitMB: null,
+        cpuPercent: null,
+      },
+    ];
+    const { container } = render(<FleetCard {...makeCard({ containers: collision })} />);
+    const tip = container.querySelector('[data-testid="fleet-card-containers"]')?.getAttribute("title") ?? "";
+    // services[] fixture carries modelId qwen3.8-27b on :8080; the second
+    // sglang has no service row → port suffix.
+    expect(tip).toContain("sglang qwen3.8-27b · running · qwen38-flash");
+    expect(tip).toContain("sglang :8081 · exited · aeon-tp2-262k");
+  });
 });
