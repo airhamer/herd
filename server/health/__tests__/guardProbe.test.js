@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { normalizeGuardStatus, probeGuard, probeAll } from "../guardProbe.js";
+import { normalizeGuardStatus, probeGuard, probeAll, probeKeepaliveProxy, findEngineBehindProxy } from "../guardProbe.js";
 
 const NOW = () => Date.parse("2026-10-28T12:00:00.000Z");
 const ISO_NOW = "2026-10-28T12:00:00.000Z";
@@ -221,4 +221,141 @@ test("baseUrl handling: trailing slash trimmed, non-string baseUrl settles malfo
   const broken = await probeGuard({ id: "x", label: "X", baseUrl: 42 }, { fetchImpl, now: NOW });
   assert.equal(broken.present, false);
   assert.equal(broken.reason, "malformed");
+});
+
+// ─── GUARD1 (#95): keepalive-proxy probe ─────────────────────────────
+//
+// Different contract from the S4.1a guards: /health (fallback /), 401/403
+// count as ALIVE (SRV1 auth-gate convention), metrics are optional, and an
+// unset baseUrl is "not-configured" — the empty state must say why.
+
+const PX = { id: "gp", label: "Guard proxy", baseUrl: "http://guard.test:8081" };
+const PX_HEALTH = "http://guard.test:8081/health";
+const PX_ROOT = "http://guard.test:8081/";
+
+test("guard proxy alive: /health JSON yields uptime + request count", async () => {
+  const { calls, fetchImpl } = mockFetch({
+    [PX_HEALTH]: { json: { status: "ok", uptime: 3725, requests: 41 } },
+  });
+  const r = await probeKeepaliveProxy(PX, { fetchImpl, now: NOW });
+  assert.deepEqual(calls, [PX_HEALTH]);
+  assert.equal(r.present, true);
+  assert.equal(r.alive, true);
+  assert.equal(r.authGate, false);
+  assert.equal(r.status, "alive");
+  assert.equal(r.uptimeSeconds, 3725);
+  assert.equal(r.requestCount, 41);
+  assert.equal(r.hasMetrics, true);
+  assert.equal(r.reason, null);
+  assert.equal(r.checkedAt, ISO_NOW);
+});
+
+test("guard proxy 401 and 403 are alive via the auth gate, without metrics", async () => {
+  for (const status of [401, 403]) {
+    const { calls, fetchImpl } = mockFetch({ [PX_HEALTH]: { status } });
+    const r = await probeKeepaliveProxy(PX, { fetchImpl, now: NOW });
+    assert.equal(r.alive, true, `status ${status} must be alive`);
+    assert.equal(r.authGate, true);
+    assert.equal(r.hasMetrics, false);
+    assert.equal(r.uptimeSeconds, null);
+    assert.equal(r.requestCount, null);
+    assert.equal(r.reason, null);
+    // The gate answered; no pointless fallback call.
+    assert.deepEqual(calls, [PX_HEALTH]);
+  }
+});
+
+test("guard proxy dead: both endpoints refuse → down with the fallback reason", async () => {
+  const { calls, fetchImpl } = mockFetch({});
+  const r = await probeKeepaliveProxy(PX, { fetchImpl, now: NOW });
+  assert.deepEqual(calls, [PX_HEALTH, PX_ROOT]);
+  assert.equal(r.alive, false);
+  assert.equal(r.status, "down");
+  assert.equal(r.reason, "unreachable");
+});
+
+test("guard proxy /health 502 falls back to / and scores the fallback", async () => {
+  const { fetchImpl } = mockFetch({
+    [PX_HEALTH]: { status: 502 },
+    [PX_ROOT]: { status: 401 },
+  });
+  const r = await probeKeepaliveProxy(PX, { fetchImpl, now: NOW });
+  assert.equal(r.alive, true);
+  assert.equal(r.authGate, true);
+});
+
+test("guard proxy 2xx without usable metrics still proves liveness", async () => {
+  const cases = [
+    { json: {} }, // object, no metric fields
+    { badJson: true }, // unparseable body
+    { json: [1, 2, 3] }, // array body: alive, nothing to pick
+  ];
+  for (const route of cases) {
+    const { fetchImpl } = mockFetch({ [PX_HEALTH]: route });
+    const r = await probeKeepaliveProxy(PX, { fetchImpl, now: NOW });
+    assert.equal(r.alive, true);
+    assert.equal(r.hasMetrics, false);
+    assert.equal(r.uptimeSeconds, null);
+    assert.equal(r.requestCount, null);
+  }
+});
+
+test("guard proxy metric key shapes: uptime_seconds / recent_requests / requests_total", async () => {
+  const { fetchImpl } = mockFetch({
+    [PX_HEALTH]: { json: { uptime_seconds: 60, recent_requests: 3 } },
+  });
+  const a = await probeKeepaliveProxy(PX, { fetchImpl, now: NOW });
+  assert.equal(a.uptimeSeconds, 60);
+  assert.equal(a.requestCount, 3);
+  const { fetchImpl: f2 } = mockFetch({ [PX_ROOT]: { json: { requests_total: 9 } } });
+  const b = await probeKeepaliveProxy(PX, { fetchImpl: f2, now: NOW });
+  assert.equal(b.requestCount, 9);
+  assert.equal(b.hasMetrics, true);
+});
+
+test("guard proxy not configured: empty baseUrl says so, no fetch at all", async () => {
+  let fetched = 0;
+  const r = await probeKeepaliveProxy({ id: "gp", baseUrl: "" }, {
+    fetchImpl: async () => {
+      fetched += 1;
+      throw new Error("must not fetch");
+    },
+    now: NOW,
+  });
+  assert.equal(fetched, 0);
+  assert.equal(r.status, "not-configured");
+  assert.equal(r.reason, "not-configured");
+  assert.equal(r.alive, false);
+});
+
+test("guard proxy sends the bearer key resolved from apiKeyRef", async () => {
+  const seen = [];
+  const fetchImpl = async (url, init = {}) => {
+    seen.push(init?.headers);
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  const resolveApiKeyRef = (ref) => (ref === "env:GP_KEY" ? "sekret" : null);
+  const r = await probeKeepaliveProxy(
+    { ...PX, apiKeyRef: "env:GP_KEY" },
+    { fetchImpl, resolveApiKeyRef, now: NOW }
+  );
+  assert.equal(r.alive, true);
+  assert.equal(seen[0]?.Authorization, "Bearer sekret");
+});
+
+test("findEngineBehindProxy matches SRV1 service truth by proxyPort, host match preferred", () => {
+  const snaps = [
+    { id: "other", lanIp: "10.0.0.9", services: [{ name: "served", engine: "sglang", port: 9000, proxyPort: 8081, model: null }] },
+    { id: "n1", lanIp: "192.168.50.226", services: [
+      { name: "qwen", engine: "vllm", port: 8080, proxyPort: 8081, model: "qwen3-32b" },
+      { name: "noise", engine: "vllm", port: 8090, proxyPort: 8091, model: "x" },
+    ] },
+  ];
+  const byHost = findEngineBehindProxy(snaps, { port: 8081, host: "192.168.50.226" });
+  assert.deepEqual(byHost, { sparkId: "n1", name: "qwen", engine: "vllm", model: "qwen3-32b", enginePort: 8080 });
+  const byPortOnly = findEngineBehindProxy(snaps, { port: 8081 });
+  assert.equal(byPortOnly.sparkId, "other"); // first port match wins without a host
+  assert.equal(findEngineBehindProxy(snaps, { port: 9999 }), null);
+  assert.equal(findEngineBehindProxy(snaps, { port: "8081" }), null);
+  assert.equal(findEngineBehindProxy(null, { port: 8081 }), null);
 });
