@@ -4,7 +4,8 @@ import {
   SystemCollector,
   collectionWasSuccessful,
 } from "../collectors/SystemCollector.js";
-import { LlmProbe } from "../collectors/LlmProbe.js";
+import { LlmProbe, normalizeModelId } from "../collectors/LlmProbe.js";
+import { llmProbeHost } from "../collectors/llmHost.js";
 import { ComfyProbe } from "../collectors/ComfyProbe.js";
 import { HermesProbe } from "../collectors/HermesProbe.js";
 import { TailscaleProbe } from "../collectors/TailscaleProbe.js";
@@ -28,6 +29,214 @@ import {
 } from "../config.js";
 
 const ONLINE_GRACE_MS = 10000;
+
+// ─── Issue #93: service status probe truth ───────────────────
+/** Active window: a nonzero request counter — or the last nonzero one inside
+ * this window — keeps a service marked Active. */
+export const SERVICE_ACTIVE_WINDOW_MS = 60_000;
+
+/** Per-request HTTP timeout for the service probes. */
+const SERVICE_PROBE_TIMEOUT_MS = 5000;
+
+function normalizeServicePort(value) {
+  const n = typeof value === "string" ? parseInt(value, 10) : Number(value);
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null;
+}
+
+/**
+ * True when a Prometheus exposition carries a request counter with a positive
+ * value (names like vllm:num_requests_running, proxy_requests_total, …).
+ */
+export function hasNonzeroRequestCounter(text) {
+  if (typeof text !== "string" || !text) return false;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const m = trimmed.match(/^([^\s{]+)(?:\{[^}]*\})?\s+(\S+)/);
+    if (!m) continue;
+    const value = Number(m[2]);
+    if (!Number.isFinite(value) || value <= 0) continue;
+    if (/requests?[\w:]*(?:_total|_running|_waiting|_inflight)$/i.test(m[1])) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolve a proxy API-key ref. Shapes: "env:VAR" → process.env[VAR],
+ * "file:/path" → file contents (trim), bare "VAR" → env var. Null when the
+ * ref is empty or the referenced secret is missing/unreadable.
+ */
+export function resolveServiceApiKeyRef(ref, deps = {}) {
+  if (typeof ref !== "string") return null;
+  const s = ref.trim();
+  if (!s) return null;
+  const env = deps.env ?? process.env;
+  const readFile =
+    deps.readFile ??
+    ((p) => fs.readFileSync(p, "utf8"));
+  const finish = (raw) => {
+    const v = raw == null ? "" : String(raw).trim();
+    return v || null;
+  };
+  if (s.startsWith("env:")) return finish(env[s.slice(4).trim()]);
+  if (s.startsWith("file:")) {
+    try {
+      return finish(readFile(s.slice(5).trim()));
+    } catch {
+      return null;
+    }
+  }
+  return finish(env[s]);
+}
+
+/**
+ * probeServiceTruth — one configured service, probe-truth status.
+ *
+ * Probe order: engine port → engine port + 1 → proxy (the service's own
+ * proxyPort first, then any other proxy defined on the same spark via
+ * opts.sparkProxies). A 2xx on an engine candidate is UP with
+ * source "engine". On a proxy candidate BOTH 2xx and 401/403 are UP with
+ * source "proxy" — the auth gate rejecting us still proves the process
+ * behind it answers; model/version are only populated when the proxy body
+ * was readable (2xx). A comfyui service probes GET /system_stats (real
+ * status, not systemd state); everything else probes GET /v1/models, then
+ * /version when the models body carried no version field.
+ *
+ * Active: any nonzero request counter on /metrics at the winning port, or a
+ * previous nonzero sighting inside SERVICE_ACTIVE_WINDOW_MS (pass the prior
+ * probe result as opts.previous to carry activeAt across polls).
+ *
+ * @param {object} service normalized per-service config {name, engine, kind,
+ *   port, proxyPort, proxyApiKeyRef}
+ * @param {{host?: string, fetch?: typeof globalThis.fetch, sparkProxies?:
+ *   Array<{port: number, apiKeyRef?: string|null}>, previous?: {activeAt?: number|null},
+ *   now?: () => number, resolveApiKeyRef?: typeof resolveServiceApiKeyRef,
+ *   env?: Record<string,string|undefined>, readFile?: (p: string) => string,
+ *   timeoutMs?: number}} [opts]
+ * @returns {Promise<{status: "running"|"stopped", source: "engine"|"proxy"|null,
+ *   port: number|null, model: string|null, engineVersion: string|null,
+ *   active: boolean, activeAt: number|null, error: string|null}>}
+ */
+export async function probeServiceTruth(service, opts = {}) {
+  const now = typeof opts.now === "function" ? opts.now() : Date.now();
+  const fetchImpl = typeof opts.fetch === "function" ? opts.fetch : globalThis.fetch;
+  const host = String(opts.host || service?.host || "127.0.0.1");
+  const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0
+    ? opts.timeoutMs
+    : SERVICE_PROBE_TIMEOUT_MS;
+  const resolveRef =
+    typeof opts.resolveApiKeyRef === "function" ? opts.resolveApiKeyRef : resolveServiceApiKeyRef;
+  const isComfy = /comfy/i.test(String(service?.engine || ""));
+  const prevActiveAt = Number.isFinite(opts.previous?.activeAt) ? opts.previous.activeAt : null;
+
+  const enginePort = normalizeServicePort(service?.port);
+  const candidates = [];
+  if (enginePort != null) {
+    candidates.push({ port: enginePort, source: "engine", apiKeyRef: null });
+    const alt = enginePort + 1;
+    if (alt <= 65535) candidates.push({ port: alt, source: "engine", apiKeyRef: null });
+  }
+  const proxySeen = new Set();
+  const pushProxy = (port, apiKeyRef) => {
+    const p = normalizeServicePort(port);
+    if (p == null || proxySeen.has(p)) return;
+    proxySeen.add(p);
+    candidates.push({ port: p, source: "proxy", apiKeyRef: apiKeyRef ?? null });
+  };
+  pushProxy(service?.proxyPort, service?.proxyApiKeyRef);
+  for (const other of Array.isArray(opts.sparkProxies) ? opts.sparkProxies : []) {
+    pushProxy(other?.port, other?.apiKeyRef ?? other?.proxyApiKeyRef);
+  }
+
+  const get = async (port, path, apiKey) => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    timer.unref?.();
+    try {
+      const headers = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
+      return await fetchImpl(`http://${host}:${port}${path}`, { headers, signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  const readJson = async (res) => {
+    try {
+      return await res.json();
+    } catch {
+      return null;
+    }
+  };
+
+  for (const cand of candidates) {
+    const apiKey = cand.source === "proxy" ? resolveRef(cand.apiKeyRef, opts) : null;
+    try {
+      const probePath = isComfy ? "/system_stats" : "/v1/models";
+      const res = await get(cand.port, probePath, apiKey);
+      const isAuthGate = cand.source === "proxy" && (res.status === 401 || res.status === 403);
+      if (!res.ok && !isAuthGate) continue;
+
+      let model = null;
+      let engineVersion = null;
+      if (!isAuthGate) {
+        const body = await readJson(res);
+        if (isComfy) {
+          engineVersion =
+            body?.system?.comfyui_version ?? body?.comfyui_version ?? body?.version ?? null;
+        } else {
+          model = normalizeModelId(body?.data?.[0]?.id ?? null);
+          engineVersion = body?.version ?? body?.data?.[0]?.version ?? null;
+          if (engineVersion == null) {
+            try {
+              const vRes = await get(cand.port, "/version", apiKey);
+              if (vRes?.ok) {
+                const vBody = await readJson(vRes);
+                engineVersion = typeof vBody?.version === "string" ? vBody.version : null;
+              }
+            } catch {
+              /* version optional */
+            }
+          }
+        }
+      }
+
+      let countersHot = false;
+      try {
+        const mRes = await get(cand.port, "/metrics", apiKey);
+        if (mRes?.ok) countersHot = hasNonzeroRequestCounter(await mRes.text());
+      } catch {
+        /* metrics optional */
+      }
+      const activeAt = countersHot ? now : prevActiveAt;
+      const active =
+        countersHot ||
+        (prevActiveAt != null && now - prevActiveAt < SERVICE_ACTIVE_WINDOW_MS);
+      return {
+        status: "running",
+        source: cand.source,
+        port: cand.port,
+        model,
+        engineVersion: typeof engineVersion === "string" && engineVersion ? engineVersion : null,
+        active,
+        activeAt,
+        error: null,
+      };
+    } catch (err) {
+      // Connection failure on this candidate — fall through to the next.
+      continue;
+    }
+  }
+
+  return {
+    status: "stopped",
+    source: null,
+    port: enginePort,
+    model: null,
+    engineVersion: null,
+    active: false,
+    activeAt: prevActiveAt,
+    error: null,
+  };
+}
 
 // LIC2 clean-room rewrite (docs/specs/unit-history.md §6, docs/specs/roce.md §3):
 // the freshness accessors and the RoCE hook below were re-implemented from spec.
@@ -141,6 +350,10 @@ export class SparkMonitor {
     };
 
     // Online status from dedicated liveness checks (not metric poll success)
+    // Issue #93: probe-truth status for configured services (spark.services).
+    this._serviceStates = new Map();
+    this._probeDeps = options.serviceProbe || {};
+
     this.online = false;
     this.lastOnlineOk = 0;
 
@@ -193,6 +406,8 @@ export class SparkMonitor {
     this._hermesIntervalId = null;
     /** @type {ReturnType<typeof setInterval> | null} */
     this._tailscaleIntervalId = null;
+    /** @type {ReturnType<typeof setInterval> | null} */
+    this._servicesIntervalId = null;
     this._running = false;
     this._runGeneration = 0;
     /** @type {Record<string, boolean | symbol>} in-flight domain guards */
@@ -206,6 +421,7 @@ export class SparkMonitor {
     const prevComfyPort = this._comfyPort(this.spark);
     const wasHermes = this._hermesMonitoringEnabled(this.spark);
     const wasTailscale = this._tailscaleMonitoringEnabled(this.spark);
+    const wasServices = this._servicesEnabled(this.spark);
     this.collector.invalidatePendingCollections();
     this._runGeneration += 1;
     this._inflight = {};
@@ -276,6 +492,12 @@ export class SparkMonitor {
     this._hermes.monitoring = this._hermesMonitoringEnabled();
     if (this._running && wasHermes !== this._hermesMonitoringEnabled()) {
       this._restartHermesPollInterval();
+    }
+
+    // Service probes — rebuild when the services list changes at all
+    this._serviceStates = new Map();
+    if (this._running && wasServices !== this._servicesEnabled()) {
+      this._restartServicesPollInterval();
     }
 
     // Toggle LLM poll interval when monitoring enablement flips
@@ -359,6 +581,105 @@ export class SparkMonitor {
       this._intervals.push(this._llmIntervalId);
       void this._pollDomain("llm");
     }
+  }
+
+  /**
+   * Probe-truth service monitoring is active when the spark config carries a
+   * non-empty `services` list (normalized by SparkRegistry).
+   * @param {object} [spark]
+   */
+  _servicesEnabled(spark = this.spark) {
+    return Array.isArray(spark?.services) && spark.services.length > 0;
+  }
+
+  /** Start or clear the service-probe poll timer based on the services list. */
+  _restartServicesPollInterval() {
+    if (this._servicesIntervalId != null) {
+      clearInterval(this._servicesIntervalId);
+      this._intervals = this._intervals.filter((id) => id !== this._servicesIntervalId);
+      this._servicesIntervalId = null;
+    }
+    if (this._servicesEnabled() && this._running) {
+      this._servicesIntervalId = setInterval(
+        () => void this.probeServicesNow(),
+        POLL_INTERVAL_LLM
+      );
+      this._intervals.push(this._servicesIntervalId);
+      void this.probeServicesNow();
+    }
+  }
+
+  /**
+   * Probe every configured service once, probe-truth style (engine port →
+   * engine port +1 → same-spark proxy; comfyui uses /system_stats). Results
+   * land in _serviceStates and ride the snapshot as `services`.
+   * @returns {Promise<Array<object>>}
+   */
+  async probeServicesNow() {
+    const services = this.spark?.services;
+    if (!this._servicesEnabled()) {
+      this._serviceStates = new Map();
+      return [];
+    }
+    if (this._inflight.services) return this._serviceSnapshot();
+    const runGeneration = this._runGeneration;
+    const token = Symbol("services");
+    this._inflight.services = token;
+    try {
+      const host = llmProbeHost(this.spark) || "127.0.0.1";
+      const sparkProxies = services
+        .filter((s) => s?.proxyPort)
+        .map((s) => ({ port: s.proxyPort, apiKeyRef: s.proxyApiKeyRef ?? null }));
+      const results = await Promise.all(
+        services.map(async (svc) => {
+          const previous = this._serviceStates.get(svc?.name);
+          let out;
+          try {
+            out = await probeServiceTruth(svc, {
+              host,
+              sparkProxies,
+              previous,
+              fetch: this._probeDeps.fetch,
+              resolveApiKeyRef: this._probeDeps.resolveApiKeyRef,
+              env: this._probeDeps.env,
+              readFile: this._probeDeps.readFile,
+              now: this._probeDeps.now,
+            });
+          } catch (err) {
+            out = {
+              status: "stopped",
+              source: null,
+              port: normalizeServicePort(svc?.port),
+              model: null,
+              engineVersion: null,
+              active: false,
+              activeAt: previous?.activeAt ?? null,
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+          return {
+            name: svc?.name,
+            kind: svc?.kind || "other",
+            engine: svc?.engine || "",
+            port: svc?.port ?? null,
+            proxyPort: svc?.proxyPort ?? null,
+            polledAt: Date.now(),
+            ...out,
+          };
+        })
+      );
+      if (!this._running || this._runGeneration !== runGeneration) return this._serviceSnapshot();
+      this._serviceStates = new Map(
+        results.filter((r) => typeof r.name === "string" && r.name).map((r) => [r.name, r])
+      );
+      return results;
+    } finally {
+      if (this._inflight.services === token) this._inflight.services = false;
+    }
+  }
+
+  _serviceSnapshot() {
+    return Array.from(this._serviceStates.values());
   }
 
   /**
@@ -472,6 +793,7 @@ export class SparkMonitor {
     this._restartComfyPollInterval();
     this._restartHermesPollInterval();
     this._restartTailscalePollInterval();
+    this._restartServicesPollInterval();
     // Liveness on a slightly slower cadence
     this._intervals.push(setInterval(() => this._checkOnline(), POLL_INTERVAL_LIVENESS));
     console.log(`[SparkMonitor] ${this.spark.id} started`);
@@ -490,6 +812,7 @@ export class SparkMonitor {
     this._comfyIntervalId = null;
     this._hermesIntervalId = null;
     this._tailscaleIntervalId = null;
+    this._servicesIntervalId = null;
     this._inflight = {};
     if (this.comfyProbe) {
       try {
@@ -587,6 +910,9 @@ export class SparkMonitor {
             .filter((n) => Number.isInteger(n)),
       comfyMonitoring: comfyOn,
       comfyPort: this._comfyPort(),
+      // Probe-truth service status (issue #93): status/source/model/
+      // engineVersion/active per configured service.
+      services: this._servicesEnabled() ? this._serviceSnapshot() : [],
       tailscaleMonitoring: tailscaleOn,
       hermes: this._hermes,
       health: this._health,

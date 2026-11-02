@@ -21,6 +21,12 @@ export interface ServiceCardProps {
   footprintMB: number;
   /** true when this service is the active LLM. */
   active: boolean;
+  /**
+   * Where the probe-truth status came from (issue #93): the engine port
+   * itself or the HTTP proxy in front of it. Absent for rows without probe
+   * truth (agent-reported services).
+   */
+  source?: "engine" | "proxy" | null;
   /** Last time this service state was polled (ms epoch). */
   polledAt: number;
   onStart: () => void;
@@ -64,6 +70,26 @@ export function KindBadge({ kind }: { kind: ServiceInstance["kind"] }) {
   );
 }
 
+/**
+ * Probe-source chip (issue #93): which endpoint answered the status probe.
+ * Proxy answers are the interesting case (engine port closed / auth-gated),
+ * so they carry a warmer color than the plain engine badge.
+ */
+export function SourceBadge({ source }: { source: "engine" | "proxy" }) {
+  return (
+    <span
+      title={source === "proxy" ? "Status answered via the proxy port" : "Status answered on the engine port"}
+      className={`rounded border px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${
+        source === "proxy"
+          ? "border-warning/40 bg-warning/15 text-warning"
+          : "border-border bg-surface-elevated text-muted"
+      }`}
+    >
+      {source}
+    </span>
+  );
+}
+
 function Row({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex items-center justify-between gap-2 text-sm">
@@ -97,6 +123,7 @@ export function ServiceCard({
   engineVersion,
   footprintMB,
   active,
+  source,
   polledAt,
   onStart,
   onStop,
@@ -113,6 +140,7 @@ export function ServiceCard({
       actions={
         <div className="flex items-center gap-1.5">
           <KindBadge kind={kind} />
+          {source ? <SourceBadge source={source} /> : null}
           <StatusBadge status={status} />
         </div>
       }

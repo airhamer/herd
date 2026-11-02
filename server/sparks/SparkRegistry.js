@@ -626,6 +626,13 @@ export class SparkRegistry {
        * the SparkMonitor checks for updates and allows one-click `hermes update`.
        */
       hermesMonitoring: Boolean(config.hermesMonitoring),
+      /**
+       * Per-service status config (issue #93). Optional; empty when absent.
+       * Each entry: { name, kind, engine, port, proxyPort, proxyApiKeyRef }.
+       * proxyPort = HTTP proxy in front of the engine (fallback probe);
+       * proxyApiKeyRef = "env:VAR" / "file:/path" secret ref, never a raw key.
+       */
+      services: this._normalizeServices(config.services),
       disabledDevices: Array.isArray(config.disabledDevices) ? config.disabledDevices : [],
       disabledInterfaces: Array.isArray(config.disabledInterfaces) ? config.disabledInterfaces : [],
       storagePollDisabled: Boolean(config.storagePollDisabled),
@@ -637,6 +644,42 @@ export class SparkRegistry {
     const n = typeof value === "string" ? parseInt(value, 10) : Number(value);
     if (Number.isInteger(n) && n >= 1 && n <= 65535) return n;
     return 8188;
+  }
+
+  /** Normalize an optional service/proxy port; invalid → null (absent). */
+  _normalizeServicePort(value) {
+    const n = typeof value === "string" ? parseInt(value, 10) : Number(value);
+    return Number.isInteger(n) && n >= 1 && n <= 65535 ? n : null;
+  }
+
+  /**
+   * Normalize the optional per-service list: drop nameless/invalid entries,
+   * validate ports (invalid → null), trim refs, cap at 32 services.
+   */
+  _normalizeServices(value) {
+    if (!Array.isArray(value)) return [];
+    const out = [];
+    for (const s of value) {
+      if (!s || typeof s !== "object" || Array.isArray(s)) continue;
+      const name = typeof s.name === "string" ? s.name.trim() : "";
+      if (!name) continue;
+      const kind = typeof s.kind === "string" && s.kind.trim() ? s.kind.trim() : "other";
+      const engine = typeof s.engine === "string" ? s.engine.trim().toLowerCase() : "";
+      const ref =
+        typeof s.proxyApiKeyRef === "string" && s.proxyApiKeyRef.trim()
+          ? s.proxyApiKeyRef.trim()
+          : null;
+      out.push({
+        name,
+        kind,
+        engine,
+        port: this._normalizeServicePort(s.port),
+        proxyPort: this._normalizeServicePort(s.proxyPort),
+        proxyApiKeyRef: ref,
+      });
+      if (out.length >= 32) break;
+    }
+    return out;
   }
 
   /** Normalize role; legacy workerNode=true → worker. */
