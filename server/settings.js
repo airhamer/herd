@@ -59,6 +59,13 @@ const DEFAULTS = Object.freeze({
    */
   benchShareImage: true,
   /**
+   * Guard/keepalive proxy fronting an LLM engine (GUARD1 #95). baseURL is the
+   * proxy origin (http://192.168.50.226:8081); apiKeyRef is an "env:VAR" /
+   * "file:/path" secret ref — never a raw key, matching the SRV1 proxy keys.
+   * Empty baseURL means "not configured" and the panel says so.
+   */
+  guardProxy: { baseURL: "", apiKeyRef: "" },
+  /**
    * Record the bucketed per-unit history the unit page charts (1-minute
    * buckets for two days, quarter-hour buckets for a month). Default off;
    * while off no buckets are kept and the history file is left alone.
@@ -93,6 +100,7 @@ function _clampSettings(settings) {
   s.electricityCurrency = normalizeCurrency(s.electricityCurrency);
   s.energyIdleBaselineW = normalizeBaseline(s.energyIdleBaselineW, DEFAULT_IDLE_BASELINE_W);
   s.energyHostBaselines = normalizeHostBaselines(s.energyHostBaselines);
+  s.guardProxy = normalizeGuardProxy(s.guardProxy);
   s.settingsRevision = DEFAULTS.settingsRevision;
   // Ensure temperatureUnit is valid
   if (s.temperatureUnit !== "celsius" && s.temperatureUnit !== "fahrenheit") {
@@ -103,6 +111,38 @@ function _clampSettings(settings) {
     s.density = DEFAULTS.density;
   }
   return s;
+}
+
+/**
+ * Secret-ref shape for guardProxy.apiKeyRef: "env:VAR", "file:/path", or a
+ * bare env-var name. Anything else (URLs, raw keys with punctuation) is
+ * rejected — the field names where a key lives, never the key itself.
+ */
+const GUARD_PROXY_KEY_REF = /^(env:[A-Za-z_][A-Za-z0-9_]*|file:\/[^\r\n]{1,500}|[A-Za-z_][A-Za-z0-9_]*)$/;
+
+/**
+ * Clamp the guard-proxy config (GUARD1 #95). baseURL must be a parseable
+ * http(s) origin with a host (trailing slashes trimmed); apiKeyRef must match
+ * the secret-ref shapes. Invalid parts clear to "" — a half-valid edit never
+ * half-probes.
+ */
+function normalizeGuardProxy(value) {
+  const out = { baseURL: "", apiKeyRef: "" };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+  const rawUrl = typeof value.baseURL === "string" ? value.baseURL.trim() : "";
+  if (rawUrl && rawUrl.length <= 512) {
+    try {
+      const url = new URL(rawUrl);
+      if ((url.protocol === "http:" || url.protocol === "https:") && url.hostname) {
+        out.baseURL = rawUrl.replace(/\/+$/, "");
+      }
+    } catch {
+      /* not a URL → cleared */
+    }
+  }
+  const ref = typeof value.apiKeyRef === "string" ? value.apiKeyRef.trim() : "";
+  if (ref && ref.length <= 512 && GUARD_PROXY_KEY_REF.test(ref)) out.apiKeyRef = ref;
+  return out;
 }
 
 /** Per-host baselines: `{ [unitId]: watts }`, invalid entries dropped. */

@@ -159,6 +159,49 @@ export function SettingsDialog({ open, onClose, onSaved }: SettingsDialogProps) 
               </p>
             </div>
 
+            {/* Guard proxy (GUARD1 #95) */}
+            <div>
+              <label className="mb-1 block text-xs text-muted">Guard proxy URL</label>
+              <input
+                type="text"
+                aria-label="Guard proxy URL"
+                value={settings.guardProxy?.baseURL ?? ""}
+                onChange={(e) =>
+                  update({
+                    guardProxy: {
+                      baseURL: e.target.value,
+                      apiKeyRef: settings.guardProxy?.apiKeyRef ?? "",
+                    },
+                  })
+                }
+                placeholder="http://192.168.50.226:8081"
+                className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+              />
+              <p className="mt-1 text-[10px] text-muted">
+                Keepalive proxy fronting an LLM engine (see docs/guard-proxy.md). The
+                Guard panel probes its /health — 401/403 still counts as alive.
+              </p>
+              <label className="mb-1 mt-2 block text-xs text-muted">Guard proxy key ref</label>
+              <input
+                type="text"
+                aria-label="Guard proxy key ref"
+                value={settings.guardProxy?.apiKeyRef ?? ""}
+                onChange={(e) =>
+                  update({
+                    guardProxy: {
+                      baseURL: settings.guardProxy?.baseURL ?? "",
+                      apiKeyRef: e.target.value,
+                    },
+                  })
+                }
+                placeholder="env:GUARD_PROXY_KEY"
+                className="w-full rounded border border-border bg-surface-elevated px-3 py-1.5 text-xs text-text outline-none focus:border-accent"
+              />
+              <p className="mt-1 text-[10px] text-muted">
+                Secret ref only — “env:VAR” or “file:/path”. The key itself is never stored here.
+              </p>
+            </div>
+
             {/* Auto-hide offline */}
             <div>
               <label className="flex items-center gap-3 text-xs text-muted">

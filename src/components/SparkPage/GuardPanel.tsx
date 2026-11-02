@@ -1,6 +1,12 @@
 import { useEffect, useState } from "react";
 import { fetchGuard } from "../../api/client";
-import type { GuardResult, GuardStatus, GuardTimelineEntry } from "../../api/types";
+import type {
+  GuardProxyResult,
+  GuardResponse,
+  GuardResult,
+  GuardStatus,
+  GuardTimelineEntry,
+} from "../../api/types";
 import { Panel } from "../ui/Panel";
 
 /** Poll cadence for the guard endpoint, same 30 s as the other status panels. */
@@ -82,8 +88,8 @@ export function guardSummary(guards: readonly GuardResult[]): GuardSummary {
  * useUnitHistory idiom). The last good answer stays on screen across a
  * failed refresh; the first failure before any answer sets `error`.
  */
-function useGuardStatus(fetcher: () => Promise<{ guards: GuardResult[] }>) {
-  const [data, setData] = useState<{ guards: GuardResult[] } | null>(null);
+function useGuardStatus(fetcher: () => Promise<GuardResponse>) {
+  const [data, setData] = useState<GuardResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -116,7 +122,69 @@ export interface GuardPanelProps {
    * Injectable fetcher (tests pass a stub; production default is fetchGuard,
    * GET /api/guard). The component itself never calls fetch directly.
    */
-  fetcher?: () => Promise<{ guards: GuardResult[] }>;
+  fetcher?: () => Promise<GuardResponse>;
+}
+
+/** Seconds → "45s" / "7m" / "2h 13m"; null renders an em-dash. */
+export function formatUptime(seconds: number | null): string {
+  if (seconds === null || !Number.isFinite(seconds) || seconds < 0) return "—";
+  const s = Math.floor(seconds);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
+
+/**
+ * One keepalive-proxy row (GUARD1 #95): endpoint, liveness (auth-gate alive
+ * counts, per the SRV1 convention), uptime + request count when the proxy
+ * exposes them — else "no metrics endpoint" — the engine behind it when the
+ * fleet's SRV1 service truth knows, and the last-probe time. A dead proxy
+ * shows its reason, never a blank.
+ */
+function GuardProxyRow({ proxy }: { proxy: GuardProxyResult }) {
+  const badge = proxy.alive
+    ? "bg-success/15 text-success"
+    : proxy.status === "not-configured"
+      ? "bg-border text-muted"
+      : "bg-danger/15 text-danger";
+  const badgeText = proxy.alive ? "alive" : proxy.status === "not-configured" ? "unset" : "down";
+  const engine = proxy.engine;
+  return (
+    <div
+      data-guard-proxy
+      className="rounded-md border border-border bg-surface-elevated px-3 py-2 text-xs"
+    >
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+        <span className="max-w-48 truncate font-medium text-text" title={proxy.label ?? undefined}>
+          {proxy.label || "Guard proxy"}
+        </span>
+        <span
+          className={`shrink-0 rounded px-1 text-[9px] font-medium uppercase tracking-wide ${badge}`}
+          title={proxy.authGate ? "alive via auth gate (401/403 proves the process answers)" : undefined}
+        >
+          {badgeText}
+        </span>
+      </div>
+      <p className="mt-0.5 break-all text-[10px] text-muted">{proxy.baseUrl ?? "no URL"}</p>
+      {proxy.alive && (
+        <p className="mt-0.5 text-[10px] text-muted">
+          {proxy.hasMetrics
+            ? `up ${formatUptime(proxy.uptimeSeconds)} · ${proxy.requestCount ?? "—"} requests`
+            : "no metrics endpoint"}
+        </p>
+      )}
+      <p className="mt-0.5 text-[10px] text-muted">
+        engine behind proxy: {engine ? [engine.engine, engine.model].filter(Boolean).join(" · ") || engine.name || "configured" : "unknown"}
+      </p>
+      {!proxy.alive && proxy.reason && (
+        <p className="mt-0.5 text-[10px] text-danger">{proxy.reason}</p>
+      )}
+      <p className="mt-0.5 text-[9px] text-muted" data-guard-proxy-probed>
+        probed {proxy.checkedAt}
+      </p>
+    </div>
+  );
 }
 
 /**
@@ -130,17 +198,28 @@ export interface GuardPanelProps {
 export function GuardPanel({ className, fetcher = fetchGuard }: GuardPanelProps) {
   const { data, error } = useGuardStatus(fetcher);
   const summary = data && data.guards.length > 0 ? guardSummary(data.guards) : null;
+  const proxy = data?.proxy ?? null;
 
   let body;
   if (error && !data) {
     body = <p className="text-xs text-danger">Could not load guard status: {error}</p>;
   } else if (!data) {
     body = <p className="text-xs text-muted">Checking guards…</p>;
-  } else if (data.guards.length === 0) {
-    body = <p className="text-xs text-muted">No guard proxies configured. (Hasso’s dgx-spark-qwen38 setup uses an external guard-proxy fronting the LLM endpoint on the node, referenced as recipe+port rather than enrolled system. Add baseUrl to settings.guard.endpoints to surface status.)</p>;
+  } else if (data.guards.length === 0 && !proxy) {
+    // GUARD1 (#95): the old empty state hinted at a settings field with no
+    // way to set it. The empty state now names the reason and the fix.
+    body = (
+      <p className="text-xs text-muted">
+        No guard proxies configured — not configured, so nothing to probe. Add the
+        keepalive proxy URL in Settings ("Guard proxy URL", e.g.
+        http://192.168.50.226:8081) and this panel will show its liveness and the
+        engine behind it.
+      </p>
+    );
   } else {
     body = (
       <div className="space-y-2">
+        {proxy && <GuardProxyRow proxy={proxy} />}
         {data.guards.map((guard, i) => {
           const name = guard.label || guard.id || "unnamed guard";
           const timeline = recentCrashEntries(guard.crashTimeline);
@@ -189,7 +268,10 @@ export function GuardPanel({ className, fetcher = fetchGuard }: GuardPanelProps)
         summary ? (
           <span className="text-[10px] text-muted">
             {summary.running}/{summary.total} running · {summary.held} held
+            {proxy ? ` · proxy ${proxy.alive ? "alive" : "down"}` : ""}
           </span>
+        ) : proxy ? (
+          <span className="text-[10px] text-muted">proxy {proxy.alive ? "alive" : "down"}</span>
         ) : undefined
       }
     >

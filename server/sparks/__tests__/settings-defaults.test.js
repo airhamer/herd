@@ -58,3 +58,33 @@ test("energy settings are clamped and sanitised", () => {
   assert.equal(settings.updateSettings({ electricityPricePerKwh: 0, electricityCurrency: "gbp" }).electricityCurrency, "GBP");
   assert.equal(settings.getSettings().electricityPricePerKwh, 0);
 });
+
+// GUARD1 (#95): guardProxy config — validated, trimmed, never half-valid.
+test("guardProxy defaults to empty and is clamped on save", () => {
+  fs.writeFileSync(settingsFile, "{}");
+  assert.deepEqual(settings.loadSettings().guardProxy, { baseURL: "", apiKeyRef: "" });
+
+  const ok = settings.updateSettings({
+    guardProxy: { baseURL: "http://192.168.50.226:8081///", apiKeyRef: "env:GUARD_PROXY_KEY" },
+  });
+  assert.equal(ok.guardProxy.baseURL, "http://192.168.50.226:8081");
+  assert.equal(ok.guardProxy.apiKeyRef, "env:GUARD_PROXY_KEY");
+  assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, "utf8")).guardProxy, ok.guardProxy);
+
+  // Non-http(s) schemes and non-URLs clear; secret-ref shapes pass, raw keys don't.
+  for (const baseURL of ["ftp://x.test", "not a url", "javascript:alert(1)", "", 42]) {
+    assert.equal(settings.updateSettings({ guardProxy: { baseURL } }).guardProxy.baseURL, "", String(baseURL));
+  }
+  assert.equal(settings.updateSettings({ guardProxy: { baseURL: "https://h.test:8443/base" } }).guardProxy.baseURL, "https://h.test:8443/base");
+  for (const apiKeyRef of ["file:/etc/herd/guard.key", "GUARD_PROXY_KEY", "env:K"]) {
+    assert.equal(settings.updateSettings({ guardProxy: { apiKeyRef } }).guardProxy.apiKeyRef, apiKeyRef);
+  }
+  for (const apiKeyRef of ["sk-abc123", "http://k.test", "has space", "env:"]) {
+    assert.equal(settings.updateSettings({ guardProxy: { apiKeyRef } }).guardProxy.apiKeyRef, "", apiKeyRef);
+  }
+
+  // Junk values (array, string, missing) never throw and never stick.
+  for (const junk of ["http://x.test", [], 7, null]) {
+    assert.deepEqual(settings.updateSettings({ guardProxy: junk }).guardProxy, { baseURL: "", apiKeyRef: "" });
+  }
+});

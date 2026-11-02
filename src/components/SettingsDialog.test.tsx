@@ -103,3 +103,37 @@ describe("SettingsDialog Fleet energy (issue #33)", () => {
     expect(container.querySelector("[aria-label='Electricity price per kWh']")).not.toBeNull();
   });
 });
+
+// GUARD1 (#95): the guard-proxy config row the panel hint used to promise.
+describe("SettingsDialog guard proxy (#95)", () => {
+  it("renders the guard-proxy URL + key-ref fields with their current values", async () => {
+    const { container } = await open(
+      settings({ guardProxy: { baseURL: "http://192.168.50.226:8081", apiKeyRef: "env:GUARD_PROXY_KEY" } }),
+    );
+    const url = container.querySelector<HTMLInputElement>("[aria-label='Guard proxy URL'], [aria-label^='Guard proxy URL']");
+    const key = container.querySelector<HTMLInputElement>("[aria-label='Guard proxy key ref']");
+    expect(url?.value).toBe("http://192.168.50.226:8081");
+    expect(key?.value).toBe("env:GUARD_PROXY_KEY");
+  });
+
+  it("saves an edited guard proxy URL and key ref together", async () => {
+    const { container } = await open(settings({ guardProxy: { baseURL: "", apiKeyRef: "" } }));
+    setInput(
+      container.querySelector<HTMLInputElement>("[aria-label='Guard proxy URL']")!,
+      "http://192.168.50.226:8081",
+    );
+    setInput(
+      container.querySelector<HTMLInputElement>("[aria-label='Guard proxy key ref']")!,
+      "env:GUARD_PROXY_KEY",
+    );
+    save.mockImplementation(async (next) => next as Settings);
+    const saveButton = [...container.querySelectorAll("button")].find((b) => b.textContent === "Save");
+    await act(async () => {
+      saveButton!.click();
+    });
+    expect((save.mock.calls[0][0] as Settings).guardProxy).toEqual({
+      baseURL: "http://192.168.50.226:8081",
+      apiKeyRef: "env:GUARD_PROXY_KEY",
+    });
+  });
+});

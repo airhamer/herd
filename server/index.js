@@ -7,7 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { SparkRegistry } from "./sparks/SparkRegistry.js";
-import { SparkMonitor } from "./sparks/SparkMonitor.js";
+import { SparkMonitor, resolveServiceApiKeyRef } from "./sparks/SparkMonitor.js";
 import { sshExec } from "./collectors/ssh.js";
 import { comfyCancelJob } from "./collectors/comfyActions.js";
 import {
@@ -19,7 +19,7 @@ import {
 } from "./validate.js";
 import { authorizeUpgrade, configuredToken, createAuthMiddleware, requireRemoteAuth } from "./auth.js";
 import { inspectHealth } from "./health.js";
-import { probeAll } from "./health/guardProbe.js";
+import { probeAll, probeKeepaliveProxy, findEngineBehindProxy } from "./health/guardProbe.js";
 import { probeAllMemoryServices } from "./health/memoryProbe.js";
 import { getSettings, updateSettings, loadSettings } from "./settings.js";
 import { broadcastForLanIp, effectiveMac, normalizeMac, sendWol } from "./wol.js";
@@ -838,14 +838,45 @@ app.get("/api/health", (_req, res) => {
 // S4.1a guard probe: read-only, settings-tolerant. No .guard config (or
 // entries without a string baseUrl) is the graceful "not present" state —
 // the route then answers {guards:[]}. The panel (S4.1b) owns presentation.
+//
+// GUARD1 (#95): settings.guardProxy adds the keepalive-proxy fronting an LLM
+// engine (e.g. gx10-1c2c:8081). `proxy` is its probe result — null when not
+// configured (the panel's "why is this empty" state), else alive/down with
+// 401/403 counted alive and `engine` filled from the SRV1 service-truth
+// snapshots when the fleet already knows what sits behind that port.
 app.get("/api/guard", async (_req, res) => {
   try {
-    const configured = getSettings()?.guard?.endpoints;
+    const settings = getSettings();
+    const configured = settings?.guard?.endpoints;
     const endpoints = (Array.isArray(configured) ? configured : []).filter(
       (e) => typeof e?.baseUrl === "string" && e.baseUrl
     );
     const guards = await probeAll(endpoints, { fetchImpl: globalThis.fetch });
-    res.json({ guards });
+    let proxy = null;
+    const guardProxy = settings?.guardProxy;
+    if (typeof guardProxy?.baseURL === "string" && guardProxy.baseURL) {
+      proxy = await probeKeepaliveProxy(
+        {
+          id: "guard-proxy",
+          label: "Guard proxy",
+          baseUrl: guardProxy.baseURL,
+          apiKeyRef: guardProxy.apiKeyRef,
+        },
+        { fetchImpl: globalThis.fetch, resolveApiKeyRef: resolveServiceApiKeyRef }
+      );
+      try {
+        const url = new URL(guardProxy.baseURL);
+        const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
+        const engine = findEngineBehindProxy(
+          [...monitors.values()].map((m) => m.snapshot()),
+          { port, host: url.hostname }
+        );
+        if (engine) proxy = { ...proxy, engine };
+      } catch {
+        /* unparseable URL survived the clamp — engine lookup is optional */
+      }
+    }
+    res.json({ guards, proxy });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

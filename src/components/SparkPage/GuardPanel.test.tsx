@@ -158,3 +158,135 @@ describe("GuardPanel", () => {
     expect(GUARD_POLL_MS).toBe(30_000);
   });
 });
+
+// ─── GUARD1 (#95): keepalive-proxy row + why-empty state ────────────
+
+import type { GuardProxyResult, GuardResponse } from "../../api/types";
+
+/** A probed keepalive proxy; callers override only what a test is about. */
+const proxyResult = (over: Partial<GuardProxyResult> = {}): GuardProxyResult => ({
+  id: "gp",
+  label: "Guard proxy",
+  baseUrl: "http://192.168.50.226:8081",
+  present: true,
+  alive: true,
+  authGate: false,
+  status: "alive",
+  uptimeSeconds: 3725,
+  requestCount: 41,
+  hasMetrics: true,
+  engine: { sparkId: "n1", name: "qwen", engine: "vllm", model: "qwen3-32b", enginePort: 8080 },
+  checkedAt: "2026-11-02T10:00:00.000Z",
+  reason: null,
+  ...over,
+});
+
+const fetcherResponse = (res: GuardResponse) => vi.fn(async () => res);
+
+describe("GuardPanel guard-proxy (#95)", () => {
+  it("says WHY the panel is empty: not configured, and points at Settings", async () => {
+    const { container } = render(
+      <GuardPanel fetcher={fetcherResponse({ guards: [], proxy: null })} />,
+    );
+    await flush();
+    const text = container.textContent ?? "";
+    expect(text).toContain("not configured");
+    expect(text).toContain("Guard proxy URL");
+    expect(text).toContain("Settings");
+    expect(container.querySelector(".text-danger")).toBeNull();
+  });
+
+  it("renders the proxy endpoint, liveness, engine behind it, and last-probe time", async () => {
+    const { container } = render(
+      <GuardPanel fetcher={fetcherResponse({ guards: [], proxy: proxyResult() })} />,
+    );
+    await flush();
+    const row = container.querySelector("[data-guard-proxy]");
+    expect(row).not.toBeNull();
+    const text = container.textContent ?? "";
+    expect(text).toContain("http://192.168.50.226:8081");
+    expect(text).toContain("alive");
+    expect(text).toContain("vllm · qwen3-32b");
+    expect(text).toContain("probed");
+    expect(container.querySelector(".text-danger")).toBeNull();
+  });
+
+  it("badges an auth-gate-alive proxy as alive, not down", async () => {
+    const { container } = render(
+      <GuardPanel
+        fetcher={fetcherResponse({
+          guards: [],
+          proxy: proxyResult({
+            authGate: true,
+            uptimeSeconds: null,
+            requestCount: null,
+            hasMetrics: false,
+            engine: null,
+          }),
+        })}
+      />,
+    );
+    await flush();
+    const text = container.textContent ?? "";
+    expect(text).toContain("alive");
+    expect(text).not.toContain("down");
+    // No metrics endpoint and no known engine are said out loud, never blank.
+    expect(text).toContain("no metrics endpoint");
+    expect(text).toContain("unknown");
+  });
+
+  it("a dead proxy shows its reason (unreachable is data, not a blank panel)", async () => {
+    const { container } = render(
+      <GuardPanel
+        fetcher={fetcherResponse({
+          guards: [],
+          proxy: proxyResult({
+            present: false,
+            alive: false,
+            status: "down",
+            hasMetrics: false,
+            uptimeSeconds: null,
+            requestCount: null,
+            reason: "unreachable",
+          }),
+        })}
+      />,
+    );
+    await flush();
+    const text = container.textContent ?? "";
+    expect(text).toContain("down");
+    expect(text).toContain("unreachable");
+  });
+
+  it("keeps rendering legacy guard rows alongside the proxy row", async () => {
+    const { container } = render(
+      <GuardPanel
+        fetcher={fetcherResponse({ guards: [guard()], proxy: proxyResult() })}
+      />,
+    );
+    await flush();
+    expect(container.querySelector("[data-guard-proxy]")).not.toBeNull();
+    expect(container.textContent ?? "").toContain("Guard One");
+  });
+
+  it("formats uptime seconds into human units", async () => {
+    const cases: Array<[number | null, string]> = [
+      [45, "45s"],
+      [300, "5m"],
+      [3725, "1h 2m"],
+      [null, "—"],
+    ];
+    for (const [value, want] of cases) {
+      const { container } = render(
+        <GuardPanel
+          fetcher={fetcherResponse({
+            guards: [],
+            proxy: proxyResult({ uptimeSeconds: value, requestCount: null }),
+          })}
+        />,
+      );
+      await flush();
+      expect(container.textContent ?? "").toContain(`up ${want}`);
+    }
+  });
+});

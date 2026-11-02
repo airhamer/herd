@@ -925,6 +925,18 @@ export interface Settings {
   alertsEnabled?: boolean;
   /** Opt-in dense 48 h GPU/unit history + bucketed day/week tiers. Off by default (saves disk + CPU). */
   metricsHistory: boolean;
+  /**
+   * Guard/keepalive proxy fronting an LLM engine (GUARD1 #95). Empty baseURL
+   * means not configured. apiKeyRef is an "env:VAR" / "file:/path" secret
+   * ref — never a raw key.
+   */
+  guardProxy?: GuardProxyConfig;
+}
+
+/** Settings shape for the guard-proxy config row (GUARD1 #95). */
+export interface GuardProxyConfig {
+  baseURL: string;
+  apiKeyRef: string;
 }
 
 export interface SparksListResponse {
@@ -1986,6 +1998,54 @@ export interface GuardResult {
   checkedAt: string;
   /** null when present; else "unreachable" | "timeout" | "malformed" | "http-<code>". */
   reason: string | null;
+}
+
+// ─── Guard / keepalive proxy (GUARD1 #95, GET /api/guard .proxy) ──────────
+
+/** Engine-behind-proxy lookup from the SRV1 service-truth snapshots. */
+export interface GuardProxyEngine {
+  sparkId: string | null;
+  name: string | null;
+  engine: string | null;
+  /** Served model when the SRV1 probe chain saw one; null via an auth gate. */
+  model: string | null;
+  enginePort: number | null;
+}
+
+/**
+ * One probed guard/keepalive proxy. Field names mirror the server JSDoc in
+ * server/health/guardProbe.js exactly (GUARD1 #95). 401/403 count as alive
+ * (the SRV1 auth-gate convention), reported with authGate:true.
+ */
+export interface GuardProxyResult {
+  id: string | null;
+  label: string | null;
+  /** The trimmed base URL, null when unusable. */
+  baseUrl: string | null;
+  present: boolean;
+  alive: boolean;
+  /** true when liveness came from a 401/403 auth gate. */
+  authGate: boolean;
+  status: "alive" | "down" | "not-configured";
+  /** Seconds, when the proxy's health body exposes uptime. */
+  uptimeSeconds: number | null;
+  /** Recent/total request count when the proxy exposes one. */
+  requestCount: number | null;
+  /** true when at least one metric field was readable. */
+  hasMetrics: boolean;
+  /** Engine behind the proxy, from the fleet's SRV1 truth; null when unknown. */
+  engine: GuardProxyEngine | null;
+  /** ISO timestamp of when the probe ran. */
+  checkedAt: string;
+  /** null when alive; else "not-configured" | "unreachable" | "timeout" | "malformed" | "http-<code>". */
+  reason: string | null;
+}
+
+/** Response of GET /api/guard. `proxy` is null when guardProxy is unconfigured. */
+export interface GuardResponse {
+  guards: GuardResult[];
+  /** GUARD1 (#95): the configured keepalive proxy's probe, or null. */
+  proxy?: GuardProxyResult | null;
 }
 
 // ─── Memory health (GET /api/memory-health) ───────────────────────

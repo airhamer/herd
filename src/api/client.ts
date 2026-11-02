@@ -22,7 +22,7 @@ import type {
   FleetPlanResponse,
   FleetSnapshot,
   GpuHistoryResponse,
-  GuardResult,
+  GuardResponse,
   MemoryServiceResult,
   FleetUpdatesResponse,
   HermesBatchUpdateResponse,
@@ -944,10 +944,14 @@ export function getGpuHistory(sparkId: string, windowMs?: number): Promise<GpuHi
   return apiFetch<GpuHistoryResponse>(`${sparkPath(sparkId)}/gpu-history${query}`);
 }
 
-// ─── Guard proxy (S4.1b) ──────────────────────────────────
+// ─── Guard proxy (S4.1b + GUARD1 #95) ────────────────────
 
-/** Fleet-level guard-proxy status; `guards: []` means nothing is configured. */
-export function fetchGuard(): Promise<{ guards: GuardResult[] }> {
+/**
+ * Fleet-level guard-proxy status. `guards: []` means the S4.1a list is empty;
+ * `proxy: null` means no keepalive proxy is configured (GUARD1 #95) — the
+ * panel renders the "why is this empty" empty state from that.
+ */
+export function fetchGuard(): Promise<GuardResponse> {
   return apiFetch("/api/guard");
 }
 
