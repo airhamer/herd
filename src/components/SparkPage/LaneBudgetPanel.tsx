@@ -1,4 +1,4 @@
-import type { NodeLanes } from "../../../shared/types";
+import type { LaneEntry, NodeLanes, ServiceInstance } from "../../../shared/types";
 import { computeLaneBudgets, type BudgetLanes } from "../../lib/laneCoexistence";
 import { MetricBar } from "../ui/MetricBar";
 import { Panel } from "../ui/Panel";
@@ -16,6 +16,14 @@ export interface LaneBudgetPanelProps {
    * pool shows the estimate-only hint.
    */
   recipeFootprints?: Record<string, number | null | undefined>;
+  /**
+   * Issue #94: the node snapshot's services[] rows (SRV1 probe truth —
+   * {status, source, model, engineVersion, active}). When a lane matches a
+   * service, the row's probe status drives the chip and its footprintMB is
+   * the CURRENT in-use memory summed into the Running bar; without it the
+   * panel behaves exactly as before (lane state + recipe estimates).
+   */
+  services?: readonly ServiceInstance[] | null;
   className?: string;
 }
 
@@ -31,23 +39,63 @@ function isKnownFootprint(mb: number | null | undefined): mb is number {
 }
 
 /**
+ * Find the probe row owning a lane. Identity convention first (service name
+ * == recipe name, as the NodeDetail recipe-footprint merge already assumes),
+ * then the port pin with a compatible model id (either side unknown passes).
+ * Engine equality rides along via the shared name/port pin — lanes carry no
+ * engine field, and the catalog match (matchServiceToComponent server-side)
+ * is what binds name/port to an engine+model definition.
+ */
+function probeForLane(
+  services: readonly ServiceInstance[] | null | undefined,
+  lane: LaneEntry,
+): ServiceInstance | null {
+  if (!Array.isArray(services)) return null;
+  const byName = services.find((s) => s && s.name === lane.recipe);
+  if (byName) return byName;
+  return (
+    services.find(
+      (s) =>
+        s &&
+        Number.isFinite(s.port) &&
+        s.port === lane.port &&
+        (s.modelId == null || lane.modelId == null || s.modelId === lane.modelId),
+    ) ?? null
+  );
+}
+
+/**
  * Caller-side footprint merge (the lane→footprint lookup that
  * computeLaneBudgets expects on BudgetLane). Nullish lanes pass through
  * unchanged so "not present" stays not-present; a malformed lanes value is
  * forwarded to computeLaneBudgets, which guards it.
+ *
+ * Probe truth wins over the recipe estimate: a matched service replaces the
+ * lane's at-start footprint with its current in-use footprintMB and its
+ * probe status with the scheduler's lane state (issue #94).
  */
 function withFootprints(
   lanes: NodeLanes | null | undefined,
   recipeFootprints: Record<string, number | null | undefined> | undefined,
+  services: readonly ServiceInstance[] | null | undefined,
 ): BudgetLanes | null | undefined {
   if (!lanes || !Array.isArray(lanes.pools)) return lanes ?? null;
   return {
     pools: lanes.pools.map((pool) => ({
       id: pool.id,
-      lanes: pool.lanes.map((lane) => ({
-        ...lane,
-        footprintMB: recipeFootprints?.[lane.recipe] ?? null,
-      })),
+      lanes: pool.lanes.map((lane) => {
+        const base = { ...lane, footprintMB: recipeFootprints?.[lane.recipe] ?? null };
+        const probe = probeForLane(services, lane);
+        if (!probe) return base;
+        return {
+          ...base,
+          footprintMB: Number.isFinite(probe.footprintMB)
+            ? probe.footprintMB
+            : base.footprintMB,
+          running: probe.status === "running",
+          state: probe.status,
+        };
+      }),
     })),
   };
 }
@@ -66,10 +114,11 @@ export function LaneBudgetPanel({
   lanes,
   poolTotalMB,
   recipeFootprints,
+  services,
   className,
 }: LaneBudgetPanelProps) {
   const budgets = computeLaneBudgets(
-    withFootprints(lanes, recipeFootprints),
+    withFootprints(lanes, recipeFootprints, services),
     poolTotalMB,
   );
   const overPools = budgets.pools.filter((p) => p.overCommitted);

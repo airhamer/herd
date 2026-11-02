@@ -1,8 +1,10 @@
+import { useEffect, useState } from "react";
 import type {
   MemoryBudget as MemoryBudgetType,
   ServiceInstance,
   VersionInfo,
 } from "../../../shared/types";
+import { fetchComponents, type CatalogComponent } from "../../api/client";
 import { Panel } from "../ui/Panel";
 import { GridIcon } from "../ui/icons";
 import { KindBadge, ServiceCard, StatusBadge } from "./ServiceCard";
@@ -21,6 +23,13 @@ export interface ServiceManagerPageProps {
    * output. null/undefined → single-node view, unchanged.
    */
   groupPlan?: GroupPlanForNode | null;
+  /**
+   * Issue #94: live catalog components used to group each configured
+   * service under its owning component card. Omit → the page self-fetches
+   * GET /api/components once (GuardPanel precedent); a failed fetch degrades
+   * to the flat card list (today's behavior). An empty list groups nothing.
+   */
+  components?: CatalogComponentWithPort[] | null;
   onStart: (serviceName: string) => void;
   onStop: (serviceName: string) => void;
   onSwitch: (serviceName: string) => void;
@@ -28,6 +37,41 @@ export interface ServiceManagerPageProps {
 
 function versionKey(v: VersionInfo): string {
   return `${v.serviceName}:${v.port}`;
+}
+
+/**
+ * CatalogComponent plus the projected engine port (issue #94 server-side
+ * projection). Optional so older servers without the field still typecheck.
+ */
+export type CatalogComponentWithPort = CatalogComponent & { port?: number | null };
+
+/**
+ * Client mirror of matchServiceToComponent (server/fleet/componentCatalog.js
+ * — same rules; the server module imports node:fs so it cannot be bundled
+ * here). Map one configured service to its owning catalog component:
+ * engine must match case-insensitively, then EITHER the component's port
+ * equals service.port OR the live model id equals servedModelName pins the
+ * row. No agreement → null (the service stays a flat card).
+ */
+export function matchServiceToComponent(
+  components: readonly CatalogComponentWithPort[],
+  service: Pick<ServiceInstance, "engine" | "port" | "modelId">,
+): CatalogComponentWithPort | null {
+  if (!Array.isArray(components) || !service) return null;
+  const engine = typeof service.engine === "string" ? service.engine.trim().toLowerCase() : "";
+  if (!engine) return null;
+  for (const c of components) {
+    if (!c || typeof c.engine !== "string") continue;
+    if (c.engine.trim().toLowerCase() !== engine) continue;
+    const portHit = Number.isFinite(c.port ?? NaN) && (c.port as number) === service.port;
+    const modelHit =
+      typeof service.modelId === "string" &&
+      service.modelId !== "" &&
+      typeof c.servedModelName === "string" &&
+      c.servedModelName === service.modelId;
+    if (portHit || modelHit) return c;
+  }
+  return null;
 }
 
 function Field({ label, value }: { label: string; value: string }) {
@@ -89,12 +133,78 @@ export function ServiceManagerPage({
   memory,
   versions,
   groupPlan,
+  components,
   onStart,
   onStop,
   onSwitch,
 }: ServiceManagerPageProps) {
   const svcs = services ?? [];
   const versionsList = versions ?? [];
+
+  // Resolve the catalog used for grouping: prop wins; otherwise one
+  // best-effort fetch (degrade to flat cards on any failure).
+  const [resolved, setResolved] = useState<CatalogComponentWithPort[] | null>(
+    components ?? null,
+  );
+  useEffect(() => {
+    if (components !== undefined) {
+      setResolved(components ?? []);
+      return;
+    }
+    let alive = true;
+    fetchComponents()
+      .then((v) => alive && setResolved(Array.isArray(v?.components) ? v.components : []))
+      .catch(() => alive && setResolved([]));
+    return () => {
+      alive = false;
+    };
+  }, [components]);
+
+  // Group configured services under their owning component card (#94);
+  // unmatched services stay flat, exactly as before.
+  const comps = resolved ?? [];
+  const groups: { comp: CatalogComponentWithPort; members: ServiceInstance[] }[] = [];
+  const groupBy = new Map<string, (typeof groups)[number]>();
+  const orphans: ServiceInstance[] = [];
+  for (const s of svcs) {
+    const owner = comps.length > 0 ? matchServiceToComponent(comps, s) : null;
+    if (!owner) {
+      orphans.push(s);
+      continue;
+    }
+    let g = groupBy.get(owner.id);
+    if (!g) {
+      g = { comp: owner, members: [] };
+      groupBy.set(owner.id, g);
+      groups.push(g);
+    }
+    g.members.push(s);
+  }
+
+  const serviceCard = (s: ServiceInstance) => {
+    // `source` rides the snapshot when the server-side probe
+    // (issue #93) produced status truth; absent otherwise.
+    const source = (s as ServiceInstance & { source?: "engine" | "proxy" | null }).source;
+    return (
+      <ServiceCard
+        key={s.name}
+        name={s.name}
+        kind={s.kind}
+        engine={s.engine}
+        port={s.port}
+        status={s.status}
+        modelId={s.modelId}
+        engineVersion={s.engineVersion}
+        footprintMB={s.footprintMB}
+        active={s.active}
+        source={source ?? null}
+        polledAt={s.polledAt}
+        onStart={() => onStart(s.name)}
+        onStop={() => onStop(s.name)}
+        onSwitch={() => onSwitch(s.name)}
+      />
+    );
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-page-gap)" }}>
@@ -121,38 +231,48 @@ export function ServiceManagerPage({
           group={groupPlan ?? null}
         />
 
-        <section className="space-y-2 md:col-span-2">
+        <section className="space-y-2 md:col-span-2" data-testid="services-section">
           <h2 className="text-xs font-semibold uppercase tracking-wide text-muted">Services</h2>
           {svcs.length === 0 ? (
             <div className="rounded-lg border border-dashed border-border p-4 text-sm text-muted">
               No services
             </div>
           ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2" style={{ gap: "var(--density-page-gap)" }}>
-              {svcs.map((s) => {
-                // `source` rides the snapshot when the server-side probe
-                // (issue #93) produced status truth; absent otherwise.
-                const source = (s as ServiceInstance & { source?: "engine" | "proxy" | null }).source;
-                return (
-                <ServiceCard
-                  key={s.name}
-                  name={s.name}
-                  kind={s.kind}
-                  engine={s.engine}
-                  port={s.port}
-                  status={s.status}
-                  modelId={s.modelId}
-                  engineVersion={s.engineVersion}
-                  footprintMB={s.footprintMB}
-                  active={s.active}
-                  source={source ?? null}
-                  polledAt={s.polledAt}
-                  onStart={() => onStart(s.name)}
-                  onStop={() => onStop(s.name)}
-                  onSwitch={() => onSwitch(s.name)}
-                />
-                );
-              })}
+            <div className="space-y-3">
+              {groups.map((g) => (
+                <div
+                  key={`component:${g.comp.id}`}
+                  data-component-group={g.comp.id}
+                  className="rounded-lg border border-border bg-surface p-3"
+                >
+                  <div className="mb-2 flex min-w-0 items-center gap-1.5">
+                    <span
+                      className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-text-strong"
+                      title={g.comp.name}
+                    >
+                      {g.comp.name}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-muted">
+                      {g.comp.engine || "—"}
+                      {Number.isFinite(g.comp.port ?? NaN) ? ` :${g.comp.port}` : ""}
+                    </span>
+                  </div>
+                  <div
+                    className="grid grid-cols-1 md:grid-cols-2"
+                    style={{ gap: "var(--density-page-gap)" }}
+                  >
+                    {g.members.map(serviceCard)}
+                  </div>
+                </div>
+              ))}
+              {orphans.length > 0 && (
+                <div
+                  className="grid grid-cols-1 md:grid-cols-2"
+                  style={{ gap: "var(--density-page-gap)" }}
+                >
+                  {orphans.map(serviceCard)}
+                </div>
+              )}
             </div>
           )}
         </section>
