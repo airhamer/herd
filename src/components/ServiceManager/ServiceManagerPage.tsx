@@ -129,7 +129,11 @@ export function ServiceManagerPage({
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2" style={{ gap: "var(--density-page-gap)" }}>
-              {svcs.map((s) => (
+              {svcs.map((s) => {
+                // `source` rides the snapshot when the server-side probe
+                // (issue #93) produced status truth; absent otherwise.
+                const source = (s as ServiceInstance & { source?: "engine" | "proxy" | null }).source;
+                return (
                 <ServiceCard
                   key={s.name}
                   name={s.name}
@@ -141,12 +145,14 @@ export function ServiceManagerPage({
                   engineVersion={s.engineVersion}
                   footprintMB={s.footprintMB}
                   active={s.active}
+                  source={source ?? null}
                   polledAt={s.polledAt}
                   onStart={() => onStart(s.name)}
                   onStop={() => onStop(s.name)}
                   onSwitch={() => onSwitch(s.name)}
                 />
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
