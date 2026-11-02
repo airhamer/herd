@@ -1,6 +1,6 @@
 import { render } from "../../testing/render";
 import { describe, expect, it } from "vitest";
-import type { LaneEntry, NodeLanes } from "../../../shared/types";
+import type { LaneEntry, NodeLanes, ServiceInstance } from "../../../shared/types";
 import { LaneBudgetPanel } from "./LaneBudgetPanel";
 
 const lane = (over: Partial<LaneEntry> & { recipe: string }): LaneEntry => ({
@@ -19,6 +19,20 @@ const lanes = (...pools: [string, LaneEntry[]][]): NodeLanes => ({
 });
 
 const TOTAL = 128_000;
+
+/** SRV1 probe-truth row (snapshot services[] shape). */
+const probe = (over: Partial<ServiceInstance> & { name: string }): ServiceInstance => ({
+  kind: "llm",
+  engine: "sglang",
+  port: 8080,
+  status: "running",
+  modelId: "m",
+  engineVersion: "v1.2.0",
+  footprintMB: 50_000,
+  active: true,
+  polledAt: 0,
+  ...over,
+});
 
 describe("LaneBudgetPanel", () => {
   it("renders a not-present state when lanes is null, without hiding the panel", () => {
@@ -121,5 +135,72 @@ describe("LaneBudgetPanel", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("Components");
     expect(text).toContain("No component data");
+  });
+
+  // ── Issue #94: probe truth drives chips + the Running bar ───────────────
+
+  it("drives a stale STOPPED chip from probe truth and sums live in-use memory", () => {
+    const l = lanes(["gpu0", [lane({ recipe: "a", modelId: "m", port: 8080 })]]);
+    const { container } = render(
+      <LaneBudgetPanel
+        lanes={l}
+        poolTotalMB={TOTAL}
+        recipeFootprints={{ a: 40_000 }}
+        services={[probe({ name: "a", footprintMB: 50_000 })]}
+      />,
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("Pool gpu0 · 1 running");
+    // 50_000 current in-use, NOT the 40_000 at-start recipe estimate.
+    expect(text).toContain("48.8 GB / 125.0 GB");
+    const rows = [...container.querySelectorAll(".bg-surface-elevated")];
+    const row = rows.find((r) => (r.textContent ?? "").includes("m"));
+    expect(row?.textContent ?? "").toContain("running");
+    expect(row?.textContent ?? "").not.toContain("stopped");
+  });
+
+  it("shows the stopped chip only when probe truth says stopped, even if the lane claims running", () => {
+    const l = lanes(["gpu0", [lane({ recipe: "a", modelId: "m", port: 8080, running: true, state: "running" })]]);
+    const { container } = render(
+      <LaneBudgetPanel
+        lanes={l}
+        poolTotalMB={TOTAL}
+        recipeFootprints={{ a: 50_000 }}
+        services={[probe({ name: "a", status: "stopped", active: false })]}
+      />,
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("Pool gpu0 · 0 running");
+    expect(text).toContain("0 MB / 125.0 GB");
+    const rows = [...container.querySelectorAll(".bg-surface-elevated")];
+    const row = rows.find((r) => (r.textContent ?? "").includes("m"));
+    expect(row?.textContent ?? "").toContain("stopped");
+  });
+
+  it("leaves lanes untouched when no service matches by name or port", () => {
+    const l = lanes(["gpu0", [lane({ recipe: "a", modelId: "m", port: 8080, running: true, state: "running" })]]);
+    const { container } = render(
+      <LaneBudgetPanel
+        lanes={l}
+        poolTotalMB={TOTAL}
+        recipeFootprints={{ a: 40_000 }}
+        services={[probe({ name: "zz", port: 9999, modelId: "other" })] as never}
+      />,
+    );
+    const text = container.textContent ?? "";
+    expect(text).toContain("Pool gpu0 · 1 running");
+    expect(text).toContain("39.1 GB / 125.0 GB"); // unchanged recipe-estimate math
+  });
+
+  it("falls back to the port pin when the service name differs from the recipe", () => {
+    const l = lanes(["gpu0", [lane({ recipe: "recipe-name", modelId: "m", port: 8080 })]]);
+    const { container } = render(
+      <LaneBudgetPanel
+        lanes={l}
+        poolTotalMB={TOTAL}
+        services={[probe({ name: "different-service" })] as never}
+      />,
+    );
+    expect(container.textContent ?? "").toContain("Pool gpu0 · 1 running");
   });
 });

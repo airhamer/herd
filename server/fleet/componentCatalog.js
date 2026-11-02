@@ -43,6 +43,8 @@ const CATALOG_DIR = path.join(
  * @property {string} engine sglang / vllm / …
  * @property {string|null} image docker image reference (pinned)
  * @property {string|null} servedModelName model id as served
+ * @property {number|null} port engine port from ports.engine (null when the
+ *   definition omits it) — service→component matching facet (issue #94)
  * @property {number|null} memoryPerSparkMB memory_estimate_mb.perSpark
  * @property {string} description definition description
  * @property {string} recipeSource SC5a filter facet: hasso / mia-ai-lab /
@@ -115,6 +117,7 @@ export function loadComponentCatalog(dir = CATALOG_DIR) {
       engine: typeof raw.engine === "string" ? raw.engine : null,
       image: typeof raw.image === "string" ? raw.image : null,
       servedModelName: raw.model && typeof raw.model.servedModelName === "string" ? raw.model.servedModelName : null,
+      port: raw.ports && Number.isFinite(raw.ports.engine) ? raw.ports.engine : null,
       memoryPerSparkMB:
         raw.memory_estimate_mb && Number.isFinite(raw.memory_estimate_mb.perSpark)
 
@@ -126,6 +129,41 @@ export function loadComponentCatalog(dir = CATALOG_DIR) {
     });
   }
   return { components, warnings };
+}
+
+/**
+ * Map one configured service (snapshot services[] row, SRV1 shape) to the
+ * catalog component it owns. Matching facets are engine + model + port:
+ *
+ *   - engine must match case-insensitively (both sides required);
+ *   - then EITHER facet may pin the row: the component's projected port
+ *     equals service.port, or the live model id equals servedModelName.
+ *
+ * A stopped service carries no model id, so port is its only pin; an engine
+ * match with no port or model agreement stays unmatched (the caller keeps
+ * the row flat). First catalog order wins; pure and total.
+ *
+ * @param {object[]} components CatalogComponent[] from loadComponentCatalog
+ * @param {{engine?: string|null, port?: number|null, modelId?: string|null}} service
+ * @returns {object|null} the owning component, or null
+ */
+export function matchServiceToComponent(components, service) {
+  if (!Array.isArray(components) || !service || typeof service !== "object") return null;
+  const engine = typeof service.engine === "string" ? service.engine.trim().toLowerCase() : "";
+  if (!engine) return null;
+  for (const c of components) {
+    if (!c || typeof c.engine !== "string") continue;
+    if (c.engine.trim().toLowerCase() !== engine) continue;
+    const portHit =
+      Number.isFinite(c.port) && Number.isFinite(service.port) && c.port === service.port;
+    const modelHit =
+      typeof service.modelId === "string" &&
+      service.modelId !== "" &&
+      typeof c.servedModelName === "string" &&
+      c.servedModelName === service.modelId;
+    if (portHit || modelHit) return c;
+  }
+  return null;
 }
 
 /**
