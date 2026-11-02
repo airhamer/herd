@@ -16,6 +16,7 @@ import type {
 } from "../../../shared/types";
 import { MetricBar } from "../ui/MetricBar";
 import { Panel } from "../ui/Panel";
+import { containerLabels } from "../../lib/engineFamily";
 import {
   ActivityIcon,
   BoltIcon,
@@ -144,6 +145,11 @@ export function NodeDetail(props: NodeDetailProps) {
   const memUsed = mem?.usedMB ?? 0;
   const memTotal = mem?.totalMB ?? 0;
   const memPct = mem?.percentage ?? (memTotal > 0 ? Math.round((memUsed / memTotal) * 100) : 0);
+
+  // CONT1 (#96): Containers panel rows read by engine family (with a
+  // per-node distinguisher on family collisions); the real docker name
+  // stays the tooltip.
+  const containerLabelList = containerLabels(containers, services);
 
   const reqs = requests?.stats ?? [];
 
@@ -364,16 +370,18 @@ export function NodeDetail(props: NodeDetailProps) {
           {containers.length === 0 ? (
             <EmptyNote text="No containers" />
           ) : (
-            containers.map((c) => (
+            containerLabelList.map((cl, i) => {
+              const c = containers[i]!;
+              return (
               <div
                 key={c.name}
                 className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 rounded-md border border-border bg-surface-elevated px-3 py-2 text-xs"
               >
                 <div className="flex min-w-0 items-baseline gap-2">
                   <span className="truncate font-medium text-text" title={c.name}>
-                    {c.name}
+                    {cl.label}
                   </span>
-                  <span className="truncate text-muted" title={c.image}>
+                  <span className="truncate text-muted" title={`${c.name} \u00b7 ${c.image}`}>
                     {c.image}
                   </span>
                 </div>
@@ -386,7 +394,8 @@ export function NodeDetail(props: NodeDetailProps) {
                 </span>
                 <span className="font-tabular text-text">{c.memUsedMB != null ? formatMb(c.memUsedMB) : "—"}</span>
               </div>
-            ))
+              );
+            })
           )}
         </Panel>
 

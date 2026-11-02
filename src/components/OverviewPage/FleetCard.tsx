@@ -15,6 +15,7 @@ import { MetricBar } from "../ui/MetricBar";
 import { NormalizedEngineInline } from "../ui/NormalizedEngineMetrics";
 import { MemoryPoolBar } from "../ui/MemoryPoolBar";
 import { gpuHolderLabel, isUnifiedGpu, memBudgetStat, memoryPool } from "../../lib/memoryPool";
+import { containerLabels } from "../../lib/engineFamily";
 import { useNodeUpdateDisplay } from "../Updates/FleetUpdatesContext";
 
 export interface FleetCardProps {
@@ -201,6 +202,9 @@ export function FleetCard(props: FleetCardProps) {
 
   const runningContainers = containers.filter((c) => c.status === "running").length;
   const stoppedContainers = containers.length - runningContainers;
+  // CONT1 (#96): Containers rows read by engine family; raw name stays in
+  // the tooltip.
+  const containerLabelList = containerLabels(containers, services);
 
   const activeServices = services.filter((s) => s.active).length;
   const runningServices = services.filter((s) => s.status === "running").length;
@@ -396,10 +400,13 @@ export function FleetCard(props: FleetCardProps) {
             />
             <MiniStat
               label="Containers"
+              testId="fleet-card-containers"
               value={`${containers.length} (${runningContainers} running)`}
               title={
-                containers.length > 0
-                  ? containers.map((c) => `${c.name} [${c.status}]${c.ports && c.ports.length ? " ports:" + c.ports.join(",") : ""}`).join("\n")
+                containerLabelList.length > 0
+                  ? containerLabelList
+                      .map((c) => `${c.label} \u00b7 ${c.status} \u00b7 ${c.name}`)
+                      .join("\n")
                   : "No containers"
               }
             />
