@@ -17,7 +17,12 @@
     "repo": "RadixArk/Qwen3.8-27B-NVFP4",
     "revision": "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854",
     "servedModelName": "qwen3.8-27b",
-    "aliases": ["qwen38-27b", "qwen3.8-27b", "stock", "qwen38-sglang"],
+    "aliases": [
+      "qwen38-27b",
+      "qwen3.8-27b",
+      "stock",
+      "qwen38-sglang"
+    ],
     "quantization": "modelopt_fp4"
   },
   "drafter": {
@@ -47,28 +52,75 @@
       "--allow-auto-truncate": false
     },
     "rawArgs": [
-      "--tp-size", "1",
-      "--mem-fraction-static", "0.50",
-      "--attention-backend", "flashinfer",
-      "--chunked-prefill-size", "8192",
-      "--disable-prefill-cuda-graph", "--cuda-graph-max-bs-decode", "8",
+      "--tp-size",
+      "1",
+      "--mem-fraction-static",
+      "0.50",
+      "--attention-backend",
+      "flashinfer",
+      "--chunked-prefill-size",
+      "8192",
+      "--disable-prefill-cuda-graph",
+      "--cuda-graph-max-bs-decode",
+      "8",
       "--disable-flashinfer-autotune",
-      "--mamba-radix-cache-strategy", "extra_buffer", "--mamba-ssm-dtype", "bfloat16",
-      "--max-mamba-cache-size", "96", "--max-running-requests", "8",
-      "--enable-torch-compile", "--torch-compile-max-bs", "4",
-      "--num-continuous-decode-steps", "2",
-      "--reasoning-parser", "qwen3", "--tool-call-parser", "qwen3_coder"
+      "--mamba-radix-cache-strategy",
+      "extra_buffer",
+      "--mamba-ssm-dtype",
+      "bfloat16",
+      "--max-mamba-cache-size",
+      "96",
+      "--max-running-requests",
+      "8",
+      "--enable-torch-compile",
+      "--torch-compile-max-bs",
+      "4",
+      "--num-continuous-decode-steps",
+      "2",
+      "--reasoning-parser",
+      "qwen3",
+      "--tool-call-parser",
+      "qwen3_coder"
     ]
   },
-  "ports": { "engine": 30000, "placeholder": true, "notes": "Hasso box default PORT=30000, keepalive proxy PORT+1; per-box choice, not recipe material (kept as host placeholder upstream). Live 1c2c stock lane uses the same engine 8080 / proxy 8081 pair as flash — the two lanes are mutually exclusive." },
-  "runtimeAliases": { "serviceNames": ["qwen38-sglang", "qwen38-sglang.service"], "containerNames": ["qwen38-sglang"] },
+  "ports": {
+    "engine": 30000,
+    "placeholder": true,
+    "notes": "Hasso box default PORT=30000, keepalive proxy PORT+1; per-box choice, not recipe material (kept as host placeholder upstream). Live 1c2c stock lane uses the same engine 8080 / proxy 8081 pair as flash \u2014 the two lanes are mutually exclusive."
+  },
+  "runtimeAliases": {
+    "serviceNames": [
+      "qwen38-sglang",
+      "qwen38-sglang.service"
+    ],
+    "containerNames": [
+      "qwen38-sglang"
+    ]
+  },
   "memoryProfile": {
-    "docker": { "memory": "100g", "memorySwap": "100g", "shmSize": "16g", "network": "host", "ipc": "host" },
+    "docker": {
+      "memory": "100g",
+      "memorySwap": "100g",
+      "shmSize": "16g",
+      "network": "host",
+      "ipc": "host"
+    },
     "hostFloorGiB": null,
     "contextModes": {
-      "native": { "contextLength": null, "memFraction": 0.5 },
-      "1m": { "contextLength": 1010000, "memFraction": 0.76, "extraEnv": { "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1" } },
-      "64": { "notes": "native window in a unit sized for a 64 GB Spark" }
+      "native": {
+        "contextLength": null,
+        "memFraction": 0.5
+      },
+      "1m": {
+        "contextLength": 1010000,
+        "memFraction": 0.76,
+        "extraEnv": {
+          "SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN": "1"
+        }
+      },
+      "64": {
+        "notes": "native window in a unit sized for a 64 GB Spark"
+      }
     },
     "env": {
       "TORCHINDUCTOR_CACHE_DIR": "/cache/inductor",
@@ -82,12 +134,170 @@
     "rule": "copy-on-tp-or-machine-change: this file is tp=1 on dgx-spark-gb10-128g. A tp=2 / tp2_pair or gx10-64g variant is a COPY with its own re-measured flags and memory_estimate_mb (never reinterpret this file at another shape); the fleet's live TP2 pair runs a different engine (vLLM aeon) and is a separate component anyway. A 1M-context copy is likewise a separate id (context mode changes mem_fraction and env)."
   },
   "source": {
-    "origin": "hasso5703/dgx-spark-qwen38",
-    "upstreamCommit": "43a3597fdeab4b408fcc62ff663cff9ccc79a158",
-    "derivedFrom": ["dashboard/recipes.py", "install.sh", "qwen38-sglang.service.template", "qwen38-sglang-1m.service.template", "docs/gb10-memory.md", "docs/context-1m.md"],
+    "origin": "hasso5703/alzeo",
+    "upstreamCommit": "01902c67709c4164c30ccf036422bfed6f172158",
+    "derivedFrom": [
+      "README.md",
+      "docs/cockpit.md",
+      "dashboard/CAPABILITIES.md",
+      "switch-model.sh (usage/targets only)",
+      "install.sh (pin variable names STOCK_REPO/STOCK_REV/IMAGE)",
+      "prepare-lane.sh (name)"
+    ],
     "upstreamRecipeId": "stock",
     "license": "MIT",
-    "retrievedAt": "2026-10-30"
+    "retrievedAt": "2026-11-06",
+    "copyright": "Copyright (c) 2026 hasso5703",
+    "renameNote": "Repository was named dgx-spark-qwen38 until 2026-11-01; clone path ~/dgx-spark-qwen38 and unit names are unchanged."
   },
-  "description": "27B lane, stock target: Qwen3.8-27B NVFP4 with the DFlash2 draft, SGLang on one GB10. Converted from Hasso's builtin recipe 'stock' (native context mode); pinned image/model/draft revisions and serving flags verbatim from upstream at the commit above."
+  "description": "27B lane, stock target: Qwen3.8-27B NVFP4 with the DFlash2 draft, SGLang on one GB10. Converted from Hasso's builtin recipe 'stock' (native context mode); pinned image/model/draft revisions and serving flags verbatim from upstream at the commit above. Dashboard install/switch uses pinned alzeo interfaces (COMP2 profile + RECIPE1). Speed numbers quoted upstream are not an acceptance gate.",
+  "runtimeProfile": {
+    "engine": "sglang",
+    "protocol": "sglang-http",
+    "topology": {
+      "tp": 1,
+      "machineClass": "dgx-spark-gb10-128g"
+    },
+    "ports": {
+      "engine": 8080,
+      "guard": 8081,
+      "placeholder": true
+    },
+    "adapters": [
+      {
+        "id": "sglang",
+        "kind": "engine",
+        "support": "verified",
+        "capabilities": [
+          "engine-native",
+          "metrics",
+          "queue"
+        ]
+      },
+      {
+        "id": "hasso-keepalive",
+        "kind": "front",
+        "support": "verified",
+        "capabilities": [
+          "health",
+          "forward-metrics"
+        ]
+      }
+    ],
+    "credentialRefs": [
+      "env:GUARD_PROXY_KEY"
+    ],
+    "recording": {
+      "content": "metadata",
+      "observer": null
+    },
+    "litellmRouteAssumedDeployed": false
+  },
+  "variants": [
+    {
+      "id": "stock",
+      "label": "stock (Qwen3.8-27B NVFP4)",
+      "role": "standard",
+      "switchTarget": "stock",
+      "model": {
+        "repo": "RadixArk/Qwen3.8-27B-NVFP4",
+        "revision": "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854",
+        "servedModelName": "qwen3.8-27b",
+        "aliases": [
+          "qwen38-27b",
+          "qwen3.8-27b",
+          "stock",
+          "qwen38-sglang"
+        ],
+        "quantization": "modelopt_fp4"
+      },
+      "memory_estimate_mb": {
+        "perSpark": 102400,
+        "basis": "measured",
+        "notes": "Docker cap 100g (memory+swap) on a 128 GB unified pool; SGLang mem_fraction 0.50 with --disable-flashinfer-autotune (the measured GB10-safe ceiling for the native unit; docs/gb10-memory.md: above 0.50 with the autotuner on, SGLang's accounting misses 25-40 GB and can freeze the box). Measured on Hasso's reference box: KV pool 869,920-874,145 tokens at image v0.5.22. Boot 64 s (process start to 'fired up', lifecycle.py marker measurement)."
+      },
+      "context_length": 1010000
+    },
+    {
+      "id": "uncensored",
+      "label": "uncensored (abliterated NVFP4)",
+      "role": "uncensored",
+      "switchTarget": "uncensored",
+      "model": {
+        "repo": "edp1096/Huihui-RadixArk-Qwen3.8-27B-abliterated-NVFP4",
+        "revision": "21565d389fe573a32c1c425e0c7ade204ddb2263",
+        "servedModelName": "qwen3.8-27b",
+        "aliases": [
+          "uncensored",
+          "qwen38-27b-uncensored"
+        ],
+        "quantization": "modelopt_fp4"
+      },
+      "memory_estimate_mb": {
+        "perSpark": 102400,
+        "basis": "measured",
+        "notes": "Docker cap 100g (memory+swap) on a 128 GB unified pool; SGLang mem_fraction 0.50 with --disable-flashinfer-autotune (the measured GB10-safe ceiling for the native unit; docs/gb10-memory.md: above 0.50 with the autotuner on, SGLang's accounting misses 25-40 GB and can freeze the box). Measured on Hasso's reference box: KV pool 869,920-874,145 tokens at image v0.5.22. Boot 64 s (process start to 'fired up', lifecycle.py marker measurement)."
+      },
+      "context_length": 1010000
+    }
+  ],
+  "lifecycle": {
+    "workdir": "~/dgx-spark-qwen38",
+    "exclusivePorts": [
+      8080,
+      8081
+    ],
+    "exclusiveWith": [
+      "qwen38-flash-next-sglang-tp1-gx10"
+    ],
+    "loadingDeadlineMs": 540000,
+    "notes": [
+      "Upstream tok/s figures in alzeo README (65.2/68.5 greedy median, 2026-11-05) are citations, not local measurements or SLAs.",
+      "CONTEXT_MODE=1m is the alzeo default since v1.12.1. First 27B boot ~7-9 minutes.",
+      "switch-model.sh writes the unit and does not start the engine; start/stop are separate confirmed steps.",
+      "Prefer git checkout of pin 01902c67709c4164c30ccf036422bfed6f172158 then ./install.sh; never silent curl|sh."
+    ],
+    "install": {
+      "argv": [
+        "./install.sh",
+        "--plan"
+      ],
+      "executeArgv": [
+        "./install.sh"
+      ],
+      "env": {
+        "MODEL_CHOICE": "stock",
+        "CONTEXT_MODE": "1m"
+      },
+      "requiresSudo": true,
+      "estDiskGB": 101,
+      "estBootMs": 540000,
+      "notes": [
+        "install.sh --plan changes nothing; confirm runs MODEL_CHOICE=stock ./install.sh"
+      ]
+    },
+    "prepare": {
+      "argv": [
+        "./prepare-lane.sh",
+        "27b"
+      ],
+      "requiresSudo": false
+    },
+    "switch": {
+      "argv": [
+        "./switch-model.sh",
+        "stock"
+      ],
+      "requiresSudo": false,
+      "startsEngine": false,
+      "note": "alzeo switch-model.sh <target> rewrites the 27B unit; then stop/start the units it prints"
+    },
+    "units": {
+      "engine": "qwen38-sglang",
+      "keepalive": "qwen38-keepalive",
+      "peers": [
+        "qwen38-flash"
+      ]
+    }
+  }
 }

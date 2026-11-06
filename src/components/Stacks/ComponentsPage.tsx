@@ -29,7 +29,7 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-const ACTIONS = ["start", "stop", "restart"] as const;
+const ACTIONS = ["start", "stop", "restart", "install"] as const;
 const VARIANT_ACTION = "swap-variant" as const;
 type ActionType = (typeof ACTIONS)[number] | typeof VARIANT_ACTION;
 
@@ -204,7 +204,7 @@ export function ComponentsPage({ scopeNodeId, scopeGroupId }: ComponentsPageProp
         confirmationToken: preview ? null : confirmationToken,
         dryRun: preview,
         recipeName: null,
-        timeoutMs: type === "swap-variant" ? 60_000 : null,
+        timeoutMs: type === "install" ? 20 * 60_000 : type === "swap-variant" ? 60_000 : null,
         variantId,
       };
       setAction((a) => ({ ...a, busy: key, error: null }));

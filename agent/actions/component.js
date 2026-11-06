@@ -20,7 +20,7 @@
 import { createHmac } from "node:crypto";
 
 /** V2 verbs (shared/types.ts ComponentActionType). */
-export const COMPONENT_ACTION_TYPES = ["start", "stop", "restart", "swap-variant"];
+export const COMPONENT_ACTION_TYPES = ["start", "stop", "restart", "swap-variant", "install", "configure"];
 
 /** Token TTL: a dry-run plan is only valid briefly (live state drifts). */
 export const CONFIRM_TOKEN_TTL_MS = 10 * 60 * 1000;

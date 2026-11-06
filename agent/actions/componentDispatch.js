@@ -20,6 +20,7 @@ import {
   discoverCapabilities,
   resolveRecordingPolicy,
 } from "../../shared/runtimeProfile.js";
+import { buildRecipePlan, executePlanStep } from "../../shared/recipePlan.js";
 import { loadDefinitions, getDefinition, DEFAULT_CATALOG_DIR } from "../catalog/definitions.js";
 import {
   loadInstanceStore,
@@ -76,6 +77,9 @@ export async function dispatchComponentAction(raw, deps = {}) {
 
   if (request.type === "swap-variant") {
     return handleSwapVariant(request, def, instance, store, instancePath, deps, env, started);
+  }
+  if (request.type === "install" || request.type === "configure") {
+    return handleRecipeLifecycle(request, def, instance, deps, env, started);
   }
 
   return handleLifecycleVerb(request, def, instance, deps, env, started);
@@ -277,4 +281,92 @@ async function handleLifecycleVerb(request, def, instance, deps, env, started) {
     env.durationMs = Date.now() - started;
     return env;
   }
+}
+
+
+async function handleRecipeLifecycle(request, def, instance, deps, env, started) {
+  const action = request.type === "configure" ? "switch" : "install";
+  const preview = buildRecipePlan(def, action, {
+    execute: request.dryRun ? false : true,
+    portOccupier: deps.portOccupier || null,
+    requireWorkdir: deps.requireWorkdir === true,
+    workdirExists: deps.workdirExists,
+    group: deps.group,
+    network: deps.network,
+  });
+  const secret = deps.confirmSecret || process.env.HERD_ACTION_SECRET || "herd-component-action";
+  if (!preview.ok && preview.code !== "preflight") {
+    env.error = preview.error;
+    env.message = preview.error;
+    env.durationMs = Date.now() - started;
+    return env;
+  }
+  const plan = preview.plan;
+  const blocked = !preview.ok;
+  if (request.dryRun) {
+    env.ok = !blocked;
+    env.status = blocked ? "failure" : "success";
+    env.message = blocked ? preview.error : `plan ${request.type} ${def.id}`;
+    env.error = blocked ? preview.error : null;
+    env.plan = {
+      willDo: blocked ? [] : [request.type],
+      displaces: (plan.exclusiveWith || [])[0] || null,
+      confirm: "required",
+      confirmationToken: blocked ? null : mintConfirmationToken(request, secret, deps.now),
+      estDowntimeMs: plan.estBootMs || 0,
+      memoryDeltaMB: 0,
+      inflightRequests: null,
+      scopeBlocked: blocked ? preview.error : null,
+      recipe: plan,
+    };
+    env.durationMs = Date.now() - started;
+    return env;
+  }
+  if (blocked) {
+    env.error = preview.error;
+    env.message = preview.error;
+    env.durationMs = Date.now() - started;
+    return env;
+  }
+  const verify = verifyConfirmationToken(request.confirmationToken, request, secret, { now: deps.now });
+  if (!verify.ok) {
+    env.error = `confirmation ${verify.reason || "failed"}`;
+    env.message = env.error;
+    env.durationMs = Date.now() - started;
+    return env;
+  }
+  const exec = deps.exec;
+  const steps = [];
+  for (const step of plan.steps) {
+    const out = await executePlanStep(step, exec);
+    steps.push({
+      step: request.type,
+      status: out.ok ? "success" : "failure",
+      message: out.error || out.stdout || step.argv.join(" "),
+      durationMs: null,
+    });
+    if (!out.ok) {
+      env.ok = false;
+      env.status = "failure";
+      env.error = out.error || "step failed";
+      env.message = env.error;
+      env.steps = steps;
+      env.canaryState = "failed";
+      env.durationMs = Date.now() - started;
+      return env;
+    }
+  }
+  env.ok = true;
+  env.status = "running";
+  env.canaryState = "loading";
+  env.message = `${request.type} accepted; poll until ready (deadline ${plan.loadingDeadlineMs} ms). Recording policy unchanged.`;
+  env.steps = steps;
+  env.state = {
+    componentId: def.id,
+    variantId: instance.variantId,
+    servedModelName: instance.servedModelName,
+    recording: resolveRecordingPolicy([def.runtimeProfile.recording, instance.recording]),
+  };
+  env.durationMs = Date.now() - started;
+  return env;
 }
