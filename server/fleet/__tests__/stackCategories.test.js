@@ -73,6 +73,17 @@ describe("categorizeStack", () => {
     const r = categorizeStack(stack({ componentNames: ["nope"] }), ctx([], {}));
     assert.equal(r.category, "blocked");
     assert.match(r.categoryReason, /not in the component catalog: nope/);
+    assert.deepEqual(r.unresolved, ["nope"]);
+  });
+
+  test("an already-running member fits itself even when the estimate exceeds usable", () => {
+    const a = comp("a", {
+      memoryPerSparkMB: 120 * 1024,
+      nodes: [{ nodeId: "n1", state: "running" }],
+    });
+    const r = categorizeStack(stack(), ctx([a], { n1: SPARK(110) }));
+    assert.equal(r.category, "calculated");
+    assert.match(r.categoryReason, /already running/);
   });
 
   test("proven history at the same tp wins over the memory verdict, not over hard blocks", () => {

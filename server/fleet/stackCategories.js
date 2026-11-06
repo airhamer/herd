@@ -88,11 +88,21 @@ export function categorizeStack(stack, ctx) {
   const names = [...new Set(stack.componentNames)];
   const members = names.map((id) => componentsById.get(id) ?? null);
   const facets = stackFacets(stack, componentsById);
-  const done = (category, categoryReason, perNode = []) => ({ ...stack, category, categoryReason, perNode, facets });
+  const done = (category, categoryReason, perNode = [], extra = {}) => ({
+    ...stack,
+    category,
+    categoryReason,
+    perNode,
+    facets,
+    unresolved: extra.unresolved ?? [],
+    ...extra,
+  });
 
   // 1. Hard blocks that do not depend on a node.
   const missing = names.filter((_, i) => !members[i]);
-  if (missing.length) return done("blocked", `not in the component catalog: ${missing.join(", ")}`);
+  if (missing.length) {
+    return done("blocked", `not in the component catalog: ${missing.join(", ")}`, [], { unresolved: missing });
+  }
   const wrongTp = members.filter((c) => c.tp !== stack.tp);
   if (wrongTp.length) {
     const c = wrongTp[0];
@@ -129,9 +139,22 @@ export function categorizeStack(stack, ctx) {
       continue;
     }
     // A running member already holds its own memory, so credit it back.
-    const runningMB = members
-      .filter((c) => (c.nodes ?? []).some((n) => n.nodeId === nodeId && (n.state === "running" || n.state === "ready")))
-      .reduce((a, c) => a + (c.memoryPerSparkMB ?? 0), 0);
+    const runningMembers = members.filter((c) =>
+      (c.nodes ?? []).some((n) => n.nodeId === nodeId && (n.state === "running" || n.state === "ready" || n.state === "healthy"))
+    );
+    const runningMB = runningMembers.reduce((a, c) => a + (c.memoryPerSparkMB ?? 0), 0);
+    if (runningMembers.length === members.length && members.length > 0) {
+      perNode.push({
+        nodeId,
+        category: "calculated",
+        hard: false,
+        reason: `${name}: already running; counted as fitting itself`,
+        footprintMB,
+        totalMB: mem.totalMB,
+        usedMB: mem.usedMB,
+      });
+      continue;
+    }
     const usedMB = Math.max(0, mem.usedMB - runningMB);
     const category = calculateStackCategory(
       members.map((c) => ({ name: c.id, footprintMB: c.memoryPerSparkMB ?? 0 })),

@@ -731,6 +731,10 @@ export interface CatalogComponent {
   engine: string | null;
   image: string | null;
   servedModelName: string | null;
+  modelAliases?: string[];
+  nameAliases?: string[];
+  port?: number | null;
+  portPlaceholder?: boolean;
   memoryPerSparkMB: number | null;
   description: string;
   /** SC5a recipe source facet: hasso / mia-ai-lab / aeon / custom / unknown. Optional for older servers. */
@@ -755,8 +759,12 @@ export type FleetStack = import("../../shared/types").CategorizedStack;
 export type StacksView = import("../../shared/types").StacksView;
 
 /** Stacks available to the stacks UI: tp defaulted per fleet scope, category per target. */
-export async function fetchStacks(): Promise<StacksView> {
-  const v = await apiFetch<Partial<StacksView>>("/api/stacks");
+export async function fetchStacks(scope?: { nodeId?: string; groupId?: string }): Promise<StacksView> {
+  const q = new URLSearchParams();
+  if (scope?.nodeId) q.set("node", scope.nodeId);
+  if (scope?.groupId) q.set("group", scope.groupId);
+  const path = q.size ? `/api/stacks?${q.toString()}` : "/api/stacks";
+  const v = await apiFetch<Partial<StacksView>>(path);
   // An older server sends only { stacks } without categories or facets.
   return {
     stacks: v.stacks ?? [],

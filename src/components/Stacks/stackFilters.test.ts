@@ -60,4 +60,19 @@ describe("stackFilters (SC5a)", () => {
     expect(filterComponents(comps, stacks, DEFAULT_FILTERS).map((c) => c.id)).toEqual(["a"]);
     expect(filterComponents(comps, stacks, { ...DEFAULT_FILTERS, showBlocked: true })).toHaveLength(3);
   });
+
+  it("keeps a component visible when any landing is not blocked", () => {
+    const comps = [comp("fat")];
+    const stacks = [
+      fstack("s1", { componentNames: ["fat"], category: "calculated" }),
+      fstack("s1-g", { componentNames: ["fat"], category: "blocked", categoryReason: "needs a tp2 copy" }),
+    ];
+    expect(componentBlockedReason(comps[0], stacks)).toBeNull();
+    expect(filterComponents(comps, stacks, DEFAULT_FILTERS).map((c) => c.id)).toEqual(["fat"]);
+  });
+
+  it("still shows a blocked stack that names an unknown component", () => {
+    const stacks = [fstack("ghost", { category: "blocked", unresolved: ["missing-comp"], componentNames: ["missing-comp"] })];
+    expect(filterStacks(stacks, DEFAULT_FILTERS).map((s) => s.id)).toEqual(["ghost"]);
+  });
 });

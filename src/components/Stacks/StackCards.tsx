@@ -95,11 +95,18 @@ export function StackCards({
                   {s.categoryReason}
                 </div>
                 <div className="flex flex-wrap gap-1">
-                  {s.componentNames.map((c) => (
-                    <span key={c} className="rounded bg-surface px-1 font-mono text-[10px] text-muted">
-                      {c}
+                  {s.componentNames.map((c) => {
+                    const unknown = (s.unresolved ?? []).includes(c);
+                    return (
+                    <span
+                      key={c}
+                      className={`rounded px-1 font-mono text-[10px] ${unknown ? "bg-warning/20 text-warning" : "bg-surface text-muted"}`}
+                      title={unknown ? "unknown component — not in the catalog" : c}
+                    >
+                      {unknown ? `${c} (unknown)` : c}
                     </span>
-                  ))}
+                    );
+                  })}
                 </div>
                 {extra?.(s)}
               </div>

@@ -30,3 +30,13 @@ A component definition is scoped to **(tp, inference-machine-class)**:
 
 See `docs/COMPONENTS-DESIGN-PROPOSAL.md` (repo docs) for the full schema and
 the conversion rules used for the Hasso-derived examples.
+
+## Aliases and placeholder ports
+
+A definition may list `model.aliases` (served model ids the live engine might
+report, such as `flash-nvda` for Flash-Next) and `runtimeAliases` (systemd
+unit / container names). `ports.placeholder` (default true for Hasso recipes)
+means `ports.engine` is a host hint, not a pin — two exclusive lanes that
+share 8080/8081 must not both match that placeholder port.
+
+See `docs/components-1c2c.md` for the two single-Spark Qwen3.8 lanes.

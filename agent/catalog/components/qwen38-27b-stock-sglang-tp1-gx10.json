@@ -17,6 +17,7 @@
     "repo": "RadixArk/Qwen3.8-27B-NVFP4",
     "revision": "52d1adc5f38aa5ebf099c29ed7025ba34cfbb854",
     "servedModelName": "qwen3.8-27b",
+    "aliases": ["qwen38-27b", "qwen3.8-27b", "stock", "qwen38-sglang"],
     "quantization": "modelopt_fp4"
   },
   "drafter": {
@@ -59,7 +60,8 @@
       "--reasoning-parser", "qwen3", "--tool-call-parser", "qwen3_coder"
     ]
   },
-  "ports": { "engine": 30000, "notes": "Hasso box default PORT=30000, keepalive proxy PORT+1; per-box choice, not recipe material (kept as host placeholder upstream)." },
+  "ports": { "engine": 30000, "placeholder": true, "notes": "Hasso box default PORT=30000, keepalive proxy PORT+1; per-box choice, not recipe material (kept as host placeholder upstream). Live 1c2c stock lane uses the same engine 8080 / proxy 8081 pair as flash — the two lanes are mutually exclusive." },
+  "runtimeAliases": { "serviceNames": ["qwen38-sglang", "qwen38-sglang.service"], "containerNames": ["qwen38-sglang"] },
   "memoryProfile": {
     "docker": { "memory": "100g", "memorySwap": "100g", "shmSize": "16g", "network": "host", "ipc": "host" },
     "hostFloorGiB": null,
