@@ -836,6 +836,69 @@ export function sendComponentAction(
   });
 }
 
+export type RecordingStatus = {
+  recording: boolean;
+  available: boolean;
+  content: string;
+  ui: string;
+  reason: string | null;
+};
+
+export type RecordingListItem = {
+  id: string;
+  requestId: string;
+  attemptId: string;
+  segment: string;
+  componentId: string;
+  variantId: string;
+  capturedAt: number;
+  hasPrompt: boolean;
+  hasResponse: boolean;
+  stream?: { aborted?: boolean; truncated?: boolean; incomplete?: boolean };
+};
+
+export function fetchRecordingStatus(
+  nodeId: string,
+  query: { content?: string; observer?: string } = {}
+): Promise<RecordingStatus> {
+  const q = new URLSearchParams();
+  if (query.content) q.set("content", query.content);
+  if (query.observer) q.set("observer", query.observer);
+  const suffix = q.size ? `?${q}` : "";
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(nodeId)}/recording-status${suffix}`);
+}
+
+export function fetchRecordings(nodeId: string, componentId?: string): Promise<{ recordings: RecordingListItem[] }> {
+  const q = componentId ? `?componentId=${encodeURIComponent(componentId)}` : "";
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(nodeId)}/recordings${q}`);
+}
+
+export function fetchRecording(nodeId: string, id: string): Promise<{ recording: { prompt: string | null; response: string | null; metadata: object } }> {
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(nodeId)}/recordings/${encodeURIComponent(id)}`);
+}
+
+export function deleteRecording(nodeId: string, id: string): Promise<{ ok: boolean }> {
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(nodeId)}/recordings/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function setRecordingPolicy(
+  nodeId: string,
+  body: { componentId: string; content: string; retentionHours?: number | null; maxBytes?: number | null; observer?: string | null }
+): Promise<{ ok: boolean; recording: unknown; status: RecordingStatus }> {
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(nodeId)}/recording-policy`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+export function fetchComponentCapabilities(nodeId: string, componentId: string): Promise<{
+  declared: unknown[];
+  detected: { freshness?: string; reachable?: boolean; reason?: string | null; tensorfoldUnverified?: boolean };
+  capabilities: { id: string; status: string; freshness: string; value: { kind: string; numeric: number | null } }[];
+}> {
+  return apiFetch(`/api/fleet/nodes/${encodeURIComponent(nodeId)}/components/${encodeURIComponent(componentId)}/capabilities`);
+}
+
 /** List all registered fleet nodes. */
 export function fetchFleetNodes(): Promise<{ nodes: NodeRecord[] }> {
   return apiFetch("/api/fleet/nodes");

@@ -158,6 +158,7 @@ describe("ComponentsPage runtime profile (COMP2)", () => {
     const fx = fakeFetch({
       "/api/components": { components: [profiled], warnings: [] },
       "/api/fleet/nodes": { nodes: [{ id: "n1", name: "one" }] },
+      "/api/fleet/nodes/n1/recording-status": { recording: false, available: false, content: "metadata", ui: "not recording / unavailable", reason: "observer-unavailable" },
       "/api/stacks": { stacks: [fstack("s-ok")], facets: { tp: [1], sources: ["hasso"], engines: ["sglang"], purposes: ["code"] }, errors: [] },
       "POST /api/fleet/nodes/n1/component-actions": (init?: RequestInit) => {
         const body = JSON.parse(String(init?.body || "{}"));
@@ -197,7 +198,7 @@ describe("ComponentsPage runtime profile (COMP2)", () => {
     const { container } = render(<ComponentsPage />);
     await flush();
     await flush();
-    expect(qt(container, "recording-a")!.textContent).toContain("metadata default");
+    expect(qt(container, "recording-a")!.textContent).toContain("not recording / unavailable");
     const swap = qt(container, "variant-swap-a")!;
     await act(async () => {
       swap.click();

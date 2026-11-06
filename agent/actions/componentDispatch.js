@@ -21,6 +21,9 @@ import {
   resolveRecordingPolicy,
 } from "../../shared/runtimeProfile.js";
 import { buildRecipePlan, executePlanStep } from "../../shared/recipePlan.js";
+import { planHardwareSwitch } from "../../shared/switchLifecycle.js";
+import { runSwitchModel } from "./switchModelExec.js";
+import { probeRuntimeCapabilities, persistDetected } from "../capability/probe.js";
 import { loadDefinitions, getDefinition, DEFAULT_CATALOG_DIR } from "../catalog/definitions.js";
 import {
   loadInstanceStore,
@@ -122,19 +125,29 @@ async function handleSwapVariant(request, def, instance, store, instancePath, de
     deps.now
   );
   const capObserved = deps.observedCapabilities || {};
-  const capabilities = discoverCapabilities(def.runtimeProfile.adapters, capObserved);
+  let capabilities = discoverCapabilities(def.runtimeProfile.adapters, capObserved);
   const estimates = preview.result.estimates;
+  const variant = (def.variants || []).find((v) => v.id === variantId);
+  const hw = variant?.switchTarget ? planHardwareSwitch(variant) : null;
+  if (variant?.switchTarget && !hw.ok) {
+    env.error = hw.error;
+    env.message = hw.error;
+    env.durationMs = Date.now() - started;
+    return env;
+  }
 
   if (request.dryRun) {
     env.ok = true;
     env.status = "success";
-    env.message = `swap ${preview.result.previousVariantId} → ${preview.result.variantId} preserves profile ${def.id}`;
+    env.message = hw
+      ? `preview switch ${preview.result.previousVariantId} → ${preview.result.variantId} via ${hw.argv.join(" ")} (confirmed downtime; long load allowed)`
+      : `swap ${preview.result.previousVariantId} → ${preview.result.variantId} preserves profile ${def.id}`;
     env.plan = {
-      willDo: ["swap-variant"],
+      willDo: hw ? ["swap-variant", ...hw.willDo] : ["swap-variant"],
       displaces: null,
       confirm: "required",
       confirmationToken: planToken,
-      estDowntimeMs: 0,
+      estDowntimeMs: hw ? hw.estDowntimeMs : 0,
       memoryDeltaMB: 0,
       inflightRequests: null,
       scopeBlocked: null,
@@ -142,6 +155,8 @@ async function handleSwapVariant(request, def, instance, store, instancePath, de
       recording: preview.result.recording,
       capabilities,
       estimates,
+      argv: hw ? hw.argv : null,
+      confirmedDowntime: Boolean(hw),
     };
     env.durationMs = Date.now() - started;
     return env;
@@ -156,6 +171,104 @@ async function handleSwapVariant(request, def, instance, store, instancePath, de
   if (!verify.ok) {
     env.error = `confirmation ${verify.reason || "failed"}`;
     env.message = env.error;
+    env.durationMs = Date.now() - started;
+    return env;
+  }
+
+  const previousRec = {
+    variantId: instance.variantId ?? preview.result.previousVariantId,
+    recording: instance.recording ?? preview.result.recording,
+    segments: instance.segments ?? [],
+    servedModelName: instance.servedModelName ?? null,
+    profileId: def.id,
+    updatedAt: instance.updatedAt ?? null,
+  };
+
+  if (hw) {
+    const exec = typeof deps.execSwitch === "function"
+      ? await deps.execSwitch({ argv: hw.argv, cwd: deps.switchCwd })
+      : await runSwitchModel(hw.argv, { cwd: deps.switchCwd, execFile: deps.execFile });
+    if (!exec || exec.ok === false) {
+      // Desired metadata stays on the previous variant. We do not claim the
+      // hardware was rolled back — switch-model.sh does not provide a
+      // verified undo in this path.
+      env.ok = false;
+      env.status = "failure";
+      env.error = exec?.error || "switch-model failed";
+      env.message = `switch-model failed (${env.error}); desired variant left as ${previousRec.variantId}; hardware rollback not claimed`;
+      env.hardwareRolledBack = false;
+      env.steps = [{
+        step: "switch-model",
+        status: "failure",
+        message: env.message,
+        argv: hw.argv,
+        durationMs: Date.now() - started,
+      }];
+      env.state = {
+        componentId: def.id,
+        variantId: previousRec.variantId,
+        servedModelName: previousRec.servedModelName,
+        recording: previousRec.recording,
+        capabilities,
+      };
+      env.durationMs = Date.now() - started;
+      return env;
+    }
+
+    let ready = { ready: false, loading: true };
+    if (typeof deps.probeReady === "function") {
+      ready = await deps.probeReady({ componentId: def.id, variantId: preview.result.variantId });
+    } else if (deps.probeCapabilities !== false) {
+      try {
+        const probed = typeof deps.probeCapabilities === "function"
+          ? await deps.probeCapabilities(def.runtimeProfile)
+          : await probeRuntimeCapabilities(def.runtimeProfile, {
+              fetchImpl: deps.fetchImpl,
+              env: deps.env,
+            });
+        capabilities = probed.capabilities || capabilities;
+        ready = {
+          ready: Boolean(probed.detected?.reachable),
+          loading: !probed.detected?.reachable,
+          detected: probed.detected,
+        };
+      } catch {
+        ready = { ready: false, loading: true };
+      }
+    }
+
+    const nextRec = {
+      variantId: preview.result.variantId,
+      recording: preview.result.recording,
+      segments: preview.result.segments,
+      servedModelName: preview.result.servedModelName,
+      profileId: def.id,
+      updatedAt: (deps.now || Date.now)(),
+      detectedCapabilities: ready.detected
+        ? persistDetected({}, ready.detected).detectedCapabilities
+        : instance.detectedCapabilities ?? null,
+    };
+    const nextStore = writeInstance(store, request.nodeId, request.componentId, nextRec);
+    if (typeof deps.saveStore === "function") deps.saveStore(nextStore);
+    else saveInstanceStore(instancePath, nextStore);
+
+    env.ok = true;
+    env.status = ready.ready ? "success" : "running";
+    env.canaryState = ready.ready ? "ready" : "loading";
+    env.message = ready.ready
+      ? `hardware switch to ${hw.target} completed; serving ${preview.result.servedModelName}`
+      : `hardware switch to ${hw.target} completed; engine loading (long load allowed). selected model is not serving yet`;
+    env.steps = [
+      { step: "switch-model", status: "success", message: exec.stdout || hw.argv.join(" "), argv: hw.argv, durationMs: null },
+      { step: "canary", status: ready.ready ? "success" : "running", message: env.canaryState, durationMs: null },
+    ];
+    env.state = {
+      componentId: def.id,
+      variantId: nextRec.variantId,
+      servedModelName: nextRec.servedModelName,
+      recording: nextRec.recording,
+      capabilities,
+    };
     env.durationMs = Date.now() - started;
     return env;
   }
