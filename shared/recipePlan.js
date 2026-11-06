@@ -117,18 +117,51 @@ export function buildRecipePlan(definition, action, ctx = {}) {
 
   const occupier = ctx.portOccupier || null;
   const blocked = [];
+  const exclusiveWith = Array.isArray(life.exclusiveWith) ? life.exclusiveWith : [];
+  const displace = [];
   if (action === "install" || action === "start" || action === "switch") {
     for (const p of exclusivePorts) {
-      if (occupier && occupier[p] && occupier[p] !== raw.id) {
-        blocked.push(`port ${p} is held by ${occupier[p]} (mutually exclusive lane)`);
+      const heldBy = occupier && occupier[p];
+      if (!heldBy || heldBy === raw.id) continue;
+      if (exclusiveWith.includes(heldBy) || ctx.allowDisplace === heldBy) {
+        if (!displace.some((d) => d.componentId === heldBy)) {
+          displace.push({
+            id: "stop-peer",
+            kind: "stop-component",
+            componentId: heldBy,
+            port: p,
+            argv: null,
+            note: `coordinated stop of ${heldBy} so this recipe can take :${p} (stop old → start new)`,
+          });
+        }
+      } else {
+        blocked.push(`port ${p} is held by ${heldBy} (not an exclusiveWith peer; refusing to preempt)`);
       }
     }
   }
 
-  if (ctx.requireWorkdir === true && ctx.workdirExists === false) {
-    blocked.push(
-      `checkout missing at ${workdir}; clone the pinned source (${raw.source?.origin}@${raw.source?.upstreamCommit}) there, then retry — never curl|sh`
-    );
+  if (displace.length) {
+    steps.unshift(...displace);
+  }
+
+  const checkout = {
+    id: "checkout",
+    kind: "git-checkout",
+    origin: raw.source?.origin ?? null,
+    commit: raw.source?.upstreamCommit ?? null,
+    workdir,
+    argv: null,
+    note: "pinned git clone/fetch/checkout of the allowlisted origin; never curl|sh",
+  };
+  if (action === "install") {
+    steps.unshift(checkout);
+    steps.unshift({
+      id: "preflight",
+      kind: "host-preflight",
+      argv: null,
+      note: "requires host git; docker when the upstream scripts use it; sudo -n for install.sh (no TTY for sudo -v)",
+      requiresSudo: spec.requiresSudo === true,
+    });
   }
 
   if (life.topology === "tp2") {
@@ -164,13 +197,20 @@ export function buildRecipePlan(definition, action, ctx = {}) {
       loadingDeadlineMs: Number.isFinite(life.loadingDeadlineMs) ? life.loadingDeadlineMs : 20 * 60 * 1000,
       exclusivePorts,
       exclusiveWith: life.exclusiveWith || [],
+      displace,
       distinguish: {
-        install: "writes images/units/weights; may need sudo/disk",
+        checkout: "allowlisted git clone/fetch/checkout of the pinned commit into the catalog ~/workdir",
+        install: "runs ./install.sh --no-start after the pin is verified (writes images/units/weights; needs sudo -n)",
         switch: "rewrites the unit/launcher for a target; does not start the engine (alzeo switch-model.sh)",
-        start: "starts the unit after a switch or install",
-        launch: "engine boot / health canary",
+        start: "starts the unit after a switch or install --no-start",
+        launch: "not part of the install confirm when --no-start is used; start separately and wait for health",
       },
       blocked,
+      sideEffects: {
+        checkout: action === "install",
+        install: action === "install",
+        launch: spec.startsEngine === true,
+      },
     },
   };
 }
@@ -181,6 +221,9 @@ export function buildRecipePlan(definition, action, ctx = {}) {
  * @param {(file: string, args: string[], opts: object) => Promise<{ok: boolean, stdout?: string, stderr?: string, code?: number}>} exec
  */
 export async function executePlanStep(step, exec) {
+  if (step && (step.kind === "git-checkout" || step.kind === "host-preflight" || step.kind === "stop-component")) {
+    return { ok: false, error: `step '${step.kind}' must be run by the specialized executor, not executePlanStep` };
+  }
   const check = validateArgv(step.argv);
   if (!check.ok) return { ok: false, error: check.error };
   const envCheck = validateEnv(step.env);

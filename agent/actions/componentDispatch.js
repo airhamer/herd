@@ -22,6 +22,10 @@ import {
 } from "../../shared/runtimeProfile.js";
 import { buildRecipePlan, executePlanStep } from "../../shared/recipePlan.js";
 import { planGroupRecipe } from "../../shared/groupRecipe.js";
+import { acquirePinnedCheckout, hostPreflight } from "../../shared/gitPin.js";
+import { planHardwareSwitch } from "../../shared/switchLifecycle.js";
+import { runSwitchModel } from "./switchModelExec.js";
+import { probeRuntimeCapabilities, persistDetected } from "../capability/probe.js";
 import { loadDefinitions, getDefinition, DEFAULT_CATALOG_DIR } from "../catalog/definitions.js";
 import {
   loadInstanceStore,
@@ -123,19 +127,29 @@ async function handleSwapVariant(request, def, instance, store, instancePath, de
     deps.now
   );
   const capObserved = deps.observedCapabilities || {};
-  const capabilities = discoverCapabilities(def.runtimeProfile.adapters, capObserved);
+  let capabilities = discoverCapabilities(def.runtimeProfile.adapters, capObserved);
   const estimates = preview.result.estimates;
+  const variant = (def.variants || []).find((v) => v.id === variantId);
+  const hw = variant?.switchTarget ? planHardwareSwitch(variant) : null;
+  if (variant?.switchTarget && !hw.ok) {
+    env.error = hw.error;
+    env.message = hw.error;
+    env.durationMs = Date.now() - started;
+    return env;
+  }
 
   if (request.dryRun) {
     env.ok = true;
     env.status = "success";
-    env.message = `swap ${preview.result.previousVariantId} → ${preview.result.variantId} preserves profile ${def.id}`;
+    env.message = hw
+      ? `preview switch ${preview.result.previousVariantId} → ${preview.result.variantId} via ${hw.argv.join(" ")} (confirmed downtime; long load allowed)`
+      : `swap ${preview.result.previousVariantId} → ${preview.result.variantId} preserves profile ${def.id}`;
     env.plan = {
-      willDo: ["swap-variant"],
+      willDo: hw ? ["swap-variant", ...hw.willDo] : ["swap-variant"],
       displaces: null,
       confirm: "required",
       confirmationToken: planToken,
-      estDowntimeMs: 0,
+      estDowntimeMs: hw ? hw.estDowntimeMs : 0,
       memoryDeltaMB: 0,
       inflightRequests: null,
       scopeBlocked: null,
@@ -143,6 +157,8 @@ async function handleSwapVariant(request, def, instance, store, instancePath, de
       recording: preview.result.recording,
       capabilities,
       estimates,
+      argv: hw ? hw.argv : null,
+      confirmedDowntime: Boolean(hw),
     };
     env.durationMs = Date.now() - started;
     return env;
@@ -157,6 +173,104 @@ async function handleSwapVariant(request, def, instance, store, instancePath, de
   if (!verify.ok) {
     env.error = `confirmation ${verify.reason || "failed"}`;
     env.message = env.error;
+    env.durationMs = Date.now() - started;
+    return env;
+  }
+
+  const previousRec = {
+    variantId: instance.variantId ?? preview.result.previousVariantId,
+    recording: instance.recording ?? preview.result.recording,
+    segments: instance.segments ?? [],
+    servedModelName: instance.servedModelName ?? null,
+    profileId: def.id,
+    updatedAt: instance.updatedAt ?? null,
+  };
+
+  if (hw) {
+    const exec = typeof deps.execSwitch === "function"
+      ? await deps.execSwitch({ argv: hw.argv, cwd: deps.switchCwd })
+      : await runSwitchModel(hw.argv, { cwd: deps.switchCwd, execFile: deps.execFile });
+    if (!exec || exec.ok === false) {
+      // Desired metadata stays on the previous variant. We do not claim the
+      // hardware was rolled back — switch-model.sh does not provide a
+      // verified undo in this path.
+      env.ok = false;
+      env.status = "failure";
+      env.error = exec?.error || "switch-model failed";
+      env.message = `switch-model failed (${env.error}); desired variant left as ${previousRec.variantId}; hardware rollback not claimed`;
+      env.hardwareRolledBack = false;
+      env.steps = [{
+        step: "switch-model",
+        status: "failure",
+        message: env.message,
+        argv: hw.argv,
+        durationMs: Date.now() - started,
+      }];
+      env.state = {
+        componentId: def.id,
+        variantId: previousRec.variantId,
+        servedModelName: previousRec.servedModelName,
+        recording: previousRec.recording,
+        capabilities,
+      };
+      env.durationMs = Date.now() - started;
+      return env;
+    }
+
+    let ready = { ready: false, loading: true };
+    if (typeof deps.probeReady === "function") {
+      ready = await deps.probeReady({ componentId: def.id, variantId: preview.result.variantId });
+    } else if (deps.probeCapabilities !== false) {
+      try {
+        const probed = typeof deps.probeCapabilities === "function"
+          ? await deps.probeCapabilities(def.runtimeProfile)
+          : await probeRuntimeCapabilities(def.runtimeProfile, {
+              fetchImpl: deps.fetchImpl,
+              env: deps.env,
+            });
+        capabilities = probed.capabilities || capabilities;
+        ready = {
+          ready: Boolean(probed.detected?.reachable),
+          loading: !probed.detected?.reachable,
+          detected: probed.detected,
+        };
+      } catch {
+        ready = { ready: false, loading: true };
+      }
+    }
+
+    const nextRec = {
+      variantId: preview.result.variantId,
+      recording: preview.result.recording,
+      segments: preview.result.segments,
+      servedModelName: preview.result.servedModelName,
+      profileId: def.id,
+      updatedAt: (deps.now || Date.now)(),
+      detectedCapabilities: ready.detected
+        ? persistDetected({}, ready.detected).detectedCapabilities
+        : instance.detectedCapabilities ?? null,
+    };
+    const nextStore = writeInstance(store, request.nodeId, request.componentId, nextRec);
+    if (typeof deps.saveStore === "function") deps.saveStore(nextStore);
+    else saveInstanceStore(instancePath, nextStore);
+
+    env.ok = true;
+    env.status = ready.ready ? "success" : "running";
+    env.canaryState = ready.ready ? "ready" : "loading";
+    env.message = ready.ready
+      ? `hardware switch to ${hw.target} completed; serving ${preview.result.servedModelName}`
+      : `hardware switch to ${hw.target} completed; engine loading (long load allowed). selected model is not serving yet`;
+    env.steps = [
+      { step: "switch-model", status: "success", message: exec.stdout || hw.argv.join(" "), argv: hw.argv, durationMs: null },
+      { step: "canary", status: ready.ready ? "success" : "running", message: env.canaryState, durationMs: null },
+    ];
+    env.state = {
+      componentId: def.id,
+      variantId: nextRec.variantId,
+      servedModelName: nextRec.servedModelName,
+      recording: nextRec.recording,
+      capabilities,
+    };
     env.durationMs = Date.now() - started;
     return env;
   }
@@ -331,11 +445,11 @@ async function handleRecipeLifecycle(request, def, instance, deps, env, started)
   if (request.dryRun) {
     env.ok = !blocked;
     env.status = blocked ? "failure" : "success";
-    env.message = blocked ? preview.error : `plan ${request.type} ${def.id}`;
+    env.message = blocked ? preview.error : `plan ${request.type} ${def.id} (checkout then install; launch is separate when --no-start)`;
     env.error = blocked ? preview.error : null;
     env.plan = {
-      willDo: blocked ? [] : [request.type],
-      displaces: (plan.exclusiveWith || [])[0] || null,
+      willDo: blocked ? [] : plan.steps.map((s) => s.id || request.type),
+      displaces: (plan.displace && plan.displace[0]?.componentId) || (plan.exclusiveWith || [])[0] || null,
       confirm: "required",
       confirmationToken: blocked ? null : mintConfirmationToken(request, secret, deps.now),
       estDowntimeMs: plan.estBootMs || 0,
@@ -362,12 +476,49 @@ async function handleRecipeLifecycle(request, def, instance, deps, env, started)
   }
   const exec = deps.exec;
   const steps = [];
+  let checkoutDest = null;
   for (const step of plan.steps) {
-    const out = await executePlanStep(step, exec);
+    let out;
+    if (step.kind === "host-preflight") {
+      out = await hostPreflight(deps.execHost || (async (argv) => {
+        if (typeof exec !== "function") return { ok: false, error: "no executor" };
+        return exec(argv[0], argv.slice(1), {});
+      }), { needSudo: Boolean(plan.requiresSudo), needDocker: Boolean(deps.needDocker) });
+    } else if (step.kind === "git-checkout") {
+      out = await acquirePinnedCheckout(
+        { origin: step.origin, commit: step.commit, workdir: step.workdir },
+        {
+          home: deps.home || process.env.HOME,
+          exists: typeof deps.pathExists === "function" ? deps.pathExists : () => false,
+          execGit: async (argv) => {
+            if (typeof deps.execGit === "function") return deps.execGit(argv);
+            if (typeof exec !== "function") return { ok: false, error: "no git executor" };
+            return exec(argv[0], argv.slice(1), {});
+          },
+        }
+      );
+      if (out.ok) checkoutDest = out.dest;
+    } else if (step.kind === "stop-component") {
+      const dispatchAction = deps.dispatchAction;
+      if (typeof dispatchAction !== "function") {
+        out = { ok: false, error: "stop-peer requires dispatchAction" };
+      } else {
+        const peer = deps.getDefinition?.(step.componentId) || null;
+        const peerService = peer?.raw?.runtimeAliases?.serviceNames?.[0] || step.componentId;
+        const stopPeer = await dispatchAction(
+          downgradeToV1({ ...request, type: "stop", exclusiveWith: null }, { serviceName: peerService, port: step.port }),
+          deps.dispatchDeps || {}
+        );
+        out = { ok: stopPeer.ok !== false && stopPeer.status !== "failure", error: stopPeer.error, stdout: stopPeer.message };
+      }
+    } else {
+      const cwdStep = { ...step, cwd: checkoutDest || step.cwd };
+      out = await executePlanStep(cwdStep, exec);
+    }
     steps.push({
-      step: request.type,
+      step: step.id || request.type,
       status: out.ok ? "success" : "failure",
-      message: out.error || out.stdout || step.argv.join(" "),
+      message: out.error || out.stdout || (step.argv ? step.argv.join(" ") : step.kind),
       durationMs: null,
     });
     if (!out.ok) {
@@ -382,9 +533,11 @@ async function handleRecipeLifecycle(request, def, instance, deps, env, started)
     }
   }
   env.ok = true;
-  env.status = "running";
-  env.canaryState = "loading";
-  env.message = `${request.type} accepted; poll until ready (deadline ${plan.loadingDeadlineMs} ms). Recording policy unchanged.`;
+  env.status = "success";
+  env.canaryState = plan.sideEffects?.launch ? "loading" : "installed";
+  env.message = checkoutDest
+    ? `${request.type} completed at ${checkoutDest}; pin verified before upstream scripts. Engine not started (--no-start). Recording policy unchanged.`
+    : `${request.type} completed. Recording policy unchanged.`;
   env.steps = steps;
   env.state = {
     componentId: def.id,

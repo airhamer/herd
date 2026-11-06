@@ -263,7 +263,8 @@
         "--plan"
       ],
       "executeArgv": [
-        "./install.sh"
+        "./install.sh",
+        "--no-start"
       ],
       "env": {
         "MODEL_CHOICE": "stock",
@@ -273,8 +274,10 @@
       "estDiskGB": 101,
       "estBootMs": 540000,
       "notes": [
-        "install.sh --plan changes nothing; confirm runs MODEL_CHOICE=stock ./install.sh"
-      ]
+        "install.sh --plan changes nothing; confirm runs MODEL_CHOICE=stock ./install.sh",
+        "confirm runs MODEL_CHOICE-scoped ./install.sh --no-start after the git pin is verified (install vs launch are separate). Upstream install.sh has no --yes; it uses sudo -n then sudo -v (TTY required) \u2014 dashboard preflight requires sudo -n."
+      ],
+      "startsEngine": false
     },
     "prepare": {
       "argv": [

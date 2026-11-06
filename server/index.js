@@ -89,6 +89,7 @@ import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
 import { renderFleetMetrics } from "./fleet/metrics.js";
 import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
 import { buildComponentAction, proxyComponentAction } from "./fleet/componentActions.js";
+import { proxyAgentJson, requireRecordingAccess } from "./fleet/recordingProxy.js";
 import { loadComponentCatalog, joinComponentState } from "./fleet/componentCatalog.js";
 import { createWaveSequencer } from "./fleet/waveSequencer.js";
 import { createTrafficLog, registerTrafficRoutes } from "./fleet/traffic.js";
@@ -1273,6 +1274,63 @@ app.post("/api/fleet/nodes/:id/component-actions", async (req, res) => {
  * route above — the browser sends ComponentActionRequest fields there and
  * gets ComponentActionResult back (dry-run preview = same route, dryRun:true).
  */
+
+app.get("/api/fleet/nodes/:id/recordings", async (req, res) => {
+  const rec = listNodes().find((n) => n.id === req.params.id);
+  if (!rec) return res.status(404).json({ error: "Node not found" });
+  const access = requireRecordingAccess(req, { content: false });
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  const q = new URLSearchParams();
+  if (req.query.componentId) q.set("componentId", String(req.query.componentId));
+  const path = q.size ? `/recordings?${q}` : "/recordings";
+  const proxied = await proxyAgentJson(rec, path);
+  res.status(proxied.status).json(proxied.body);
+});
+
+app.get("/api/fleet/nodes/:id/recordings/:rid", async (req, res) => {
+  const rec = listNodes().find((n) => n.id === req.params.id);
+  if (!rec) return res.status(404).json({ error: "Node not found" });
+  const access = requireRecordingAccess(req, { content: true });
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  const proxied = await proxyAgentJson(rec, `/recordings/${encodeURIComponent(req.params.rid)}`);
+  res.status(proxied.status).json(proxied.body);
+});
+
+app.delete("/api/fleet/nodes/:id/recordings/:rid", async (req, res) => {
+  const rec = listNodes().find((n) => n.id === req.params.id);
+  if (!rec) return res.status(404).json({ error: "Node not found" });
+  const access = requireRecordingAccess(req, { content: true });
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  const proxied = await proxyAgentJson(rec, `/recordings/${encodeURIComponent(req.params.rid)}`, { method: "DELETE" });
+  res.status(proxied.status).json(proxied.body);
+});
+
+app.get("/api/fleet/nodes/:id/recording-status", async (req, res) => {
+  const rec = listNodes().find((n) => n.id === req.params.id);
+  if (!rec) return res.status(404).json({ error: "Node not found" });
+  const q = new URLSearchParams();
+  if (req.query.content) q.set("content", String(req.query.content));
+  if (req.query.observer) q.set("observer", String(req.query.observer));
+  const proxied = await proxyAgentJson(rec, `/recording-status?${q}`);
+  res.status(proxied.status).json(proxied.body);
+});
+
+app.put("/api/fleet/nodes/:id/recording-policy", async (req, res) => {
+  const rec = listNodes().find((n) => n.id === req.params.id);
+  if (!rec) return res.status(404).json({ error: "Node not found" });
+  const access = requireRecordingAccess(req, { content: true });
+  if (!access.ok) return res.status(access.status).json({ error: access.error });
+  const proxied = await proxyAgentJson(rec, "/recording-policy", { method: "PUT", body: { ...req.body, nodeId: rec.id } });
+  res.status(proxied.status).json(proxied.body);
+});
+
+app.get("/api/fleet/nodes/:id/components/:cid/capabilities", async (req, res) => {
+  const rec = listNodes().find((n) => n.id === req.params.id);
+  if (!rec) return res.status(404).json({ error: "Node not found" });
+  const proxied = await proxyAgentJson(rec, `/capability-probe?componentId=${encodeURIComponent(req.params.cid)}&nodeId=${encodeURIComponent(rec.id)}`, { timeoutMs: 8000 });
+  res.status(proxied.status).json(proxied.body);
+});
+
 app.get("/api/components", (_req, res) => {
   const { components, warnings } = loadComponentCatalog();
   const nodeSnaps = Object.values({

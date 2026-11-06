@@ -12,7 +12,7 @@ const def = {
     loadingDeadlineMs: 540000,
     install: {
       argv: ["./install.sh", "--plan"],
-      executeArgv: ["./install.sh"],
+      executeArgv: ["./install.sh", "--no-start"],
       env: { MODEL_CHOICE: "stock" },
       requiresSudo: true,
       estDiskGB: 101,
@@ -37,39 +37,58 @@ test("rejects shell injection and unknown scripts", () => {
 test("install preview lists sudo/disk/downtime and pinned source", () => {
   const p = buildRecipePlan(def, "install");
   assert.equal(p.ok, true);
-  assert.deepEqual(p.plan.steps[0].argv, ["./install.sh", "--plan"]);
+  const install = p.plan.steps.find((s) => Array.isArray(s.argv) && s.argv[0] === "./install.sh");
+  assert.deepEqual(install.argv, ["./install.sh", "--plan"]);
   assert.equal(p.plan.requiresSudo, true);
   assert.equal(p.plan.estDiskGB, 101);
   assert.equal(p.plan.pinned.commit, "01902c67709c4164c30ccf036422bfed6f172158");
   assert.match(p.plan.notes[0], /never curl\|sh/);
 });
 
-test("exclusive port occupancy blocks without killing the other lane", () => {
+test("exclusive peer occupancy plans a coordinated stop rather than blocking the switch", () => {
   const p = buildRecipePlan(def, "install", {
     portOccupier: { 8080: "qwen38-flash-next-sglang-tp1-gx10" },
   });
-  assert.equal(p.ok, false);
-  assert.match(p.error, /8080/);
+  assert.equal(p.ok, true);
+  assert.equal(p.plan.displace[0].componentId, "qwen38-flash-next-sglang-tp1-gx10");
+  assert.ok(p.plan.steps.some((s) => s.kind === "stop-component"));
 });
 
-test("missing checkout is a preview blocker, not a silent clone", () => {
-  const p = buildRecipePlan(def, "install", { requireWorkdir: true, workdirExists: false });
+test("self-occupied ports do not block (coordinated stop-old → start-new on the same lane)", () => {
+  const p = buildRecipePlan(def, "install", { portOccupier: { 8080: def.id } });
+  assert.equal(p.ok, true);
+  assert.equal((p.plan.displace || []).length, 0);
+});
+
+test("an unrelated occupier still blocks", () => {
+  const p = buildRecipePlan(def, "install", { portOccupier: { 8080: "someone-else" } });
   assert.equal(p.ok, false);
-  assert.match(p.error, /never curl\|sh/);
+  assert.match(p.error, /someone-else/);
+});
+
+test("install preview includes checkout and host preflight side effects, not a clone-path blocker", () => {
+  const p = buildRecipePlan(def, "install");
+  assert.equal(p.ok, true);
+  assert.ok(p.plan.steps.some((s) => s.kind === "git-checkout"));
+  assert.ok(p.plan.steps.some((s) => s.kind === "host-preflight"));
+  assert.equal(p.plan.sideEffects.checkout, true);
+  assert.equal(p.plan.sideEffects.launch, false);
 });
 
 test("execute uses argv array via injected exec; confirm path can use executeArgv", async () => {
   const preview = buildRecipePlan(def, "install");
-  assert.equal(preview.plan.steps[0].argv[1], "--plan");
+  const previewInstall = preview.plan.steps.find((s) => Array.isArray(s.argv) && s.argv[0] === "./install.sh");
+  assert.equal(previewInstall.argv[1], "--plan");
   const run = buildRecipePlan(def, "install", { execute: true });
-  assert.deepEqual(run.plan.steps[0].argv, ["./install.sh"]);
+  const installStep = run.plan.steps.find((s) => Array.isArray(s.argv) && s.argv[0] === "./install.sh");
+  assert.deepEqual(installStep.argv, ["./install.sh", "--no-start"]);
   const seen = [];
-  const out = await executePlanStep(run.plan.steps[0], async (file, args, opts) => {
+  const out = await executePlanStep(installStep, async (file, args, opts) => {
     seen.push({ file, args, opts });
     return { ok: true, stdout: "planned" };
   });
   assert.equal(out.ok, true);
   assert.deepEqual(seen[0].file, "./install.sh");
-  assert.deepEqual(seen[0].args, []);
+  assert.deepEqual(seen[0].args, ["--no-start"]);
   assert.equal(seen[0].opts.env.MODEL_CHOICE, "stock");
 });

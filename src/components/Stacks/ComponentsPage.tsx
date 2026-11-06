@@ -5,10 +5,17 @@ import {
   fetchStacks,
   saveStack,
   sendComponentAction,
+  fetchRecordingStatus,
+  fetchRecordings,
+  fetchRecording,
+  deleteRecording,
+  setRecordingPolicy,
   STACKS_EXPORT_URL,
   type CatalogComponent,
   type ComponentActionSendRequest,
   type FleetStack,
+  type RecordingListItem,
+  type RecordingStatus,
   type StacksView,
 } from "../../api/client";
 import type { ComponentActionResult } from "../../api/types";
@@ -204,7 +211,7 @@ export function ComponentsPage({ scopeNodeId, scopeGroupId }: ComponentsPageProp
         confirmationToken: preview ? null : confirmationToken,
         dryRun: preview,
         recipeName: null,
-        timeoutMs: type === "install" ? 20 * 60_000 : type === "swap-variant" ? 60_000 : null,
+        timeoutMs: type === "install" || type === "swap-variant" ? 20 * 60_000 : null,
         variantId,
       };
       setAction((a) => ({ ...a, busy: key, error: null }));
@@ -380,15 +387,10 @@ function ComponentRow({
       </div>
       {blockedReason && <p className="mt-1 text-[11px] text-danger">Blocked: {blockedReason}</p>}
       {comp.description && <p className="mt-1 text-[11px] text-muted">{comp.description}</p>}
-      <p className="mt-1 text-[11px] text-muted" data-testid={`recording-${comp.id}`}>
-        Recording: {comp.recording?.content ?? comp.runtimeProfile?.recording?.content ?? "metadata"}
-        {(comp.recording?.content === "prompts" || comp.recording?.content === "prompts+responses" ||
-          comp.runtimeProfile?.recording?.content === "prompts" ||
-          comp.runtimeProfile?.recording?.content === "prompts+responses")
-          ? " (content opt-in on)"
-          : " (metadata default)"}
+      <RecordingControls comp={comp} nodeId={targets[0] ?? null} />
+      <p className="mt-1 text-[11px] text-muted">
         {comp.runtimeProfile?.ports?.engine != null
-          ? ` · engine :${comp.runtimeProfile.ports.engine}`
+          ? `engine :${comp.runtimeProfile.ports.engine}`
           : ""}
         {comp.runtimeProfile?.ports?.guard != null ? ` / guard :${comp.runtimeProfile.ports.guard}` : ""}
         {comp.runtimeProfile?.adapters?.length
@@ -513,6 +515,102 @@ function VariantSwap({
         swap variant…
       </button>
     </label>
+  );
+}
+
+function RecordingControls({ comp, nodeId }: { comp: CatalogComponent; nodeId: string | null }) {
+  const desired = comp.recording?.content ?? comp.runtimeProfile?.recording?.content ?? "metadata";
+  const [status, setStatus] = useState<RecordingStatus | null>(null);
+  const [items, setItems] = useState<RecordingListItem[] | null>(null);
+  const [detail, setDetail] = useState<{ prompt: string | null; response: string | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!nodeId) {
+      setStatus({ recording: false, available: false, content: desired, ui: "not recording / unavailable", reason: "observer-unavailable" });
+      return;
+    }
+    try {
+      const s = await fetchRecordingStatus(nodeId, { content: desired, observer: comp.runtimeProfile?.recording?.observer ?? "relay" });
+      setStatus(s);
+    } catch {
+      setStatus({ recording: false, available: false, content: desired, ui: "not recording / unavailable", reason: "observer-unavailable" });
+    }
+  }, [nodeId, desired, comp.runtimeProfile?.recording?.observer]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const enabled = status?.recording === true;
+  return (
+    <div className="mt-1 text-[11px] text-muted" data-testid={`recording-${comp.id}`}>
+      Recording: {status ? status.ui : "checking observer…"}
+      {status && !status.available ? " (desired policy cannot record without an observer)" : ""}
+      {nodeId && (
+        <>
+          <button
+            type="button"
+            className="ml-2 rounded border border-border bg-surface px-2 py-0.5 text-[11px]"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              const next = enabled || desired === "prompts+responses" ? "metadata" : "prompts+responses";
+              void setRecordingPolicy(nodeId, { componentId: comp.id, content: next, observer: "relay" })
+                .then(() => refresh())
+                .finally(() => setBusy(false));
+            }}
+          >
+            {enabled ? "disable content recording" : "enable content recording"}
+          </button>
+          <button
+            type="button"
+            className="ml-1 rounded border border-border bg-surface px-2 py-0.5 text-[11px]"
+            onClick={() => {
+              if (!nodeId) return;
+              void fetchRecordings(nodeId, comp.id).then((r) => setItems(r.recordings));
+            }}
+          >
+            view recordings
+          </button>
+        </>
+      )}
+      {items && (
+        <ul className="mt-1 space-y-1">
+          {items.length === 0 && <li>No stored recordings.</li>}
+          {items.map((it) => (
+            <li key={it.id}>
+              <button
+                type="button"
+                className="underline"
+                onClick={() => {
+                  if (!nodeId) return;
+                  void fetchRecording(nodeId, it.id).then((r) => setDetail({ prompt: r.recording.prompt, response: r.recording.response }));
+                }}
+              >
+                {it.requestId} · {it.segment}
+                {it.stream?.incomplete ? " (incomplete)" : ""}
+              </button>
+              <button
+                type="button"
+                className="ml-2 text-danger"
+                onClick={() => {
+                  if (!nodeId) return;
+                  void deleteRecording(nodeId, it.id).then(() => fetchRecordings(nodeId, comp.id).then((r) => setItems(r.recordings)));
+                }}
+              >
+                delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {detail && (
+        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface p-2 text-[10px]">
+          prompt: {detail.prompt ?? "(none)"}{"\n"}response: {detail.response ?? "(none)"}
+        </pre>
+      )}
+    </div>
   );
 }
 
