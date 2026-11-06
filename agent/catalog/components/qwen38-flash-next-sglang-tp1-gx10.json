@@ -17,7 +17,12 @@
     "repo": "RadixArk/Qwen3.8-Flash-Next-NVFP4",
     "revision": "7b719225242aacd3dbd3f9407468c2ee9a9d2594",
     "servedModelName": "qwen3.8-flash-next",
-    "aliases": ["qwen38-flash-next", "flash-nvda", "flash", "qwen3.8-flash-next"],
+    "aliases": [
+      "qwen38-flash-next",
+      "flash-nvda",
+      "flash",
+      "qwen3.8-flash-next"
+    ],
     "quantization": "modelopt_fp4"
   },
   "drafter": {
@@ -55,35 +60,81 @@
       "throughput": "--max-running-requests 24 --max-mamba-cache-size 96 --mamba-radix-cache-strategy extra_buffer_lazy (no speculation)"
     },
     "rawArgs": [
-      "--tp-size", "1",
-      "--quantization", "modelopt_fp4",
-      "--fp4-gemm-backend", "flashinfer_cutlass",
-      "--page-size", "64",
-      "--ple-offload-embedding", "--ple-offload-backend", "file", "--ple-offload-dir", "/ple",
-      "--mem-fraction-static", "0.85",
-      "--context-length", "262144",
-      "--chunked-prefill-size", "4096",
-      "--max-running-requests", "8", "--max-mamba-cache-size", "40",
-      "--mamba-radix-cache-strategy", "extra_buffer", "--mamba-max-states-per-path", "2",
-      "--mamba-radix-cache-strategy", "extra_buffer",
-      "--speculative-algorithm", "NEXTN", "--speculative-num-steps", "3",
-      "--speculative-eagle-topk", "1", "--speculative-num-draft-tokens", "4",
-      "--speculative-draft-model-quantization", "unquant",
+      "--tp-size",
+      "1",
+      "--quantization",
+      "modelopt_fp4",
+      "--fp4-gemm-backend",
+      "flashinfer_cutlass",
+      "--page-size",
+      "64",
+      "--ple-offload-embedding",
+      "--ple-offload-backend",
+      "file",
+      "--ple-offload-dir",
+      "/ple",
+      "--mem-fraction-static",
+      "0.85",
+      "--context-length",
+      "262144",
+      "--chunked-prefill-size",
+      "4096",
+      "--max-running-requests",
+      "8",
+      "--max-mamba-cache-size",
+      "40",
+      "--mamba-radix-cache-strategy",
+      "extra_buffer",
+      "--mamba-max-states-per-path",
+      "2",
+      "--mamba-radix-cache-strategy",
+      "extra_buffer",
+      "--speculative-algorithm",
+      "NEXTN",
+      "--speculative-num-steps",
+      "3",
+      "--speculative-eagle-topk",
+      "1",
+      "--speculative-num-draft-tokens",
+      "4",
+      "--speculative-draft-model-quantization",
+      "unquant",
       "--enable-linear-replayssm-spec",
-      "--reasoning-parser", "qwen3", "--tool-call-parser", "qwen3_coder"
+      "--reasoning-parser",
+      "qwen3",
+      "--tool-call-parser",
+      "qwen3_coder"
     ]
   },
-  "ports": { "engine": 30000, "placeholder": true, "notes": "Hasso box default PORT=30000, keepalive proxy PORT+1; per-box choice (host placeholder upstream). Live 1c2c serves the engine on 8080 behind keepalive/guard proxy 8081 — do not treat 30000 as the running port." },
-  "runtimeAliases": { "serviceNames": ["qwen38-flash", "qwen38-flash.service"], "containerNames": ["qwen38-flash"] },
+  "ports": {
+    "engine": 30000,
+    "placeholder": true,
+    "notes": "Hasso box default PORT=30000, keepalive proxy PORT+1; per-box choice (host placeholder upstream). Live 1c2c serves the engine on 8080 behind keepalive/guard proxy 8081 \u2014 do not treat 30000 as the running port."
+  },
+  "runtimeAliases": {
+    "serviceNames": [
+      "qwen38-flash",
+      "qwen38-flash.service"
+    ],
+    "containerNames": [
+      "qwen38-flash"
+    ]
+  },
   "memoryProfile": {
-    "docker": { "memory": "110g", "memorySwap": "110g", "shmSize": "16g", "network": "host", "ipc": "host" },
+    "docker": {
+      "memory": "110g",
+      "memorySwap": "110g",
+      "shmSize": "16g",
+      "network": "host",
+      "ipc": "host"
+    },
     "hostFloorGiB": 96,
     "ple": {
       "tableSizeGiB": 47.7,
       "dir": "per-box (upstream default $HOME/flashnext-ple)",
       "rssBudgetGiB": 8,
       "rewriteOnBoot": true,
-      "requiresAts": "GB10 ATS addressing mode (iommu.passthrough=0); outside it the engine refuses the table at weight load (upstream issue #54) — checked by a preflight that exits 78."
+      "requiresAts": "GB10 ATS addressing mode (iommu.passthrough=0); outside it the engine refuses the table at weight load (upstream issue #54) \u2014 checked by a preflight that exits 78."
     },
     "env": {
       "SGLANG_OPT_MAMBA_SKIP_DECODE_LOCK": "1",
@@ -96,17 +147,174 @@
   },
   "multi_spark": {
     "supported": false,
-    "rule": "copy-on-tp-or-machine-change: this file is tp=1 on dgx-spark-gb10-128g. This component exists precisely because the 176B checkpoint fits ONE GB10 via file-backed PLE + GB10 host-page-table access; that mechanism is GB10-specific, so a 64 GB Spark or a TP2 pair is NOT a copy-and-run — a copy must re-prove the PLE path or pick another export (e.g. the vLLM FP4-Local lane), with its own measured flags and estimates.",
+    "rule": "copy-on-tp-or-machine-change: this file is tp=1 on dgx-spark-gb10-128g. This component exists precisely because the 176B checkpoint fits ONE GB10 via file-backed PLE + GB10 host-page-table access; that mechanism is GB10-specific, so a 64 GB Spark or a TP2 pair is NOT a copy-and-run \u2014 a copy must re-prove the PLE path or pick another export (e.g. the vLLM FP4-Local lane), with its own measured flags and estimates.",
     "singleSparkOnly": true
   },
   "source": {
-    "origin": "hasso5703/dgx-spark-qwen38",
-    "upstreamCommit": "43a3597fdeab4b408fcc62ff663cff9ccc79a158",
-    "derivedFrom": ["dashboard/recipes.py", "install.sh", "qwen38-flash-launch.sh.template", "docs/flash-lane.md"],
+    "origin": "hasso5703/alzeo",
+    "upstreamCommit": "01902c67709c4164c30ccf036422bfed6f172158",
+    "derivedFrom": [
+      "README.md",
+      "docs/cockpit.md",
+      "docs/flash-lane.md (cited by README)",
+      "dashboard/CAPABILITIES.md",
+      "switch-model.sh (usage/targets only)",
+      "install.sh (FLASH_REPO/FLASH_REV/FLASH_IMAGE)"
+    ],
     "upstreamRecipeId": "flash",
     "tierPinnedFrom": "install.sh FLASH_TIER default (concurrency)",
     "license": "MIT",
-    "retrievedAt": "2026-10-30"
+    "retrievedAt": "2026-11-06",
+    "copyright": "Copyright (c) 2026 hasso5703",
+    "renameNote": "Repository was named dgx-spark-qwen38 until 2026-11-01."
   },
-  "description": "Flash lane, RadixArk target: Qwen3.8-Flash-Next (176B hybrid MoE, 6B active) NVFP4 with in-checkpoint NEXTN, SGLang nightly on one GB10, concurrency tier (8 running requests). Converted from Hasso's builtin recipe 'flash'; image/model pins and tier flags verbatim from upstream at the commit above."
+  "description": "Flash lane, RadixArk target: Qwen3.8-Flash-Next (176B hybrid MoE, 6B active) NVFP4 with in-checkpoint NEXTN, SGLang nightly on one GB10, concurrency tier (8 running requests). Converted from Hasso's builtin recipe 'flash'; image/model pins and tier flags verbatim from upstream at the commit above. Dashboard install/switch uses pinned alzeo interfaces. Quoted speed figures are upstream claims, not an acceptance gate.",
+  "runtimeProfile": {
+    "engine": "sglang",
+    "protocol": "sglang-http",
+    "topology": {
+      "tp": 1,
+      "machineClass": "dgx-spark-gb10-128g"
+    },
+    "ports": {
+      "engine": 8080,
+      "guard": 8081,
+      "placeholder": true
+    },
+    "adapters": [
+      {
+        "id": "sglang",
+        "kind": "engine",
+        "support": "verified",
+        "capabilities": [
+          "engine-native",
+          "metrics",
+          "queue"
+        ]
+      },
+      {
+        "id": "hasso-keepalive",
+        "kind": "front",
+        "support": "verified",
+        "capabilities": [
+          "health",
+          "forward-metrics"
+        ]
+      }
+    ],
+    "credentialRefs": [
+      "env:GUARD_PROXY_KEY"
+    ],
+    "recording": {
+      "content": "metadata",
+      "observer": null
+    },
+    "litellmRouteAssumedDeployed": false
+  },
+  "variants": [
+    {
+      "id": "flash",
+      "label": "flash (Qwen3.8-Flash-Next 176B NVFP4 + NEXTN)",
+      "role": "standard",
+      "switchTarget": "flash",
+      "model": {
+        "repo": "RadixArk/Qwen3.8-Flash-Next-NVFP4",
+        "revision": "7b719225242aacd3dbd3f9407468c2ee9a9d2594",
+        "servedModelName": "qwen3.8-flash-next",
+        "aliases": [
+          "qwen38-flash-next",
+          "flash-nvda",
+          "flash",
+          "qwen3.8-flash-next"
+        ],
+        "quantization": "modelopt_fp4"
+      },
+      "memory_estimate_mb": {
+        "perSpark": 112640,
+        "basis": "measured",
+        "notes": "Docker cap 110g on a 128 GB unified pool; SGLang mem_fraction 0.85 (cookbook single-Spark cell). Host MemAvailable in service: 19.8 GiB at the concurrency tier (docs/flash-lane.md measurement). The 47.7 GiB FP8 N-gram (PLE) table lives in a sparse NVMe file read through GB10 host page tables (--ple-offload-backend file), with a resident-set budget of 8 GiB (SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB). Boot to /health: 12 min 21 s fresh PLE table, 14 min 54 s when it rewrote a populated one. KV pool lottery is real on this lane: 189,056 vs 249,408 tokens for the same launcher two boots apart (2026-09-03); the launcher's MemAvailable>=96 GiB floor loop bounds it."
+      },
+      "context_length": 262144
+    },
+    {
+      "id": "flash-uncensored",
+      "label": "flash-uncensored (abliterated NVFP4)",
+      "role": "uncensored",
+      "switchTarget": "flash-uncensored",
+      "model": {
+        "repo": "dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4",
+        "revision": "be794b990578ef3031eccf9f28e675a289a09ee9",
+        "servedModelName": "qwen3.8-flash-next",
+        "aliases": [
+          "flash-uncensored"
+        ],
+        "quantization": "modelopt_fp4"
+      },
+      "memory_estimate_mb": {
+        "perSpark": 112640,
+        "basis": "measured",
+        "notes": "Docker cap 110g on a 128 GB unified pool; SGLang mem_fraction 0.85 (cookbook single-Spark cell). Host MemAvailable in service: 19.8 GiB at the concurrency tier (docs/flash-lane.md measurement). The 47.7 GiB FP8 N-gram (PLE) table lives in a sparse NVMe file read through GB10 host page tables (--ple-offload-backend file), with a resident-set budget of 8 GiB (SGLANG_QWEN4_PLE_FILE_RSS_BUDGET_GB). Boot to /health: 12 min 21 s fresh PLE table, 14 min 54 s when it rewrote a populated one. KV pool lottery is real on this lane: 189,056 vs 249,408 tokens for the same launcher two boots apart (2026-09-03); the launcher's MemAvailable>=96 GiB floor loop bounds it."
+      },
+      "context_length": 262144
+    }
+  ],
+  "lifecycle": {
+    "workdir": "~/dgx-spark-qwen38",
+    "exclusivePorts": [
+      8080,
+      8081
+    ],
+    "exclusiveWith": [
+      "qwen38-27b-stock-sglang-tp1-gx10"
+    ],
+    "loadingDeadlineMs": 900000,
+    "notes": [
+      "Upstream tok/s (47.9 code, 47.1 math, 29-31 prose, 27.0 ms/tok agent loop at context tier) are alzeo README citations, not local SLAs.",
+      "Flash boot writes the 47.7 GiB PLE table every time: ~12-15 minutes to /health.",
+      "Lanes are mutually exclusive with the 27B stock unit on 8080/8081."
+    ],
+    "install": {
+      "argv": [
+        "./install.sh",
+        "--plan"
+      ],
+      "executeArgv": [
+        "./install.sh",
+        "--no-start"
+      ],
+      "env": {
+        "MODEL_CHOICE": "flash"
+      },
+      "requiresSudo": true,
+      "estDiskGB": 301,
+      "estBootMs": 900000,
+      "notes": [
+        "Flash target ~248 GB HF cache + ~53 GB image when both disks are one volume (~301 GB).",
+        "confirm runs MODEL_CHOICE-scoped ./install.sh --no-start after the git pin is verified (install vs launch are separate). Upstream install.sh has no --yes; it uses sudo -n then sudo -v (TTY required) \u2014 dashboard preflight requires sudo -n."
+      ],
+      "startsEngine": false
+    },
+    "prepare": {
+      "argv": [
+        "./prepare-lane.sh",
+        "flash"
+      ],
+      "requiresSudo": false
+    },
+    "switch": {
+      "argv": [
+        "./switch-model.sh",
+        "flash"
+      ],
+      "requiresSudo": false,
+      "startsEngine": false
+    },
+    "units": {
+      "engine": "qwen38-flash",
+      "keepalive": "qwen38-keepalive",
+      "peers": [
+        "qwen38-sglang"
+      ]
+    }
+  }
 }

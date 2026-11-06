@@ -51,3 +51,12 @@ means `ports.engine` is a host hint, not a pin — two exclusive lanes that
 share 8080/8081 must not both match that placeholder port.
 
 See `docs/components-1c2c.md` for the two single-Spark Qwen3.8 lanes.
+
+## Lifecycle (install / switch)
+
+Optional `lifecycle` describes dashboard-driven install and unit rewrite using
+**pinned upstream entry points** (allowlisted `./install.sh`, `./prepare-lane.sh`,
+`./switch-model.sh`, …). Preview shows exact argv, disk, sudo, and boot
+deadlines. Confirm is required. The agent executes argv arrays (no shell), and
+only after a matching confirmation token. Missing checkouts are blockers — the
+dashboard will not `curl | sh`.

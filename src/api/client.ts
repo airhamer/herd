@@ -814,7 +814,7 @@ export const STACKS_EXPORT_URL = "/api/stacks/export";
  *  actionId, pins nodeId from the route and stamps actor (server/fleet/
  *  componentActions.js). Response is a ComponentActionResult. */
 export interface ComponentActionSendRequest {
-  type: "start" | "stop" | "restart" | "swap-variant";
+  type: "start" | "stop" | "restart" | "swap-variant" | "install" | "configure";
   componentId: string;
   groupRef?: string | null;
   exclusiveWith?: string | null;

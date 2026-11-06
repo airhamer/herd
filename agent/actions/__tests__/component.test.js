@@ -30,7 +30,7 @@ const BASE = {
 };
 
 test("v2 verbs are start|stop|restart|swap-variant (legacy switch is gone)", () => {
-  assert.deepEqual(COMPONENT_ACTION_TYPES, ["start", "stop", "restart", "swap-variant"]);
+  assert.deepEqual(COMPONENT_ACTION_TYPES, ["start", "stop", "restart", "swap-variant", "install", "configure"]);
 });
 
 test("valid dry-run start passes validation", () => {

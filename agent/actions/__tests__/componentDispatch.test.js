@@ -312,3 +312,69 @@ test("loading after successful switch does not claim the model is already servin
   assert.equal(applied.canaryState, "loading");
   assert.match(applied.message, /not serving yet/);
 });
+
+test("install preview lists checkout+install side effects and execute verifies pin before install.sh", async () => {
+  const def = stockDef();
+  def.source = { origin: "hasso5703/alzeo", upstreamCommit: "01902c67709c4164c30ccf036422bfed6f172158" };
+  def.lifecycle = {
+    workdir: "~/dgx-spark-qwen38",
+    exclusivePorts: [8080, 8081],
+    exclusiveWith: ["qwen38-flash-next-sglang-tp1-gx10"],
+    install: {
+      argv: ["./install.sh", "--plan"],
+      executeArgv: ["./install.sh", "--no-start"],
+      env: { MODEL_CHOICE: "stock" },
+      requiresSudo: true,
+    },
+  };
+  const catalogDir = writeCatalog(def);
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "herd-cfg-"));
+  const req = {
+    version: 2,
+    actionId: "i1",
+    componentId: def.id,
+    type: "install",
+    nodeId: "n1",
+    groupRef: null,
+    exclusiveWith: null,
+    confirmationToken: null,
+    dryRun: true,
+    recipeName: null,
+    timeoutMs: null,
+  };
+  const preview = await dispatchComponentAction(req, {
+    catalogDir,
+    configDir,
+    confirmSecret: SECRET,
+    portOccupier: { 8080: "qwen38-flash-next-sglang-tp1-gx10" },
+  });
+  assert.equal(preview.ok, true);
+  assert.ok(preview.plan.willDo.includes("checkout"));
+  assert.ok(preview.plan.willDo.includes("install"));
+  assert.ok(preview.plan.willDo.includes("stop-peer") || preview.plan.displaces);
+  const gitCalls = [];
+  const applied = await dispatchComponentAction(
+    { ...req, actionId: "i2", dryRun: false, confirmationToken: preview.plan.confirmationToken },
+    {
+      catalogDir,
+      configDir,
+      confirmSecret: SECRET,
+      portOccupier: { 8080: "qwen38-flash-next-sglang-tp1-gx10" },
+      home: "/home/u",
+      pathExists: () => false,
+      execHost: async () => ({ ok: true }),
+      execGit: async (argv) => {
+        gitCalls.push(argv);
+        if (argv.includes("rev-parse") && argv.at(-1) === "HEAD") {
+          return { ok: true, stdout: "01902c67709c4164c30ccf036422bfed6f172158\n" };
+        }
+        return { ok: true, stdout: argv.includes("--is-inside-work-tree") ? "true\n" : "" };
+      },
+      exec: async (file, args) => ({ ok: true, stdout: `${file} ${args.join(" ")}` }),
+      dispatchAction: async () => ({ ok: true, status: "success", message: "stopped peer" }),
+    }
+  );
+  assert.equal(applied.ok, true);
+  assert.ok(gitCalls.some((a) => a.includes("clone")));
+  assert.match(applied.message, /pin verified|--no-start|completed/);
+});

@@ -29,7 +29,7 @@
 import { randomUUID } from "node:crypto";
 
 /** v2 verbs (shared/types.ts ComponentActionType). */
-const TYPES = ["start", "stop", "restart", "swap-variant"];
+const TYPES = ["start", "stop", "restart", "swap-variant", "install", "configure"];
 
 /**
  * Build a v2 ComponentActionRequest from a browser payload.

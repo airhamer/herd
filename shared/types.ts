@@ -1241,7 +1241,7 @@ export interface ActionResponse {
  *  by scanning live state becomes, in v2, either `start` with
  *  `exclusiveWith` (stated intent, take-turn) or a server-orchestrated
  *  stop-then-start. The agent only ever executes one goal-state verb. */
-export type ComponentActionType = "start" | "stop" | "restart" | "swap-variant";
+export type ComponentActionType = "start" | "stop" | "restart" | "swap-variant" | "install" | "configure";
 
 /** Confirmation class for a real (non-dry-run) execution. */
 export type ComponentActionConfirm = "none" | "required";

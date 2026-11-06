@@ -20,6 +20,8 @@ import {
   discoverCapabilities,
   resolveRecordingPolicy,
 } from "../../shared/runtimeProfile.js";
+import { buildRecipePlan, executePlanStep } from "../../shared/recipePlan.js";
+import { acquirePinnedCheckout, hostPreflight } from "../../shared/gitPin.js";
 import { planHardwareSwitch } from "../../shared/switchLifecycle.js";
 import { runSwitchModel } from "./switchModelExec.js";
 import { probeRuntimeCapabilities, persistDetected } from "../capability/probe.js";
@@ -80,6 +82,9 @@ export async function dispatchComponentAction(raw, deps = {}) {
 
   if (request.type === "swap-variant") {
     return handleSwapVariant(request, def, instance, store, instancePath, deps, env, started);
+  }
+  if (request.type === "install" || request.type === "configure") {
+    return handleRecipeLifecycle(request, def, instance, deps, env, started);
   }
 
   return handleLifecycleVerb(request, def, instance, deps, env, started);
@@ -183,8 +188,8 @@ async function handleSwapVariant(request, def, instance, store, instancePath, de
 
   if (hw) {
     const exec = typeof deps.execSwitch === "function"
-      ? await deps.execSwitch({ argv: hw.argv, cwd: deps.switchCwd })
-      : await runSwitchModel(hw.argv, { cwd: deps.switchCwd, execFile: deps.execFile });
+      ? await deps.execSwitch({ argv: hw.argv, cwd: deps.switchCwd || instance.checkoutDir || process.env.ALZEO_DIR || process.env.HASSO_WORKDIR })
+      : await runSwitchModel(hw.argv, { cwd: deps.switchCwd || instance.checkoutDir || process.env.ALZEO_DIR || process.env.HASSO_WORKDIR, execFile: deps.execFile });
     if (!exec || exec.ok === false) {
       // Desired metadata stays on the previous variant. We do not claim the
       // hardware was rolled back — switch-model.sh does not provide a
@@ -393,4 +398,141 @@ async function handleLifecycleVerb(request, def, instance, deps, env, started) {
     env.durationMs = Date.now() - started;
     return env;
   }
+}
+
+
+async function handleRecipeLifecycle(request, def, instance, deps, env, started) {
+  const action = request.type === "configure" ? "switch" : "install";
+  const preview = buildRecipePlan(def, action, {
+    execute: request.dryRun ? false : true,
+    portOccupier: deps.portOccupier || null,
+    requireWorkdir: deps.requireWorkdir === true,
+    workdirExists: deps.workdirExists,
+    group: deps.group,
+    network: deps.network,
+  });
+  const secret = deps.confirmSecret || process.env.HERD_ACTION_SECRET || "herd-component-action";
+  if (!preview.ok && preview.code !== "preflight") {
+    env.error = preview.error;
+    env.message = preview.error;
+    env.durationMs = Date.now() - started;
+    return env;
+  }
+  const plan = preview.plan;
+  const blocked = !preview.ok;
+  if (request.dryRun) {
+    env.ok = !blocked;
+    env.status = blocked ? "failure" : "success";
+    env.message = blocked ? preview.error : `plan ${request.type} ${def.id} (checkout then install; launch is separate when --no-start)`;
+    env.error = blocked ? preview.error : null;
+    env.plan = {
+      willDo: blocked ? [] : plan.steps.map((s) => s.id || request.type),
+      displaces: (plan.displace && plan.displace[0]?.componentId) || (plan.exclusiveWith || [])[0] || null,
+      confirm: "required",
+      confirmationToken: blocked ? null : mintConfirmationToken(request, secret, deps.now),
+      estDowntimeMs: plan.estBootMs || 0,
+      memoryDeltaMB: 0,
+      inflightRequests: null,
+      scopeBlocked: blocked ? preview.error : null,
+      recipe: plan,
+    };
+    env.durationMs = Date.now() - started;
+    return env;
+  }
+  if (blocked) {
+    env.error = preview.error;
+    env.message = preview.error;
+    env.durationMs = Date.now() - started;
+    return env;
+  }
+  const verify = verifyConfirmationToken(request.confirmationToken, request, secret, { now: deps.now });
+  if (!verify.ok) {
+    env.error = `confirmation ${verify.reason || "failed"}`;
+    env.message = env.error;
+    env.durationMs = Date.now() - started;
+    return env;
+  }
+  const exec = deps.exec;
+  const steps = [];
+  let checkoutDest = null;
+  for (const step of plan.steps) {
+    let out;
+    if (step.kind === "host-preflight") {
+      out = await hostPreflight(deps.execHost || (async (argv) => {
+        if (typeof exec !== "function") return { ok: false, error: "no executor" };
+        return exec(argv[0], argv.slice(1), {});
+      }), { needSudo: Boolean(plan.requiresSudo), needDocker: Boolean(deps.needDocker) });
+    } else if (step.kind === "git-checkout") {
+      out = await acquirePinnedCheckout(
+        { origin: step.origin, commit: step.commit, workdir: step.workdir },
+        {
+          home: deps.home || process.env.HOME,
+          exists: typeof deps.pathExists === "function" ? deps.pathExists : () => false,
+          execGit: async (argv) => {
+            if (typeof deps.execGit === "function") return deps.execGit(argv);
+            if (typeof exec !== "function") return { ok: false, error: "no git executor" };
+            return exec(argv[0], argv.slice(1), {});
+          },
+        }
+      );
+      if (out.ok) checkoutDest = out.dest;
+    } else if (step.kind === "stop-component") {
+      const dispatchAction = deps.dispatchAction;
+      if (typeof dispatchAction !== "function") {
+        out = { ok: false, error: "stop-peer requires dispatchAction" };
+      } else {
+        const peer = deps.getDefinition?.(step.componentId) || null;
+        const peerService = peer?.raw?.runtimeAliases?.serviceNames?.[0] || step.componentId;
+        const stopPeer = await dispatchAction(
+          downgradeToV1({ ...request, type: "stop", exclusiveWith: null }, { serviceName: peerService, port: step.port }),
+          deps.dispatchDeps || {}
+        );
+        out = { ok: stopPeer.ok !== false && stopPeer.status !== "failure", error: stopPeer.error, stdout: stopPeer.message };
+      }
+    } else {
+      const cwdStep = { ...step, cwd: checkoutDest || step.cwd };
+      out = await executePlanStep(cwdStep, exec);
+    }
+    steps.push({
+      step: step.id || request.type,
+      status: out.ok ? "success" : "failure",
+      message: out.error || out.stdout || (step.argv ? step.argv.join(" ") : step.kind),
+      durationMs: null,
+    });
+    if (!out.ok) {
+      env.ok = false;
+      env.status = "failure";
+      env.error = out.error || "step failed";
+      env.message = env.error;
+      env.steps = steps;
+      env.canaryState = "failed";
+      env.durationMs = Date.now() - started;
+      return env;
+    }
+  }
+  env.ok = true;
+  env.status = "success";
+  env.canaryState = plan.sideEffects?.launch ? "loading" : "installed";
+  env.message = checkoutDest
+    ? `${request.type} completed at ${checkoutDest}; pin verified before upstream scripts. Engine not started (--no-start). Recording policy unchanged.`
+    : `${request.type} completed. Recording policy unchanged.`;
+  env.steps = steps;
+  if (checkoutDest && request.nodeId) {
+    const rec = { ...instance, checkoutDir: checkoutDest };
+    const cfg = deps.configDir || process.env.HERD_AGENT_CONFIG || "agent/config";
+    const instPath = deps.instancePath || defaultInstancePath(cfg);
+    const store = typeof deps.loadStore === "function" ? deps.loadStore() : loadInstanceStore(instPath);
+    const next = writeInstance(store, request.nodeId, request.componentId, rec);
+    if (typeof deps.saveStore === "function") deps.saveStore(next);
+    else saveInstanceStore(instPath, next);
+  }
+  env.state = {
+    componentId: def.id,
+    variantId: instance.variantId,
+    servedModelName: instance.servedModelName,
+    recording: resolveRecordingPolicy([def.runtimeProfile.recording, instance.recording]),
+    checkoutDir: checkoutDest || instance.checkoutDir || null,
+  };
+  env.durationMs = Date.now() - started;
+  return env;
 }
