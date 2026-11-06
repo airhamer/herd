@@ -21,6 +21,7 @@ import {
   resolveRecordingPolicy,
 } from "../../shared/runtimeProfile.js";
 import { buildRecipePlan, executePlanStep } from "../../shared/recipePlan.js";
+import { acquirePinnedCheckout, hostPreflight } from "../../shared/gitPin.js";
 import { planHardwareSwitch } from "../../shared/switchLifecycle.js";
 import { runSwitchModel } from "./switchModelExec.js";
 import { probeRuntimeCapabilities, persistDetected } from "../capability/probe.js";
@@ -419,11 +420,11 @@ async function handleRecipeLifecycle(request, def, instance, deps, env, started)
   if (request.dryRun) {
     env.ok = !blocked;
     env.status = blocked ? "failure" : "success";
-    env.message = blocked ? preview.error : `plan ${request.type} ${def.id}`;
+    env.message = blocked ? preview.error : `plan ${request.type} ${def.id} (checkout then install; launch is separate when --no-start)`;
     env.error = blocked ? preview.error : null;
     env.plan = {
-      willDo: blocked ? [] : [request.type],
-      displaces: (plan.exclusiveWith || [])[0] || null,
+      willDo: blocked ? [] : plan.steps.map((s) => s.id || request.type),
+      displaces: (plan.displace && plan.displace[0]?.componentId) || (plan.exclusiveWith || [])[0] || null,
       confirm: "required",
       confirmationToken: blocked ? null : mintConfirmationToken(request, secret, deps.now),
       estDowntimeMs: plan.estBootMs || 0,
@@ -450,12 +451,49 @@ async function handleRecipeLifecycle(request, def, instance, deps, env, started)
   }
   const exec = deps.exec;
   const steps = [];
+  let checkoutDest = null;
   for (const step of plan.steps) {
-    const out = await executePlanStep(step, exec);
+    let out;
+    if (step.kind === "host-preflight") {
+      out = await hostPreflight(deps.execHost || (async (argv) => {
+        if (typeof exec !== "function") return { ok: false, error: "no executor" };
+        return exec(argv[0], argv.slice(1), {});
+      }), { needSudo: Boolean(plan.requiresSudo), needDocker: Boolean(deps.needDocker) });
+    } else if (step.kind === "git-checkout") {
+      out = await acquirePinnedCheckout(
+        { origin: step.origin, commit: step.commit, workdir: step.workdir },
+        {
+          home: deps.home || process.env.HOME,
+          exists: typeof deps.pathExists === "function" ? deps.pathExists : () => false,
+          execGit: async (argv) => {
+            if (typeof deps.execGit === "function") return deps.execGit(argv);
+            if (typeof exec !== "function") return { ok: false, error: "no git executor" };
+            return exec(argv[0], argv.slice(1), {});
+          },
+        }
+      );
+      if (out.ok) checkoutDest = out.dest;
+    } else if (step.kind === "stop-component") {
+      const dispatchAction = deps.dispatchAction;
+      if (typeof dispatchAction !== "function") {
+        out = { ok: false, error: "stop-peer requires dispatchAction" };
+      } else {
+        const peer = deps.getDefinition?.(step.componentId) || null;
+        const peerService = peer?.raw?.runtimeAliases?.serviceNames?.[0] || step.componentId;
+        const stopPeer = await dispatchAction(
+          downgradeToV1({ ...request, type: "stop", exclusiveWith: null }, { serviceName: peerService, port: step.port }),
+          deps.dispatchDeps || {}
+        );
+        out = { ok: stopPeer.ok !== false && stopPeer.status !== "failure", error: stopPeer.error, stdout: stopPeer.message };
+      }
+    } else {
+      const cwdStep = { ...step, cwd: checkoutDest || step.cwd };
+      out = await executePlanStep(cwdStep, exec);
+    }
     steps.push({
-      step: request.type,
+      step: step.id || request.type,
       status: out.ok ? "success" : "failure",
-      message: out.error || out.stdout || step.argv.join(" "),
+      message: out.error || out.stdout || (step.argv ? step.argv.join(" ") : step.kind),
       durationMs: null,
     });
     if (!out.ok) {
@@ -470,9 +508,11 @@ async function handleRecipeLifecycle(request, def, instance, deps, env, started)
     }
   }
   env.ok = true;
-  env.status = "running";
-  env.canaryState = "loading";
-  env.message = `${request.type} accepted; poll until ready (deadline ${plan.loadingDeadlineMs} ms). Recording policy unchanged.`;
+  env.status = "success";
+  env.canaryState = plan.sideEffects?.launch ? "loading" : "installed";
+  env.message = checkoutDest
+    ? `${request.type} completed at ${checkoutDest}; pin verified before upstream scripts. Engine not started (--no-start). Recording policy unchanged.`
+    : `${request.type} completed. Recording policy unchanged.`;
   env.steps = steps;
   env.state = {
     componentId: def.id,

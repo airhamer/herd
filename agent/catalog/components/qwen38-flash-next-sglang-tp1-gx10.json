@@ -279,7 +279,8 @@
         "--plan"
       ],
       "executeArgv": [
-        "./install.sh"
+        "./install.sh",
+        "--no-start"
       ],
       "env": {
         "MODEL_CHOICE": "flash"
@@ -288,8 +289,10 @@
       "estDiskGB": 301,
       "estBootMs": 900000,
       "notes": [
-        "Flash target ~248 GB HF cache + ~53 GB image when both disks are one volume (~301 GB)."
-      ]
+        "Flash target ~248 GB HF cache + ~53 GB image when both disks are one volume (~301 GB).",
+        "confirm runs MODEL_CHOICE-scoped ./install.sh --no-start after the git pin is verified (install vs launch are separate). Upstream install.sh has no --yes; it uses sudo -n then sudo -v (TTY required) \u2014 dashboard preflight requires sudo -n."
+      ],
+      "startsEngine": false
     },
     "prepare": {
       "argv": [
