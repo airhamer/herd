@@ -392,11 +392,6 @@ function DashboardApp() {
               active={inFleet && fleetView?.page === "updates"}
               onClick={() => fleetNavigate({ page: "updates" })}
             />
-            <ViewTab
-              label="Components"
-              active={inFleet && fleetView?.page === "components"}
-              onClick={() => fleetNavigate({ page: "components" })}
-            />
           </nav>
           {!inFleet && (
             <SparkTabs
@@ -644,9 +639,18 @@ function FleetViewPane({
   }
 
   if (view.page === "components") {
-    // Self-contained POC page: fetches GET /api/components + the node
-    // registry itself; actions go through the per-node component-actions route.
-    return <ComponentsPage />;
+    // Bookmarks to the old top-level tab: components now live on a node or group detail.
+    return (
+      <div className="panel mx-auto mt-16 max-w-md p-8 text-center" data-testid="components-moved">
+        <h2 className="text-sm font-semibold text-text-strong">Components moved</h2>
+        <p className="mt-1 text-xs text-muted">
+          Open a fleet card, then use the Components tab beside Traffic. Groups have the same tab on their detail page.
+        </p>
+        <button type="button" onClick={() => onNavigate({ page: "fleet" })} className="mt-4 text-xs text-accent underline">
+          Back to fleet overview
+        </button>
+      </div>
+    );
   }
 
   if (view.page === "fleet") {
@@ -677,15 +681,40 @@ function FleetViewPane({
     return <TopologyPage nodes={fleet.topology.nodes} links={fleet.topology.links} groupsApi={groupsApi} />;
   }
 
-  if (view.page === "group") {
+  if (view.page === "group" || view.page === "group-components") {
+    const groupNav = (
+      <div className="flex items-center gap-1">
+        <NodeSubTab
+          label="Detail"
+          active={view.page === "group"}
+          onClick={() => onNavigate({ page: "group", groupId: view.groupId })}
+        />
+        <NodeSubTab
+          label="Components"
+          active={view.page === "group-components"}
+          onClick={() => onNavigate({ page: "group-components", groupId: view.groupId })}
+        />
+      </div>
+    );
+    if (view.page === "group-components") {
+      return (
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-page-gap)" }}>
+          {groupNav}
+          <ComponentsPage scopeGroupId={view.groupId} />
+        </div>
+      );
+    }
     return (
-      <GroupDetailPage
-        groupId={view.groupId}
-        nodes={fleet.nodes}
-        topologyNodes={fleet.topology.nodes}
-        onSelectNode={(nodeId) => onNavigate({ page: "node", nodeId })}
-        onBack={() => onNavigate({ page: "fleet" })}
-      />
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-page-gap)" }}>
+        {groupNav}
+        <GroupDetailPage
+          groupId={view.groupId}
+          nodes={fleet.nodes}
+          topologyNodes={fleet.topology.nodes}
+          onSelectNode={(nodeId) => onNavigate({ page: "node", nodeId })}
+          onBack={() => onNavigate({ page: "fleet" })}
+        />
+      </div>
     );
   }
 
@@ -723,6 +752,11 @@ function FleetViewPane({
         active={view.page === "node-traffic"}
         onClick={() => onNavigate({ page: "node-traffic", nodeId: node.nodeId })}
       />
+      <NodeSubTab
+        label="Components"
+        active={view.page === "node-components"}
+        onClick={() => onNavigate({ page: "node-components", nodeId: node.nodeId })}
+      />
     </div>
   );
 
@@ -731,6 +765,15 @@ function FleetViewPane({
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-page-gap)" }}>
         {subNav}
         <TrafficPage nodeId={node.nodeId} nodeName={node.nodeName} />
+      </div>
+    );
+  }
+
+  if (view.page === "node-components") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-page-gap)" }}>
+        {subNav}
+        <ComponentsPage scopeNodeId={node.nodeId} />
       </div>
     );
   }

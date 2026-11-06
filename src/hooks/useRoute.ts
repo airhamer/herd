@@ -116,10 +116,12 @@ export type FleetView =
   | { page: "components" }
   | { page: "activity" }
   | { page: "group"; groupId: string }
+  | { page: "group-components"; groupId: string }
   | { page: "node"; nodeId: string }
   | { page: "node-services"; nodeId: string }
   | { page: "node-requests"; nodeId: string }
-  | { page: "node-traffic"; nodeId: string };
+  | { page: "node-traffic"; nodeId: string }
+  | { page: "node-components"; nodeId: string };
 
 export function fleetViewToPath(v: FleetView): string {
   switch (v.page) {
@@ -135,6 +137,8 @@ export function fleetViewToPath(v: FleetView): string {
       return "/activity";
     case "group":
       return `/group/${encodeURIComponent(v.groupId)}`;
+    case "group-components":
+      return `/group/${encodeURIComponent(v.groupId)}/components`;
     case "node":
       return `/node/${encodeURIComponent(v.nodeId)}`;
     case "node-services":
@@ -143,6 +147,8 @@ export function fleetViewToPath(v: FleetView): string {
       return `/node/${encodeURIComponent(v.nodeId)}/requests`;
     case "node-traffic":
       return `/node/${encodeURIComponent(v.nodeId)}/traffic`;
+    case "node-components":
+      return `/node/${encodeURIComponent(v.nodeId)}/components`;
   }
 }
 
@@ -152,14 +158,19 @@ export function parseFleetPath(pathname: string): FleetView | null {
   if (pathname === "/updates") return { page: "updates" };
   if (pathname === "/components") return { page: "components" };
   if (pathname === "/activity") return { page: "activity" };
-  const g = pathname.match(/^\/group\/([^/]+)$/);
-  if (g) return { page: "group", groupId: decodeURIComponent(g[1]) };
-  const m = pathname.match(/^\/node\/([^/]+)(?:\/(services|requests|traffic))?$/);
+  const g = pathname.match(/^\/group\/([^/]+)(?:\/(components))?$/);
+  if (g) {
+    const groupId = decodeURIComponent(g[1]);
+    if (g[2] === "components") return { page: "group-components", groupId };
+    return { page: "group", groupId };
+  }
+  const m = pathname.match(/^\/node\/([^/]+)(?:\/(services|requests|traffic|components))?$/);
   if (!m) return null;
   const nodeId = decodeURIComponent(m[1]);
   if (m[2] === "services") return { page: "node-services", nodeId };
   if (m[2] === "requests") return { page: "node-requests", nodeId };
   if (m[2] === "traffic") return { page: "node-traffic", nodeId };
+  if (m[2] === "components") return { page: "node-components", nodeId };
   return { page: "node", nodeId };
 }
 
