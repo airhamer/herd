@@ -1638,6 +1638,18 @@ export interface TrafficView {
   /** Newest first, at most recentMax (200), in memory on the dashboard server. */
   recent: TrafficRequestRow[];
   recentMax: number;
+  /** Live checklist for engine counters vs the herd usage relay (optional on older servers). */
+  prerequisites?: TrafficPrerequisites;
+}
+
+export interface TrafficPrerequisites {
+  agentVersion: string | null;
+  /** Agent 0.4+ exports raw engine counters. */
+  agentMeetsCounters: boolean;
+  /** Agent 0.5+ can run the LLM_PROXY usage relay. */
+  agentMeetsRelay: boolean;
+  /** llmProxy[] present — not the same as a Hasso keepalive/guard proxy on :8081. */
+  usageRelayConfigured: boolean;
 }
 
 // ─── LLM token ledger (FLEET3, issue #38) ────────────────

@@ -1,6 +1,7 @@
 import type { RequestStat, RequestStats } from "../../../shared/types";
 import { timeAgo } from "../../lib/timeAgo";
 import { RequestStatCard } from "./RequestStatCard";
+import { TrafficPrereqPanel, prereqsFromAgent } from "../ServiceManager/TrafficPage";
 
 export interface RequestsPageProps {
   nodeId: string;
@@ -13,6 +14,8 @@ export interface RequestsPageProps {
   byEngine: Record<string, RequestStat[]>;
   /** Aggregated by machine (node id). */
   byMachine: Record<string, RequestStat[]>;
+  agentVersion?: string | null;
+  usageRelayConfigured?: boolean;
 }
 
 function statKey(s: RequestStat): string {
@@ -70,6 +73,8 @@ export function RequestsPage({
   byModel,
   byEngine,
   byMachine,
+  agentVersion,
+  usageRelayConfigured,
 }: RequestsPageProps) {
   const polledLabel =
     requests && Number.isFinite(requests.polledAt)
@@ -87,6 +92,12 @@ export function RequestsPage({
           </p>
         </div>
       </header>
+      {(Object.keys(byModel).length === 0 && Object.keys(byEngine).length === 0) && (
+        <TrafficPrereqPanel
+          proxyEnabled={usageRelayConfigured === true}
+          prerequisites={prereqsFromAgent(agentVersion ?? null, usageRelayConfigured === true)}
+        />
+      )}
       <RequestSection title="By model" groups={byModel} emptyLabel="No requests by model" />
       <RequestSection title="By engine" groups={byEngine} emptyLabel="No requests by engine" />
       <RequestSection title="By machine" groups={byMachine} emptyLabel="No requests by machine" />

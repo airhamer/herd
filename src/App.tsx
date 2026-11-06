@@ -805,22 +805,16 @@ function FleetViewPane({
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "var(--density-page-gap)" }}>
       {subNav}
-      {node.requests ? (
-        <RequestsPage
-          nodeId={node.nodeId}
-          nodeName={node.nodeName}
-          requests={node.requests}
-          byModel={fleet.requests.byModel}
-          byEngine={fleet.requests.byEngine}
-          byMachine={fleet.requests.byMachine}
-        />
-      ) : (
-        <EmptyNodePane
-          title="No request stats"
-          detail="This node has not reported request stats yet."
-          onBack={() => onNavigate({ page: "fleet" })}
-        />
-      )}
+      <RequestsPage
+        nodeId={node.nodeId}
+        nodeName={node.nodeName}
+        requests={node.requests ?? { stats: [], polledAt: node.polledAt }}
+        byModel={node.requests ? fleet.requests.byModel : {}}
+        byEngine={node.requests ? fleet.requests.byEngine : {}}
+        byMachine={node.requests ? fleet.requests.byMachine : {}}
+        agentVersion={node.agentVersion}
+        usageRelayConfigured={Array.isArray(node.llmProxy) && node.llmProxy.length > 0}
+      />
     </div>
   );
 }
