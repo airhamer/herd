@@ -218,8 +218,8 @@ describe("UpdatesPage detail expander + grace rendering", () => {
 // applied fleet-wide). The build cell must LEAD with the effective value and
 // keep the stale file value visible but clearly labeled.
 
-describe("Batch 10-A effective build display", () => {
-  it("applied OTA present → build cell shows the EFFECTIVE build, file value labeled stale", async () => {
+describe("UPD1: DGX build column removed (#102)", () => {
+  it("does not render a DGX build column; Applied OTA still shows the latest applied version", async () => {
     const { container } = mountPage(() => [
       updatesView("n1", {
         snapshot: snapshot({
@@ -229,31 +229,17 @@ describe("Batch 10-A effective build display", () => {
       }),
     ]);
     await flush();
-    const build = container.querySelector('[data-testid="update-row-build"]')?.textContent ?? "";
-    expect(build.startsWith("7.6.0")).toBe(true); // effective value leads
-    expect(build).toContain("file 7.2.3 (stale)"); // both visible, stale clearly labeled
+    expect(container.textContent).not.toContain("DGX build");
+    expect(container.querySelector('[data-testid="update-row-build"]')).toBeNull();
+    expect(container.querySelector('[data-testid="update-row-applied-ota"]')?.textContent).toBe("7.6.0");
   });
 
-  it("fallback: no applied OTA → build cell shows swBuild alone, no stale label", async () => {
+  it("Applied OTA is an em-dash when no OTA has been applied", async () => {
     const { container } = mountPage(() => [
       updatesView("n1", { snapshot: snapshot({ swBuild: "7.5.0", latestOtaApplied: null }) }),
     ]);
     await flush();
-    const build = container.querySelector('[data-testid="update-row-build"]')?.textContent ?? "";
-    expect(build.trim()).toBe("7.5.0");
-    expect(build).not.toContain("stale");
-  });
-
-  it("negative: file value EQUAL to the applied OTA is not labeled stale", async () => {
-    const { container } = mountPage(() => [
-      updatesView("n1", {
-        snapshot: snapshot({ swBuild: "7.6.0", latestOtaApplied: { version: "7.6.0", date: "2026-09-30" } }),
-      }),
-    ]);
-    await flush();
-    const build = container.querySelector('[data-testid="update-row-build"]')?.textContent ?? "";
-    expect(build.trim()).toBe("7.6.0");
-    expect(build).not.toContain("stale");
+    expect(container.querySelector('[data-testid="update-row-applied-ota"]')?.textContent).toBe("—");
   });
 });
 

@@ -48,16 +48,6 @@ function listErrorOf(snap: NodeUpdatesView["snapshot"]): string | null {
 export function UpdateRow(props: UpdateRowProps) {
   const { view, node, now, expanded, notice } = props;
   const snap = view.snapshot;
-  // Batch 10-A: the EFFECTIVE build is the latest APPLIED OTA build (live
-  // fleet: 7.6.0 fleet-wide); swBuild is the /etc/dgx-release file value and
-  // goes stale after OTA updates (live: 7.2.3/7.5.0). Show effective first,
-  // fall back to the file value, and label the stale file value when it
-  // differs from what was actually applied.
-  const appliedBuild = snap?.latestOtaApplied?.version ?? null;
-  const fileBuild = snap?.swBuild ?? null;
-  const effectiveBuild = appliedBuild ?? fileBuild;
-  const staleFileBuild =
-    appliedBuild != null && fileBuild != null && fileBuild !== appliedBuild ? fileBuild : null;
   const listError = listErrorOf(snap);
 
   return (
@@ -67,18 +57,7 @@ export function UpdateRow(props: UpdateRowProps) {
           {node?.name ?? view.nodeId}
           {!view.reachable && <span className="ml-1 text-[10px] text-danger">offline</span>}
         </td>
-        <td className="py-1.5 pr-3 font-tabular text-muted" data-testid="update-row-build">
-          {effectiveBuild ?? "—"}
-          {staleFileBuild && (
-            <span
-              className="ml-1 text-[10px] text-warning"
-              title="/etc/dgx-release file value — superseded by the latest applied OTA build"
-            >
-              file {staleFileBuild} (stale)
-            </span>
-          )}
-        </td>
-        <td className="py-1.5 pr-3 font-tabular text-muted">{snap?.latestOtaApplied?.version ?? "—"}</td>
+        <td className="py-1.5 pr-3 font-tabular text-muted" data-testid="update-row-applied-ota">{snap?.latestOtaApplied?.version ?? "—"}</td>
         <td className="py-1.5 pr-3 text-muted">
           {snap?.otaAvailable ? (
             <span className="font-tabular">
