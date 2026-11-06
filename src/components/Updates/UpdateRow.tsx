@@ -45,6 +45,21 @@ function listErrorOf(snap: NodeUpdatesView["snapshot"]): string | null {
  * age, server-derived state, group/wave position, and row actions. State text
  * renders view.display — never re-derived client-side.
  */
+
+function pkgCount(snap: NodeUpdatesView["snapshot"] | (NodeUpdatesView["snapshot"] & { upgradableCount?: number | null }) | null | undefined): string {
+  if (!snap) return "—";
+  const linux = snap as { upgradableCount?: number | null; packages?: unknown[] | null };
+  if (linux.upgradableCount === null) return "—";
+  if (typeof linux.upgradableCount === "number") return String(linux.upgradableCount);
+  if (!Array.isArray(linux.packages)) return "—";
+  return String(linux.packages.length);
+}
+
+function fwCount(snap: NodeUpdatesView["snapshot"] | null | undefined): string {
+  if (!snap || !Array.isArray(snap.firmware)) return "—";
+  return String(snap.firmware.length);
+}
+
 export function UpdateRow(props: UpdateRowProps) {
   const { view, node, now, expanded, notice } = props;
   const snap = view.snapshot;
@@ -78,8 +93,8 @@ export function UpdateRow(props: UpdateRowProps) {
             "—"
           )}
         </td>
-        <td className="py-1.5 pr-3 font-tabular text-muted" data-testid="update-row-pkgs">{snap?.packages.length ?? "—"}</td>
-        <td className="py-1.5 pr-3 font-tabular text-muted">{snap?.firmware.length ?? "—"}</td>
+        <td className="py-1.5 pr-3 font-tabular text-muted" data-testid="update-row-pkgs">{pkgCount(snap)}</td>
+        <td className="py-1.5 pr-3 font-tabular text-muted">{fwCount(snap)}</td>
         <td className="py-1.5 pr-3 font-tabular text-muted" data-testid="update-row-lastcheck">
           {snap ? formatAgo(snap.probedAt, now) : "—"}
         </td>

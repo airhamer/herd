@@ -607,3 +607,42 @@ test("Batch 10-B display: failed outcome still outranks pending rows", () => {
   );
   assert.equal(v.display, "failed");
 });
+
+test("UPD2: SSH Linux probe with upgrades is available, not Spark-current", async () => {
+  const apt = `
+===OS===
+ubuntu
+===TOOL===
+apt
+===SIM===
+Inst libfoo [1] (2 Ubuntu [amd64])
+===LIST===
+Listing...
+===END===
+`;
+  const nodes = [{ id: "narthex", protocol: "ssh", platform: "linux", lanIp: "10.0.0.9" }];
+  const proxy = createUpdatesProxy({
+    nodes,
+    fetch: async () => { throw new Error("Spark /updates must not be called for SSH Linux"); },
+    linuxProbe: async () => apt,
+    now: () => 99,
+  });
+  const [v] = await proxy.getAllViews();
+  assert.equal(v.reachable, true);
+  assert.equal(v.snapshot.backend, "linux");
+  assert.equal(v.snapshot.upgradableCount, 1);
+  assert.equal(v.display, "available");
+});
+
+test("UPD2: failed Linux probe is stale with a null count, not current or zero", async () => {
+  const nodes = [{ id: "narthex", protocol: "ssh", lanIp: "10.0.0.9" }];
+  const proxy = createUpdatesProxy({
+    nodes,
+    fetch: async () => { throw new Error("should not fetch"); },
+    linuxProbe: async () => "===OS===\nalpine\n===TOOL===\nnone\n===SIM===\n===LIST===\n===END===\n",
+    now: () => 1,
+  });
+  const [v] = await proxy.getAllViews();
+  assert.equal(v.display, "stale");
+  assert.equal(v.snapshot.upgradableCount, null);
+});
