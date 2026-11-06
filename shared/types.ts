@@ -1356,7 +1356,7 @@ export interface ComponentActionResult {
 /** Dry-run plan: what the agent WOULD do, in order, and what it costs. */
 export interface ComponentActionPlan {
   /** Ordered step verbs for the real run (empty when scopeBlocked). */
-  willDo: Array<"stop" | "start" | "canary" | "traffic-check" | "swap-variant" | "install" | "configure">;
+  willDo: Array<"stop" | "start" | "canary" | "traffic-check" | "swap-variant" | "switch-model" | "install" | "configure" | "checkout">;
   /** Component stopped by the take-turn (null when none). */
   displaces: string | null;
   /** Confirmation class for the real execution. */

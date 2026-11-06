@@ -139,3 +139,176 @@ test("start dry-run requires confirm; execute without token fails; execute with 
   assert.equal(seen.serviceName, "qwen38-sglang");
   assert.equal(seen.type, "start");
 });
+
+test("hardware switch dry-run binds preview to allowlisted ./switch-model.sh argv", async () => {
+  const def = stockDef();
+  def.variants[1].switchTarget = "uncensored";
+  const catalogDir = writeCatalog(def);
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "herd-cfg-"));
+  const base = {
+    version: 2,
+    actionId: "h1",
+    componentId: def.id,
+    type: "swap-variant",
+    nodeId: "n1",
+    groupRef: null,
+    exclusiveWith: null,
+    confirmationToken: null,
+    dryRun: true,
+    recipeName: null,
+    timeoutMs: null,
+    variantId: "uncensored",
+  };
+  const preview = await dispatchComponentAction(base, { catalogDir, configDir, confirmSecret: SECRET });
+  assert.equal(preview.ok, true);
+  assert.deepEqual(preview.plan.argv, ["./switch-model.sh", "uncensored"]);
+  assert.ok(preview.plan.estDowntimeMs > 0);
+  assert.ok(preview.plan.willDo.includes("switch-model"));
+  assert.match(preview.message, /confirmed downtime/);
+});
+
+test("hardware switch execute: server→agent→argv→status roundtrip; success writes variant only after exec", async () => {
+  const def = stockDef();
+  def.variants[1].switchTarget = "uncensored";
+  const catalogDir = writeCatalog(def);
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "herd-cfg-"));
+  const base = {
+    version: 2,
+    actionId: "h2",
+    componentId: def.id,
+    type: "swap-variant",
+    nodeId: "n1",
+    groupRef: null,
+    exclusiveWith: null,
+    confirmationToken: null,
+    dryRun: true,
+    recipeName: null,
+    timeoutMs: null,
+    variantId: "uncensored",
+  };
+  const preview = await dispatchComponentAction(base, { catalogDir, configDir, confirmSecret: SECRET });
+  let seenArgv = null;
+  const applied = await dispatchComponentAction(
+    { ...base, actionId: "h3", dryRun: false, confirmationToken: preview.plan.confirmationToken },
+    {
+      catalogDir,
+      configDir,
+      confirmSecret: SECRET,
+      execSwitch: async ({ argv }) => {
+        seenArgv = argv;
+        return { ok: true, statusCode: 0, stdout: "units written" };
+      },
+      probeReady: async () => ({ ready: true, loading: false }),
+    }
+  );
+  assert.deepEqual(seenArgv, ["./switch-model.sh", "uncensored"]);
+  assert.equal(applied.ok, true);
+  assert.equal(applied.canaryState, "ready");
+  assert.equal(applied.state.variantId, "uncensored");
+  assert.match(applied.message, /serving/);
+  const store = JSON.parse(fs.readFileSync(path.join(configDir, "component-instances.json"), "utf8"));
+  assert.equal(store.instances[`n1/${def.id}`].variantId, "uncensored");
+});
+
+test("hardware switch failure rolls back desired metadata and does not claim hardware rollback", async () => {
+  const def = stockDef();
+  def.variants[1].switchTarget = "uncensored";
+  const catalogDir = writeCatalog(def);
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "herd-cfg-"));
+  const preview = await dispatchComponentAction(
+    {
+      version: 2,
+      actionId: "h4",
+      componentId: def.id,
+      type: "swap-variant",
+      nodeId: "n1",
+      groupRef: null,
+      exclusiveWith: null,
+      confirmationToken: null,
+      dryRun: true,
+      recipeName: null,
+      timeoutMs: null,
+      variantId: "uncensored",
+    },
+    { catalogDir, configDir, confirmSecret: SECRET }
+  );
+  const applied = await dispatchComponentAction(
+    {
+      version: 2,
+      actionId: "h5",
+      componentId: def.id,
+      type: "swap-variant",
+      nodeId: "n1",
+      groupRef: null,
+      exclusiveWith: null,
+      confirmationToken: preview.plan.confirmationToken,
+      dryRun: false,
+      recipeName: null,
+      timeoutMs: null,
+      variantId: "uncensored",
+    },
+    {
+      catalogDir,
+      configDir,
+      confirmSecret: SECRET,
+      execSwitch: async () => ({ ok: false, error: "unit write failed" }),
+    }
+  );
+  assert.equal(applied.ok, false);
+  assert.equal(applied.hardwareRolledBack, false);
+  assert.match(applied.message, /desired variant left as/);
+  assert.match(applied.message, /hardware rollback not claimed/);
+  assert.equal(applied.state.variantId, "stock");
+  assert.equal(fs.existsSync(path.join(configDir, "component-instances.json")), false);
+});
+
+test("loading after successful switch does not claim the model is already serving", async () => {
+  const def = stockDef();
+  def.variants[1].switchTarget = "uncensored";
+  const catalogDir = writeCatalog(def);
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "herd-cfg-"));
+  const preview = await dispatchComponentAction(
+    {
+      version: 2,
+      actionId: "h6",
+      componentId: def.id,
+      type: "swap-variant",
+      nodeId: "n1",
+      groupRef: null,
+      exclusiveWith: null,
+      confirmationToken: null,
+      dryRun: true,
+      recipeName: null,
+      timeoutMs: null,
+      variantId: "uncensored",
+    },
+    { catalogDir, configDir, confirmSecret: SECRET }
+  );
+  const applied = await dispatchComponentAction(
+    {
+      version: 2,
+      actionId: "h7",
+      componentId: def.id,
+      type: "swap-variant",
+      nodeId: "n1",
+      groupRef: null,
+      exclusiveWith: null,
+      confirmationToken: preview.plan.confirmationToken,
+      dryRun: false,
+      recipeName: null,
+      timeoutMs: null,
+      variantId: "uncensored",
+    },
+    {
+      catalogDir,
+      configDir,
+      confirmSecret: SECRET,
+      execSwitch: async () => ({ ok: true, statusCode: 0 }),
+      probeReady: async () => ({ ready: false, loading: true }),
+    }
+  );
+  assert.equal(applied.ok, true);
+  assert.equal(applied.status, "running");
+  assert.equal(applied.canaryState, "loading");
+  assert.match(applied.message, /not serving yet/);
+});

@@ -64,6 +64,43 @@ import { parseLlmAuthTokens } from "./collectors/llm.js";
 import { createDgxUpdates } from "./updates/dgx.js";
 import { createUpdateScheduler } from "./updates/scheduler.js";
 import { createUsageRelays } from "./proxy/usageRelay.js";
+import { buildCaptureRecord, appendCapture, loadRecordingStore, saveRecordingStore, defaultRecordingPath } from "./recording/store.js";
+import { loadInstanceStore, defaultInstancePath } from "./catalog/componentInstance.js";
+import { resolveRecordingPolicy, canRecordContent } from "../shared/runtimeProfile.js";
+
+function makeRecordingCapture(env) {
+  return (evt) => {
+    const configDir = env.HERD_AGENT_CONFIG || "agent/config";
+    const storeFile = defaultInstancePath(configDir);
+    const instances = loadInstanceStore(storeFile);
+    const keys = Object.keys(instances.instances || {});
+    const key = keys[keys.length - 1];
+    const rec = key ? instances.instances[key] : {};
+    const componentId = key ? key.split("/").slice(1).join("/") : "unknown";
+    const nodeId = key ? key.split("/")[0] : env.NODE_ID || null;
+    const policy = resolveRecordingPolicy([rec.recording]);
+    if (!canRecordContent(policy)) return;
+    const record = buildCaptureRecord(
+      {
+        componentId,
+        variantId: rec.variantId,
+        nodeId,
+        requestBody: evt.requestBody,
+        streamChunks: evt.streamChunks,
+        aborted: evt.aborted,
+        path: evt.path,
+        status: evt.status,
+      },
+      policy
+    );
+    const recPath = defaultRecordingPath(configDir);
+    const next = appendCapture(loadRecordingStore(recPath), record, {
+      maxBytes: policy.maxBytes || undefined,
+      maxAgeMs: policy.retentionHours != null ? policy.retentionHours * 3600 * 1000 : undefined,
+    });
+    saveRecordingStore(recPath, next);
+  };
+}
 
 // Catalog seam — re-exported so Worker 1A (telemetry) and 2A/2B (actions) can
 // import from agent/main.js or the catalog modules directly (same code).
@@ -472,7 +509,7 @@ export function createNodeAgent(opts = {}) {
     fullView: () => scheduler.fullView(),
   };
   // STAT4 (#37): opt-in usage relays; none unless LLM_PROXY is set.
-  const usageRelay = createUsageRelays(opts.env ?? process.env);
+  const usageRelay = createUsageRelays(opts.env ?? process.env, { onCapture: makeRecordingCapture(opts.env ?? process.env) });
   const httpServer = createHttpServer(
     () =>
       collectTelemetry(

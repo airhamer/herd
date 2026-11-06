@@ -413,10 +413,11 @@ function forwardHeaders(h) {
  * @param {{ listenPort: number, upstreamPort: number, upstreamHost?: string, bind?: string,
  *   now?: () => number, wallNow?: () => number }} opts
  */
-export function createUsageRelay({ listenPort, upstreamPort, upstreamHost = "127.0.0.1", bind = "127.0.0.1", now = () => performance.now(), wallNow = () => Date.now() }) {
+export function createUsageRelay({ listenPort, upstreamPort, upstreamHost = "127.0.0.1", bind = "127.0.0.1", now = () => performance.now(), wallNow = () => Date.now(), onCapture = null, maxCaptureBytes = 64 * 1024 }) {
   const ledger = createUsageLedger({ listenPort, upstreamPort });
   /** @type {http.Server|null} */
   let server = null;
+  const captureLimit = Number.isFinite(maxCaptureBytes) && maxCaptureBytes > 0 ? maxCaptureBytes : 64 * 1024;
 
   /** @param {http.IncomingMessage} req @param {http.ServerResponse} res */
   function handle(req, res) {
@@ -426,12 +427,43 @@ export function createUsageRelay({ listenPort, upstreamPort, upstreamHost = "127
     let done = false;
     /** @type {ReturnType<typeof createRequestMeter> | null} */
     let meter = null;
+    const capturing = metered && typeof onCapture === "function";
+    /** @type {Buffer[]} */
+    const reqChunks = [];
+    let reqBytes = 0;
+    /** @type {Buffer[]} */
+    const resChunks = [];
+    let resBytes = 0;
     if (metered) ledger.begin();
+    if (capturing) {
+      req.on("data", (chunk) => {
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        if (reqBytes >= captureLimit) return;
+        const take = buf.subarray(0, captureLimit - reqBytes);
+        reqChunks.push(take);
+        reqBytes += take.length;
+      });
+    }
     const finish = (status, aborted) => {
       if (done || !metered) return;
       done = true;
       const m = meter ?? createRequestMeter({ t0 });
       ledger.record(m.finish({ status, t: now(), aborted }), { client, path: req.url.split("?")[0], wallMs: wallNow() });
+      if (capturing) {
+        try {
+          onCapture({
+            path: (req.url || "").split("?")[0],
+            method: req.method,
+            status,
+            aborted: Boolean(aborted),
+            requestBody: Buffer.concat(reqChunks).toString("utf8"),
+            streamChunks: resChunks,
+            // headers intentionally omitted
+          });
+        } catch (err) {
+          console.warn(`[node-agent] recording capture failed: ${String(err?.message ?? err)}`);
+        }
+      }
     };
 
     const up = http.request(
@@ -444,7 +476,17 @@ export function createUsageRelay({ listenPort, upstreamPort, upstreamHost = "127
             contentType: String(upRes.headers["content-type"] ?? ""),
             contentEncoding: String(upRes.headers["content-encoding"] ?? ""),
           });
-          upRes.on("data", (chunk) => meter.chunk(chunk, now()));
+          upRes.on("data", (chunk) => {
+            meter.chunk(chunk, now());
+            if (capturing) {
+              const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+              if (resBytes < captureLimit) {
+                const take = buf.subarray(0, captureLimit - resBytes);
+                resChunks.push(take);
+                resBytes += take.length;
+              }
+            }
+          });
         }
         res.writeHead(status, upRes.statusMessage, forwardHeaders(upRes.headers));
         upRes.pipe(res);
@@ -502,9 +544,9 @@ export function createUsageRelay({ listenPort, upstreamPort, upstreamHost = "127
  * (default 127.0.0.1). Empty LLM_PROXY → no relays.
  * @param {Record<string, string|undefined>} [env]
  */
-export function createUsageRelays(env = process.env) {
+export function createUsageRelays(env = process.env, extras = {}) {
   const bind = env.LLM_PROXY_BIND || "127.0.0.1";
-  const relays = parseRelaySpec(env.LLM_PROXY).map((s) => createUsageRelay({ ...s, bind }));
+  const relays = parseRelaySpec(env.LLM_PROXY).map((s) => createUsageRelay({ ...s, bind, onCapture: extras.onCapture, maxCaptureBytes: extras.maxCaptureBytes }));
   return {
     relays,
     async start() {
