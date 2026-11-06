@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gib, gpuHolderLabel, isUnifiedGpu, memBudgetStat, memoryPool, poolClassGB, poolScaleGiB, shortModel } from "./memoryPool";
+import { gib, gpuHolderLabel, inferenceBudget, isUnifiedGpu, memBudgetStat, memoryPool, poolClassGB, poolScaleGiB, shortModel } from "./memoryPool";
 
 // Hasso's reference screenshot (ASUS Ascent GX10): 109.9 of 121.6 GiB in use,
 // 11.8 available, 8.8 above the 3 GiB floor; model 99.2, system 10.7,
@@ -152,5 +152,38 @@ describe("memBudgetStat (#26)", () => {
     expect(memBudgetStat(null, budget)?.value).toBe("28.3 GiB above floor");
     expect(memBudgetStat(null, { ...budget, freeMB: 6000 })?.tone).toBe("warning");
     expect(memBudgetStat(null, null)).toBeNull();
+  });
+});
+
+describe("inferenceBudget (#97)", () => {
+  it("a discrete GPU does not apply the 3 GiB Spark floor to VRAM", () => {
+    const p = memoryPool({ totalMB: 64000, availableMB: 20000, unified: false })!;
+    expect(p.floorMB).toBe(0);
+    expect(p.gpuMB).toBe(0);
+    const stat = inferenceBudget({
+      unified: false,
+      pool: p,
+      budget: { freeMB: 20000, totalMB: 64000 },
+      vram: { usedMB: 8192, totalMB: 24576 },
+    })!;
+    expect(stat.value).toBe("16.0 GiB VRAM free");
+    expect(stat.title).toContain("not one interchangeable pool");
+    expect(stat.title).not.toContain("floor 3");
+  });
+
+  it("missing VRAM is unknown, not zero", () => {
+    const stat = inferenceBudget({
+      unified: false,
+      pool: null,
+      budget: { freeMB: 8000, totalMB: 32000 },
+      vram: { usedMB: null, totalMB: null },
+    })!;
+    expect(stat.value).toBe("VRAM unknown");
+    expect(stat.tone).toBe("warning");
+  });
+
+  it("unified cards still report headroom above the Spark floor", () => {
+    const pool = memoryPool({ totalMB: 124560, availableMB: 12040, unified: true })!;
+    expect(inferenceBudget({ unified: true, pool, budget: null })?.value).toBe("8.8 GiB above floor");
   });
 });

@@ -14,7 +14,7 @@ import type {
 import { MetricBar } from "../ui/MetricBar";
 import { NormalizedEngineInline } from "../ui/NormalizedEngineMetrics";
 import { MemoryPoolBar } from "../ui/MemoryPoolBar";
-import { gpuHolderLabel, isUnifiedGpu, memBudgetStat, memoryPool } from "../../lib/memoryPool";
+import { gpuHolderLabel, inferenceBudget, isUnifiedGpu, memoryPool } from "../../lib/memoryPool";
 import { containerLabels } from "../../lib/engineFamily";
 import { useNodeUpdateDisplay } from "../Updates/FleetUpdatesContext";
 
@@ -197,8 +197,19 @@ export function FleetCard(props: FleetCardProps) {
         unified,
       })
     : null;
-  // Mem Budget reads off the same pool as the bar (#26), not memory.freeMB.
-  const memBudget = memory ? memBudgetStat(pool, memory) : null;
+  // Unified: Mem Budget is headroom above the Spark floor (#26). Discrete:
+  // VRAM free is the inference budget; RAM is separate and not added to it.
+  const memBudget = inferenceBudget({
+    unified,
+    pool,
+    budget: memory,
+    vram: gpu
+      ? {
+          usedMB: typeof gpu.vramUsedMB === "number" ? gpu.vramUsedMB : null,
+          totalMB: typeof gpu.vramTotalMB === "number" && gpu.vramTotalMB > 0 ? gpu.vramTotalMB : null,
+        }
+      : null,
+  });
 
   const runningContainers = containers.filter((c) => c.status === "running").length;
   const stoppedContainers = containers.length - runningContainers;
@@ -424,7 +435,7 @@ export function FleetCard(props: FleetCardProps) {
               value={`q${queued} · r${running} · f${finished}`}
               title="queued · running · finished"
             />
-            {memory && memBudget && (
+            {memBudget && (
               <MiniStat label="Mem Budget" testId="fleet-card-mem-budget" value={memBudget.value} tone={memBudget.tone} title={memBudget.title} />
             )}
             {memory?.needMakeRoom && (

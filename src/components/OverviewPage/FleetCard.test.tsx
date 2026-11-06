@@ -248,6 +248,11 @@ describe("FleetCard", () => {
     expect(container.querySelector('[data-testid="memory-pool"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="memory-pool-seg-gpu"]')).toBeNull();
     expect(text).not.toContain("Unified memory");
+    expect(text).not.toContain("3 GiB floor");
+    expect(container.querySelector('[data-testid="memory-pool-floor"]')).toBeNull();
+    const budget = container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
+    expect(budget.textContent).toBe("16.0 GiB VRAM free");
+    expect(budget.getAttribute("title") ?? "").toContain("not one interchangeable pool");
   });
 
   it("shows offline status and unreachable placeholder", () => {
@@ -339,7 +344,13 @@ describe("FleetCard", () => {
 
   it("Mem Budget (#26): falls back to the budget's freeMB when there is no pool", () => {
     const { container } = render(
-      <FleetCard {...makeCard({ mem: null, memory: memoryBudget({ freeMB: 32000, totalMB: 128000 }) })} />
+      <FleetCard
+        {...makeCard({
+          mem: null,
+          gpu: { ...gpu(), unifiedMemory: true },
+          memory: memoryBudget({ freeMB: 32000, totalMB: 128000 }),
+        })}
+      />
     );
     const stat = container.querySelector('[data-testid="fleet-card-mem-budget"]')!;
     expect(stat.textContent).toBe("28.3 GiB above floor"); // 32000 − 3072 MB

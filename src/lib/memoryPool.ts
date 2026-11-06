@@ -71,7 +71,11 @@ export function memoryPool(input: MemoryPoolInput): MemoryPool | null {
   const freeMB = Math.max(0, availableMB - cacheMB);
   const swapTotal = nn(input.swapTotalMB);
   const swapUsedMB = swapTotal > 0 ? Math.max(0, swapTotal - Math.min(nn(input.swapFreeMB), swapTotal)) : 0;
-  const floorMB = input.floorMB != null && Number.isFinite(input.floorMB) && input.floorMB >= 0 ? input.floorMB : DEFAULT_FLOOR_MB;
+  // The 3 GiB Spark OOM floor applies to the unified GB10 pool only.
+  // A discrete GPU's VRAM is a different device; do not subtract that floor
+  // from VRAM or treat RAM+VRAM as one interchangeable capacity.
+  const defaultFloor = input.unified ? DEFAULT_FLOOR_MB : 0;
+  const floorMB = input.floorMB != null && Number.isFinite(input.floorMB) && input.floorMB >= 0 ? input.floorMB : defaultFloor;
   const tone: MemoryTone =
     availableMB < CRIT_AVAILABLE_MB ? "crit" : availableMB < LOW_AVAILABLE_MB ? "low" : "ok";
   return {
@@ -181,5 +185,85 @@ export function memBudgetStat(
     value: `${gib(above)} GiB above floor`,
     tone,
     title: `available ${gib(src.availableMB)} GiB · floor ${floorGiB} GiB · total ${gib(src.totalMB)} GiB`,
+  };
+}
+
+
+export interface VramReading {
+  usedMB: number | null;
+  totalMB: number | null;
+}
+
+export interface InferenceBudgetInput {
+  unified: boolean;
+  pool: MemoryPool | null;
+  budget: { freeMB: number; totalMB: number; needMakeRoom?: boolean } | null;
+  vram?: VramReading | null;
+  /**
+   * Measured Elephant-AI / agent / proxy footprint already included in
+   * used/available. Shown in the title so it is not deducted again.
+   */
+  infraUsedMB?: number | null;
+  /** Extra named safety reserve (not the Spark 3 GiB VRAM floor). */
+  safetyReserveMB?: number | null;
+  /** When true, RAM above the named reserve may be described as CPU-offload headroom. */
+  cpuOffloadEnabled?: boolean;
+}
+
+/**
+ * Answer "can another service fit?" without mixing RAM and VRAM.
+ *
+ * Unified GB10: one shared pool; the 3 GiB Spark floor applies (Hasso).
+ * Discrete GPU: VRAM is the inference budget; system RAM is separate.
+ * Missing VRAM totals read "unknown", never "0 GiB free".
+ */
+export function inferenceBudget(input: InferenceBudgetInput): { value: string; tone: MemBudgetTone; title: string } | null {
+  if (input.unified) {
+    const stat = memBudgetStat(input.pool, input.budget);
+    if (!stat) return null;
+    const infra = nn(input.infraUsedMB);
+    const extra = nn(input.safetyReserveMB);
+    const bits = [stat.title];
+    if (infra > 0) bits.push(`infra (measured, already in use) ${gib(infra)} GiB`);
+    if (extra > 0) bits.push(`safety reserve ${gib(extra)} GiB (named separately; not deducted twice)`);
+    return { ...stat, title: bits.join(" · ") };
+  }
+
+  const total = input.vram && typeof input.vram.totalMB === "number" && Number.isFinite(input.vram.totalMB) && input.vram.totalMB > 0
+    ? input.vram.totalMB
+    : null;
+  const used = input.vram && typeof input.vram.usedMB === "number" && Number.isFinite(input.vram.usedMB) && input.vram.usedMB >= 0
+    ? input.vram.usedMB
+    : null;
+  if (total == null || used == null) {
+    return {
+      value: "VRAM unknown",
+      tone: "warning",
+      title: "No VRAM reading yet — not the same as 0 GiB free. System RAM is tracked separately and is not added to VRAM.",
+    };
+  }
+  const free = Math.max(0, total - used);
+  const extra = nn(input.safetyReserveMB);
+  const usable = Math.max(0, free - extra);
+  const tone: MemBudgetTone = input.budget?.needMakeRoom || usable <= 0 ? "danger" : usable < 2048 ? "warning" : "success";
+  const ram = input.pool
+    ? `system RAM ${gib(input.pool.availableMB)} GiB available of ${gib(input.pool.totalMB)} GiB`
+    : input.budget
+      ? `system RAM ${gib(nn(input.budget.freeMB))} GiB reported free`
+      : "system RAM separate";
+  const infra = nn(input.infraUsedMB);
+  const titleParts = [
+    `VRAM ${gib(used)} / ${gib(total)} GiB`,
+    `${gib(free)} GiB VRAM free`,
+    ram,
+    "RAM and VRAM are not one interchangeable pool",
+  ];
+  if (infra > 0) titleParts.push(`infra (measured, already in use) ${gib(infra)} GiB`);
+  if (extra > 0) titleParts.push(`safety reserve ${gib(extra)} GiB held out of VRAM free`);
+  if (input.cpuOffloadEnabled) titleParts.push("CPU offload enabled: RAM above any named reserve may hold weights");
+  return {
+    value: `${gib(usable)} GiB VRAM free`,
+    tone,
+    title: titleParts.join(" · "),
   };
 }

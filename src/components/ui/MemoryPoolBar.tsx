@@ -100,23 +100,31 @@ export function MemoryPoolBar({ pool, holder }: { pool: MemoryPool; holder: stri
             />
           ) : null,
         )}
+        {pool.floorMB > 0 && (
         <div
           data-testid="memory-pool-floor"
           className="absolute inset-y-0 right-0 border-l-2 border-danger"
           style={{ width: pct(pool.floorMB, pool.totalMB), background: FLOOR_HATCH }}
           title={floorTitle(pool)}
         />
+        )}
       </div>
 
       <div className="flex items-baseline justify-between gap-2 text-[11px]">
         <span className={`font-tabular ${TONE_CLASS[pool.tone]}`} data-testid="memory-pool-available">
           <span className="font-semibold">{gib(pool.availableMB)}</span> GiB available
         </span>
+        {pool.floorMB > 0 ? (
         <span className="font-tabular text-muted" data-testid="memory-pool-floor-text">
           {pool.aboveFloorMB > 0
             ? `${gib(pool.aboveFloorMB)} above the ${floorGiB} GiB floor`
             : `under the ${floorGiB} GiB floor`}
         </span>
+        ) : (
+        <span className="font-tabular text-muted" data-testid="memory-pool-floor-text">
+          {pool.unified ? "no floor configured" : "system RAM — not interchangeable with VRAM"}
+        </span>
+        )}
       </div>
 
       <ul className="flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px] text-muted" data-testid="memory-pool-legend">
