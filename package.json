@@ -10,7 +10,7 @@
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "npm run typecheck && npm run test:server && npm run test:agent && npm run test:frontend",
-    "test:server": "node --test \"server/**/__tests__/*.test.js\"",
+    "test:server": "node --test \"server/**/__tests__/*.test.js\" \"shared/**/__tests__/*.test.js\"",
     "test:fleet": "node --test \"server/fleet/__tests__/*.test.js\"",
     "test:agent": "node --test \"agent/**/*.test.js\"",
     "test:frontend": "vitest run",

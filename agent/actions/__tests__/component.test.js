@@ -29,8 +29,8 @@ const BASE = {
   actor: "dashboard:steve",
 };
 
-test("v2 verbs are start|stop|restart (switch is gone)", () => {
-  assert.deepEqual(COMPONENT_ACTION_TYPES, ["start", "stop", "restart"]);
+test("v2 verbs are start|stop|restart|swap-variant (legacy switch is gone)", () => {
+  assert.deepEqual(COMPONENT_ACTION_TYPES, ["start", "stop", "restart", "swap-variant"]);
 });
 
 test("valid dry-run start passes validation", () => {
@@ -116,8 +116,8 @@ test("token expiry, malformed, missing, wrong-secret all fail closed", () => {
   });
 });
 
-test("downgradeToV1 maps verbs 1:1 and never emits switch", () => {
-  for (const type of COMPONENT_ACTION_TYPES) {
+test("downgradeToV1 maps start|stop|restart 1:1 and never emits switch", () => {
+  for (const type of ["start", "stop", "restart"]) {
     const v1 = downgradeToV1({ actionId: "a", type, timeoutMs: 5000 }, { serviceName: "llm-tp1", port: 30000 });
     assert.equal(v1.type, type);
     assert.equal(v1.serviceName, "llm-tp1");
@@ -125,6 +125,7 @@ test("downgradeToV1 maps verbs 1:1 and never emits switch", () => {
     assert.equal(v1.idempotent, true);
   }
   assert.equal(downgradeToV1({ actionId: "a", type: "stop", timeoutMs: null }, { serviceName: "s", port: null }).port, null);
+  assert.throws(() => downgradeToV1({ actionId: "a", type: "swap-variant" }, { serviceName: "s", port: 1 }));
 });
 
 test("result envelope always carries the v2 keys, unknown type falls back", () => {

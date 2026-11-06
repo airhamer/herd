@@ -19,6 +19,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { matchServiceToComponent as matchLiveService } from "../../shared/componentMatch.js";
+import { normalizeComponent } from "../../shared/runtimeProfile.js";
 
 const CATALOG_DIR = path.join(
   path.dirname(new URL(import.meta.url).pathname),
@@ -107,6 +108,11 @@ export function loadComponentCatalog(dir = CATALOG_DIR) {
       warnings.push(`${file}: skipped (missing id/name)`);
       continue;
     }
+    const norm = normalizeComponent(raw);
+    if (!norm.ok) {
+      warnings.push(`${file}: profile: ${norm.issues.join("; ")}`);
+    }
+    const profile = norm.ok ? norm.component : null;
     components.push({
       id: raw.id,
       name: raw.name,
@@ -132,6 +138,10 @@ export function loadComponentCatalog(dir = CATALOG_DIR) {
           : null,
       description: typeof raw.description === "string" ? raw.description : "",
       recipeSource: recipeSourceOf(raw),
+      runtimeProfile: profile ? profile.runtimeProfile : null,
+      variants: profile ? profile.variants : [],
+      activeVariantId: profile ? profile.activeVariantId : null,
+      recording: profile ? profile.recording : { content: "metadata" },
       nodes: [], // filled by joinComponentState
     });
   }

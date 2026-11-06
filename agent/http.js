@@ -35,8 +35,10 @@
 import http from "node:http";
 
 import { dispatchAction } from "./actions/dispatch.js";
+import { dispatchComponentAction, isV2ComponentAction } from "./actions/componentDispatch.js";
 import { readAudit, DEFAULT_READ_LIMIT } from "./actions/audit.js";
 import { applyLinkPlan } from "./actions/roceLinks.js";
+import { routeRecording } from "./recording/httpRoutes.js";
 
 /** Hard cap on POST /actions body size (bytes). */
 const ACTION_BODY_MAX_BYTES = 64 * 1024;
@@ -123,7 +125,7 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
 
   const handler = (req, res) => {
     res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
     if (req.method === "OPTIONS") {
@@ -145,6 +147,26 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
     const authorized = !token || req.headers.authorization === `Bearer ${token}`;
 
     try {
+      const recHit = routeRecording(req, res, pathname, searchParams, {
+        json,
+        authorized,
+        readBody,
+        opts: { ...opts, env: opts.env || process.env },
+      });
+      if (recHit && typeof recHit.then === "function") {
+        recHit.then((handled) => {
+          if (handled === false) return; // should not happen after await inside
+        }).catch((err) => json(res, 500, { error: String(err?.message || err) }));
+      }
+      // routeRecording returns a Promise that resolves to false when unmatched,
+      // or undefined/true after writing the response.
+      if (pathname.startsWith("/recording") || pathname.startsWith("/capability-probe")) {
+        Promise.resolve(recHit).then((handled) => {
+          if (handled === false) json(res, 404, { error: "not found" });
+        }).catch((err) => json(res, 500, { error: String(err?.message || err) }));
+        return;
+      }
+
       // ── POST /roce/apply (SC5d stub: dry run by default, never touches links) ──
       if (req.method === "POST" && pathname === "/roce/apply") {
         if (!authorized) {
@@ -188,7 +210,7 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
             } catch {
               throw Object.assign(new Error("invalid JSON body"), { httpStatus: 400 });
             }
-            return dispatchAction(request, {
+            const dispatchDeps = {
               ...(catalog && {
                 getRecipe: catalog.getRecipe,
                 listRecipes: catalog.listRecipes,
@@ -197,7 +219,19 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
               auditPath,
               llmAuthTokens,
               ...(updates && { updates }),
-            }).then((response) => ({ status: 200, body: response }));
+            };
+            if (isV2ComponentAction(request)) {
+              return dispatchComponentAction(request, {
+                dispatchAction,
+                dispatchDeps,
+                confirmSecret: process.env.HERD_ACTION_SECRET,
+                switchCwd: process.env.ALZEO_DIR || process.env.HASSO_WORKDIR || opts.switchCwd,
+                fetchImpl: opts.fetchImpl,
+                env: opts.env || process.env,
+                configDir: opts.configDir,
+              }).then((response) => ({ status: 200, body: response }));
+            }
+            return dispatchAction(request, dispatchDeps).then((response) => ({ status: 200, body: response }));
           })
           .then(({ status, body }) => json(res, status, body))
           .catch((err) => {
@@ -228,6 +262,10 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
             "/roce/apply",
             "/health",
             "/updates",
+            "/recordings",
+            "/recording-status",
+            "/recording-policy",
+            "/capability-probe",
           ],
         });
         return;

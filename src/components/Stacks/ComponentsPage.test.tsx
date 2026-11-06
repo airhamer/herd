@@ -136,3 +136,79 @@ describe("ComponentsPage (SC5a filters + stack cards)", () => {
     expect(container.textContent).toContain("Components (1)");
   });
 });
+
+
+describe("ComponentsPage runtime profile (COMP2)", () => {
+  it("shows metadata recording default and previews a variant swap", async () => {
+    const profiled = comp("a", {
+      recording: { content: "metadata" },
+      runtimeProfile: {
+        engine: "sglang",
+        protocol: "sglang-http",
+        ports: { engine: 8080, guard: 8081 },
+        adapters: [{ id: "sglang", support: "verified", capabilities: ["metrics"] }],
+        recording: { content: "metadata", retentionHours: null, maxBytes: null, observer: null },
+      },
+      variants: [
+        { id: "stock", label: "stock", role: "standard", model: { servedModelName: "qwen3.8-27b", aliases: [] } },
+        { id: "uncensored", label: "uncensored", role: "uncensored", model: { servedModelName: "qwen3.8-27b", aliases: ["uncensored"] } },
+      ],
+      activeVariantId: "stock",
+    });
+    const fx = fakeFetch({
+      "/api/components": { components: [profiled], warnings: [] },
+      "/api/fleet/nodes": { nodes: [{ id: "n1", name: "one" }] },
+      "/api/fleet/nodes/n1/recording-status": { recording: false, available: false, content: "metadata", ui: "not recording / unavailable", reason: "observer-unavailable" },
+      "/api/stacks": { stacks: [fstack("s-ok")], facets: { tp: [1], sources: ["hasso"], engines: ["sglang"], purposes: ["code"] }, errors: [] },
+      "POST /api/fleet/nodes/n1/component-actions": (init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body || "{}"));
+        return {
+          ok: true,
+          version: 2,
+          actionId: "x",
+          componentId: "a",
+          nodeId: "n1",
+          type: body.type,
+          status: "success",
+          message: "preview",
+          error: null,
+          plan: body.dryRun
+            ? {
+                willDo: ["swap-variant"],
+                displaces: null,
+                confirm: "required",
+                confirmationToken: "1.tok",
+                estDowntimeMs: 0,
+                memoryDeltaMB: 0,
+                inflightRequests: null,
+                scopeBlocked: null,
+              }
+            : null,
+          canaryState: null,
+          steps: [],
+          state: null,
+          traffic: null,
+          logs: null,
+          durationMs: 1,
+          at: 1,
+        };
+      },
+    });
+    vi.stubGlobal("fetch", fx.fn);
+    const { container } = render(<ComponentsPage />);
+    await flush();
+    await flush();
+    expect(qt(container, "recording-a")!.textContent).toContain("not recording / unavailable");
+    const swap = qt(container, "variant-swap-a")!;
+    await act(async () => {
+      swap.click();
+    });
+    await flush();
+    const posted = fx.calls.find((c) => String(c.url).includes("component-actions"));
+    expect(posted).toBeTruthy();
+    const body = JSON.parse(String(posted!.init?.body || "{}"));
+    expect(body.type).toBe("swap-variant");
+    expect(body.dryRun).toBe(true);
+    expect(body.variantId).toBe("stock");
+  });
+});

@@ -64,6 +64,56 @@ import { parseLlmAuthTokens } from "./collectors/llm.js";
 import { createDgxUpdates } from "./updates/dgx.js";
 import { createUpdateScheduler } from "./updates/scheduler.js";
 import { createUsageRelays } from "./proxy/usageRelay.js";
+import { buildCaptureRecord, appendCapture, loadRecordingStore, saveRecordingStore, defaultRecordingPath } from "./recording/store.js";
+import { loadInstanceStore, defaultInstancePath } from "./catalog/componentInstance.js";
+import { resolveRecordingPolicy, canRecordContent } from "../shared/runtimeProfile.js";
+import { loadDefinitions, DEFAULT_CATALOG_DIR } from "./catalog/definitions.js";
+import { bindRelayCapture, listInstancesForBind } from "../shared/recordingBind.js";
+
+function loadBindableInstances(env) {
+  const configDir = env.HERD_AGENT_CONFIG || "agent/config";
+  const instances = loadInstanceStore(defaultInstancePath(configDir));
+  let definitions = [];
+  try {
+    const loaded = loadDefinitions(env.HERD_CATALOG_DIR || DEFAULT_CATALOG_DIR);
+    definitions = loaded.definitions || [];
+  } catch {
+    definitions = [];
+  }
+  return listInstancesForBind(instances, definitions);
+}
+
+export function makeRecordingCapture(env) {
+  const onBind = (start) => bindRelayCapture(start, loadBindableInstances(env));
+  const onCapture = (evt) => {
+    const bind = evt && evt.bind && evt.bind.ok ? evt.bind : null;
+    if (!bind) return;
+    const policy = bind.policy || resolveRecordingPolicy([]);
+    if (!canRecordContent(policy)) return;
+    const configDir = env.HERD_AGENT_CONFIG || "agent/config";
+    const record = buildCaptureRecord(
+      {
+        componentId: bind.componentId,
+        variantId: bind.variantId,
+        variantGeneration: bind.variantGeneration,
+        nodeId: bind.nodeId,
+        requestBody: evt.requestBody,
+        streamChunks: evt.streamChunks,
+        aborted: evt.aborted,
+        path: evt.path,
+        status: evt.status,
+      },
+      policy
+    );
+    const recPath = defaultRecordingPath(configDir);
+    const next = appendCapture(loadRecordingStore(recPath), record, {
+      maxBytes: policy.maxBytes || undefined,
+      maxAgeMs: policy.retentionHours != null ? policy.retentionHours * 3600 * 1000 : undefined,
+    });
+    saveRecordingStore(recPath, next);
+  };
+  return { onBind, onCapture };
+}
 
 // Catalog seam — re-exported so Worker 1A (telemetry) and 2A/2B (actions) can
 // import from agent/main.js or the catalog modules directly (same code).
@@ -472,7 +522,8 @@ export function createNodeAgent(opts = {}) {
     fullView: () => scheduler.fullView(),
   };
   // STAT4 (#37): opt-in usage relays; none unless LLM_PROXY is set.
-  const usageRelay = createUsageRelays(opts.env ?? process.env);
+  const capture = makeRecordingCapture(opts.env ?? process.env);
+  const usageRelay = createUsageRelays(opts.env ?? process.env, { onCapture: capture.onCapture, onBind: capture.onBind });
   const httpServer = createHttpServer(
     () =>
       collectTelemetry(

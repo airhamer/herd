@@ -5,10 +5,17 @@ import {
   fetchStacks,
   saveStack,
   sendComponentAction,
+  fetchRecordingStatus,
+  fetchRecordings,
+  fetchRecording,
+  deleteRecording,
+  setRecordingPolicy,
   STACKS_EXPORT_URL,
   type CatalogComponent,
   type ComponentActionSendRequest,
   type FleetStack,
+  type RecordingListItem,
+  type RecordingStatus,
   type StacksView,
 } from "../../api/client";
 import type { ComponentActionResult } from "../../api/types";
@@ -30,7 +37,8 @@ function errText(err: unknown): string {
 }
 
 const ACTIONS = ["start", "stop", "restart"] as const;
-type ActionType = (typeof ACTIONS)[number];
+const VARIANT_ACTION = "swap-variant" as const;
+type ActionType = (typeof ACTIONS)[number] | typeof VARIANT_ACTION;
 
 type NamesById = Record<string, string>;
 
@@ -186,7 +194,13 @@ export function ComponentsPage({ scopeNodeId, scopeGroupId }: ComponentsPageProp
 
   /** One action against one node: preview (dryRun) or the confirmed real run. */
   const runAction = useCallback(
-    async (comp: CatalogComponent, nodeId: string, type: ActionType, confirmationToken: string | null) => {
+    async (
+      comp: CatalogComponent,
+      nodeId: string,
+      type: ActionType,
+      confirmationToken: string | null,
+      variantId: string | null = null
+    ) => {
       const key = `${comp.id}|${nodeId}`;
       const preview = confirmationToken === null;
       const body: ComponentActionSendRequest = {
@@ -197,7 +211,8 @@ export function ComponentsPage({ scopeNodeId, scopeGroupId }: ComponentsPageProp
         confirmationToken: preview ? null : confirmationToken,
         dryRun: preview,
         recipeName: null,
-        timeoutMs: null,
+        timeoutMs: type === "swap-variant" ? 20 * 60_000 : null,
+        variantId,
       };
       setAction((a) => ({ ...a, busy: key, error: null }));
       try {
@@ -332,7 +347,7 @@ export function ComponentsPage({ scopeNodeId, scopeGroupId }: ComponentsPageProp
                   blockedReason={componentBlockedReason(comp, stacks)}
                   nodeNames={nodeNames}
                   action={action}
-                  onAction={(nodeId, type, token) => void runAction(comp, nodeId, type, token)}
+                  onAction={(nodeId, type, token, variantId) => void runAction(comp, nodeId, type, token, variantId)}
                 />
               ))}
             </div>
@@ -357,7 +372,7 @@ function ComponentRow({
   blockedReason: string | null;
   nodeNames: NamesById;
   action: ActionState;
-  onAction: (nodeId: string, type: ActionType, confirmationToken: string | null) => void;
+  onAction: (nodeId: string, type: ActionType, confirmationToken: string | null, variantId?: string | null) => void;
 }) {
   const targets = actionTargets(comp, nodeNames);
   return (
@@ -372,6 +387,16 @@ function ComponentRow({
       </div>
       {blockedReason && <p className="mt-1 text-[11px] text-danger">Blocked: {blockedReason}</p>}
       {comp.description && <p className="mt-1 text-[11px] text-muted">{comp.description}</p>}
+      <RecordingControls comp={comp} nodeId={targets[0] ?? null} />
+      <p className="mt-1 text-[11px] text-muted">
+        {comp.runtimeProfile?.ports?.engine != null
+          ? `engine :${comp.runtimeProfile.ports.engine}`
+          : ""}
+        {comp.runtimeProfile?.ports?.guard != null ? ` / guard :${comp.runtimeProfile.ports.guard}` : ""}
+        {comp.runtimeProfile?.adapters?.length
+          ? ` · adapters ${comp.runtimeProfile.adapters.map((a) => a.id).join(", ")}`
+          : ""}
+      </p>
       <div className="mt-2 flex flex-col gap-1.5">
         {targets.map((nodeId) => {
           const key = `${comp.id}|${nodeId}`;
@@ -398,6 +423,14 @@ function ComponentRow({
                   {busy && plan?.type === type ? "planning…" : `${type}…`}
                 </button>
               ))}
+              {(comp.variants ?? []).length > 1 && (
+                <VariantSwap
+                  comp={comp}
+                  nodeId={nodeId}
+                  busy={busy}
+                  onAction={onAction}
+                />
+              )}
               {plan && (
                 <span className="min-w-full text-[11px] text-muted">
                   preview {plan.type}: {planSummary(plan.result)}
@@ -436,6 +469,147 @@ function ComponentRow({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+function VariantSwap({
+  comp,
+  nodeId,
+  busy,
+  onAction,
+}: {
+  comp: CatalogComponent;
+  nodeId: string;
+  busy: boolean;
+  onAction: (nodeId: string, type: ActionType, confirmationToken: string | null, variantId?: string | null) => void;
+}) {
+  const options = comp.variants ?? [];
+  const current = comp.activeVariantId ?? options[0]?.id;
+  return (
+    <label className="flex items-center gap-1 text-[11px] text-muted">
+      variant
+      <select
+        data-testid={`variant-select-${comp.id}`}
+        defaultValue={current ?? ""}
+        disabled={busy}
+        className="rounded border border-border bg-surface px-1 py-0.5 text-[11px] text-text"
+        id={`variant-${comp.id}-${nodeId}`}
+      >
+        {options.map((v) => (
+          <option key={v.id} value={v.id}>
+            {v.label || v.id}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        data-testid={`variant-swap-${comp.id}`}
+        disabled={busy}
+        onClick={() => {
+          const sel = document.getElementById(`variant-${comp.id}-${nodeId}`) as HTMLSelectElement | null;
+          onAction(nodeId, "swap-variant", null, sel?.value || current || null);
+        }}
+        className="rounded border border-border bg-surface px-2 py-0.5 text-[11px] text-muted hover:border-accent hover:text-text disabled:opacity-40"
+      >
+        swap variant…
+      </button>
+    </label>
+  );
+}
+
+function RecordingControls({ comp, nodeId }: { comp: CatalogComponent; nodeId: string | null }) {
+  const desired = comp.recording?.content ?? comp.runtimeProfile?.recording?.content ?? "metadata";
+  const [status, setStatus] = useState<RecordingStatus | null>(null);
+  const [items, setItems] = useState<RecordingListItem[] | null>(null);
+  const [detail, setDetail] = useState<{ prompt: string | null; response: string | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = useCallback(async () => {
+    if (!nodeId) {
+      setStatus({ recording: false, available: false, content: desired, ui: "not recording / unavailable", reason: "observer-unavailable" });
+      return;
+    }
+    try {
+      const s = await fetchRecordingStatus(nodeId, { content: desired, observer: comp.runtimeProfile?.recording?.observer ?? "relay" });
+      setStatus(s);
+    } catch {
+      setStatus({ recording: false, available: false, content: desired, ui: "not recording / unavailable", reason: "observer-unavailable" });
+    }
+  }, [nodeId, desired, comp.runtimeProfile?.recording?.observer]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const enabled = status?.recording === true;
+  return (
+    <div className="mt-1 text-[11px] text-muted" data-testid={`recording-${comp.id}`}>
+      Recording: {status ? status.ui : "checking observer…"}
+      {status && !status.available ? " (desired policy cannot record without an observer)" : ""}
+      {nodeId && (
+        <>
+          <button
+            type="button"
+            className="ml-2 rounded border border-border bg-surface px-2 py-0.5 text-[11px]"
+            disabled={busy}
+            onClick={() => {
+              setBusy(true);
+              const next = enabled || desired === "prompts+responses" ? "metadata" : "prompts+responses";
+              void setRecordingPolicy(nodeId, { componentId: comp.id, content: next, observer: "relay" })
+                .then(() => refresh())
+                .finally(() => setBusy(false));
+            }}
+          >
+            {enabled ? "disable content recording" : "enable content recording"}
+          </button>
+          <button
+            type="button"
+            className="ml-1 rounded border border-border bg-surface px-2 py-0.5 text-[11px]"
+            onClick={() => {
+              if (!nodeId) return;
+              void fetchRecordings(nodeId, comp.id).then((r) => setItems(r.recordings));
+            }}
+          >
+            view recordings
+          </button>
+        </>
+      )}
+      {items && (
+        <ul className="mt-1 space-y-1">
+          {items.length === 0 && <li>No stored recordings.</li>}
+          {items.map((it) => (
+            <li key={it.id}>
+              <button
+                type="button"
+                className="underline"
+                onClick={() => {
+                  if (!nodeId) return;
+                  void fetchRecording(nodeId, it.id).then((r) => setDetail({ prompt: r.recording.prompt, response: r.recording.response }));
+                }}
+              >
+                {it.requestId} · {it.segment}
+                {it.stream?.incomplete ? " (incomplete)" : ""}
+              </button>
+              <button
+                type="button"
+                className="ml-2 text-danger"
+                onClick={() => {
+                  if (!nodeId) return;
+                  void deleteRecording(nodeId, it.id).then(() => fetchRecordings(nodeId, comp.id).then((r) => setItems(r.recordings)));
+                }}
+              >
+                delete
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {detail && (
+        <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-border bg-surface p-2 text-[10px]">
+          prompt: {detail.prompt ?? "(none)"}{"\n"}response: {detail.response ?? "(none)"}
+        </pre>
+      )}
     </div>
   );
 }
