@@ -102,3 +102,29 @@ describe("NodeDetail containers (CONT1 #96)", () => {
     expect(text).toContain("sglang :8081");
   });
 });
+
+describe("NodeDetail topology (TOPO1 #101)", () => {
+  it("prefers the overlay role over a stale snapshot head/rank", () => {
+    const { container } = render(
+      <NodeDetail
+        {...makeDetail({
+          role: "standalone",
+          rank: null,
+          groupId: null,
+          topology: {
+            nodeId: "gx10-1c2c",
+            role: "head",
+            rank: 0,
+            groupId: "stale-tp2",
+            headId: null,
+            links: [],
+          },
+        })}
+      />,
+    );
+    const panel = container.querySelector('[data-testid="node-topology-role"]')?.textContent ?? "";
+    expect(panel).toContain("standalone");
+    expect(panel).not.toContain("stale-tp2");
+    expect(container.textContent).toContain("Standalone — no interconnect; single-node engine");
+  });
+});
