@@ -135,6 +135,14 @@ describe("facets and helpers", () => {
   test("the shipped catalog projects recipeSource", () => {
     const { components } = loadComponentCatalog();
     assert.ok(components.length >= 2);
-    for (const c of components) assert.equal(c.recipeSource, "hasso");
+    const byId = Object.fromEntries(components.map((c) => [c.id, c]));
+    assert.equal(byId["qwen38-27b-stock-sglang-tp1-gx10"].recipeSource, "hasso");
+    assert.equal(byId["qwen38-flash-next-sglang-tp1-gx10"].recipeSource, "hasso");
+    if (byId["glm53-flash-tensorfold-tp2-gx10"]) {
+      assert.equal(byId["glm53-flash-tensorfold-tp2-gx10"].recipeSource, "mia-ai-lab");
+    }
+    if (byId["deepseek-v4-flash-vllm-tp2-gx10"]) {
+      assert.equal(byId["deepseek-v4-flash-vllm-tp2-gx10"].recipeSource, "mia-ai-lab");
+    }
   });
 });
