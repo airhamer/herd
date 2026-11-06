@@ -2,7 +2,8 @@
 
 **Status:** proposed  
 **Date:** 2026-11-06 (America/New_York)  
-**Authoring branch:** `vadig/telemetry-design`  
+**Authoring branch:** `vadig/telemetry-profiles` (follow-up to merged [#116](https://github.com/airhamer/herd/pull/116))  
+**Defect:** [#118](https://github.com/airhamer/herd/issues/118) `[COMP2]` implementation gaps (project board Todo). Spec PR [#117](https://github.com/airhamer/herd/pull/117).  
 **Does not implement** the architecture. This is an ADR for later spec-based work.  
 **License:** herd stays MIT. Upstream sparkDash has been Apache-2.0 since [v2.0.0](https://github.com/MiaAI-Lab/sparkDash/commit/5051a33db3aa6ddc875dca1bf4cc71939d49af59) (license text commit `5051a33`, 2026-10-09). This note inspects upstream source to explain mechanisms and cites pinned commits. It does **not** copy upstream code. Later implementation must be written from this specification, not transplanted from sparkDash. After this inspection, that work is not independent clean-room authorship.
 
@@ -15,14 +16,17 @@ Herd should treat **organic traffic observation** and **on-demand Showcase / ben
 - Keep the client contract: Hasso keepalive on the Spark (`:8081` on the recorded 1c2c install; upstream Hasso default `:30001`) fronts the engine (`:8080` / default `:30000`, loopback). Do not require a herd usage-relay hop in front of that path.
 - Observe organic traffic with **adapters** (engine counters and `/metrics` reached through the keepalive front, optional LiteLLM spend/gateway APIs). Mark every number with provenance, freshness, and whether a missing probe is **unknown** rather than zero.
 - Use Showcase (and Decode / Prefill benches) only as **operator-triggered synthetic load**. Never mix those timings unmarked into “natural workload” history.
-- Keep `LLM_PROXY` as an **optional fallback** for engines that expose neither cumulative counters nor a metrics API — not as the default way to fill Traffic.
+- Keep `LLM_PROXY` as an **optional fallback** for engines that expose neither cumulative counters nor a metrics API — not as the default way to fill Traffic. There is still no mandatory extra proxy hop. Preserve Hasso `:8081` → engine `:8080` protections (or the equivalent Hasso defaults `:30001` → `:30000`).
 - Herd’s Settings “Guard proxy” is an **adapter** to the same Hasso keepalive process (or any URL the operator types), not a second proxy daemon.
+- A **Component** owns a reusable runtime profile: serving path and endpoints (engine, optional Hasso/guard, optional LiteLLM route), credential *references*, monitoring adapters and declared metric capabilities, and resource/lifecycle actions. Catalog defaults come from runtime profiles; node/group overrides must be explicit.
+- **Standard vs uncensored** (or any other weight/model variant) are **subcomponents** of that Component. Swapping a compatible variant must not change component identity, endpoint/route bindings, monitoring profile/adapters, credential references, or recording policy. Do not infer monitoring architecture from a model display name.
+- Traffic metadata is the **default**. Prompt and response recording is an **explicit opt-in** (see §11 and §18). Passive engine `/metrics` cannot record payloads; a request-level observer (LiteLLM or a compatible optional proxy/relay) is required when recording is on.
 
 ---
 
 ## 2. Current facts versus this proposal
 
-### Facts on herd `main` (`8dc99d0`, 2026-11-06)
+### Facts on herd `main` (code citations still use `8dc99d0`; `bd93f8c` merged this ADR as [#116](https://github.com/airhamer/herd/pull/116))
 
 - Guard Proxy setting (`guardProxy.baseURL`) probes `GET /health` then `GET /`. 401/403 count as alive. It does not scrape `/metrics` and does not fill Traffic. Docs: [docs/guard-proxy.md](https://github.com/airhamer/herd/blob/8dc99d0/docs/guard-proxy.md). Probe: [server/health/guardProbe.js](https://github.com/airhamer/herd/blob/8dc99d0/server/health/guardProbe.js). Route: [server/index.js](https://github.com/airhamer/herd/blob/8dc99d0/server/index.js) (`GET /api/guard`).
 - A leftover S4.1 list (`settings.guard.endpoints`) still probes `GET /guard/status` then `/health` looking for `heldRequests` and `crashTimeline`. That URL shape is a herd assumption; it is not confirmed in current public Hasso docs.
@@ -60,7 +64,7 @@ README (same HEAD) states that live tok/s comes from **diffing cumulative server
 - The dashboard process opens concurrent streamed `POST http://<llmHost>:<port>/v1/chat/completions` with `stream: true` and `stream_options.include_usage`. It prefers vLLM-oriented `min_tokens` / `ignore_eos` to fill the budget, then retries without those fields on HTTP 400.
 - Protocol: **OpenAI chat completions only** in this manager. It does not post Anthropic `/v1/messages`.
 - Cancel: user stop, or no poll/heartbeat for about 5 seconds. Per-stream abort plus a 360 s timeout.
-- History: last 20 finished runs per Spark in `config/showcase-history.json`, including **full prompt and generated text** (privacy contrast with herd Traffic’s metadata-only ring).
+- History: last 20 finished runs per Spark in `config/showcase-history.json`, including **full prompt and generated text** (privacy contrast with herd Traffic’s **default** metadata-only ring; opt-in content recording is proposed in §11, not implemented today).
 - In parallel it polls the engine’s generation counters about every 400 ms ([`pollServerGenerationRates`](https://github.com/MiaAI-Lab/sparkDash/blob/e89f8d1db621b4756063ece7771c0d08edc818b5/server/collectors/LlmStreaming.js)) so a “server tok/s” strip can sit beside per-stream client timing.
 
 This **creates load**. Tokens and TTFT from a Showcase run are generated-benchmark / demo timings, not a sample of leftover user traffic. Organic user calls that happen to share the engine will also move the same cumulative `/metrics` counters (see §3.3).
@@ -118,7 +122,7 @@ README also notes LM Studio and Ollama often publish **no** cumulative counters,
 **Cannot meet the goal by itself:**
 
 - Showcase will never explain blank Traffic/Requests for *existing* opencode traffic; it would add more load and more tokens.
-- Upstream Showcase history stores full generations — too much for herd’s metadata-only Traffic table.
+- Upstream Showcase history stores full generations. Herd’s **default** Traffic table stays metadata-only; full prompt/response recording is a separate, explicit opt-in (see §11), not something to copy blindly from Showcase history.
 - Prefill-as-prompt-tokens/TTFT is not engine prefill.
 - OpenAI-only Showcase does not certify Anthropic `/v1/messages` timings.
 - Probe + ledger cannot tell Showcase tokens from user tokens without a separate provenance channel.
@@ -229,7 +233,7 @@ Logical objects (names for implementers; not an on-disk format yet):
 
 **`LogicalRequest` vs `Attempt`:** one client call may become several HTTP attempts (LiteLLM retry, Hasso hold then client retry). Gateway/inbound counts own the logical request. Spend logs and stream parses own attempts. Never add those two together.
 
-**Correlation:** optional `traceId` if LiteLLM or the engine provides one; otherwise `(nodeId, port, wallMs, client, path, status, e2eS)` as Traffic already keys relay rows. Do not store prompts.
+**Correlation:** optional `traceId` if LiteLLM or the engine provides one; otherwise `(nodeId, port, wallMs, client, path, status, e2eS)` as Traffic already keys relay rows. Default rows store **metadata only**. Prompt/response text is stored only when an explicit recording policy is enabled for that route (see §11); never store credentials or auth headers.
 
 **Exclusive aggregation ownership**
 
@@ -252,6 +256,19 @@ Rates: `(Δtokens / Δt)` with a sane Δt window (reject idle, reject huge dt, r
 3. **Node-agent engine counters** — already on 0.3+ for SGLang/vLLM; richer on 0.4+. Powers Requests and Traffic lane totals without a relay.
 4. **`LLM_PROXY`** — only if 1–3 cannot see a given engine (Ollama / LM Studio / llama.cpp without metrics). Listen on a new port; upstream **keepalive**, not the raw engine.
 
+**Adapter profiles** (declared on the Component, validated at runtime — not inferred from the served model name):
+
+| Profile | Role | Support claim |
+| --- | --- | --- |
+| LiteLLM | Optional front-door route, spend/gateway/Prometheus, request-level observer for opt-in recording | Documented public APIs; Narthex placement still unverified |
+| SGLang | Engine-native counters, `/server_info`, `/v1/loads`, `/metrics` series | Used in fleet today |
+| vLLM | Engine `/metrics` generation/queue series | Used in fleet today |
+| Ollama | Often no cumulative counters (upstream README); may need bench/Showcase or relay fallback | Partial / capability-detected |
+| llama.cpp | May expose `timings` on responses; `/metrics` not assumed | Partial / capability-detected |
+| TensorFold | Prefill/cached series exist in inspected sparkDash probe code | **Unverified** on this fleet — extensibility hook, not a support claim |
+
+Runtime discovery records each declared capability as supported+enabled, disabled, unreachable, unsupported, or unknown, with provenance and freshness. Swapping a model variant is **not** proof that metrics still work. Missing scrapes stay unknown, never a fake zero.
+
 Capability discovery publishes which of 1–4 responded and when. Stale data keeps last-good values with `freshness: stale`, never silent zeros.
 
 ---
@@ -272,11 +289,13 @@ Do not collapse these:
 
 ## 11. Auth, reachability, retention
 
-- Secret refs only (`env:`, `file:`), same as Guard Proxy and SRV1. Never put raw keys in Settings JSON or the browser.
+- Secret refs only (`env:`, `file:`), same as Guard Proxy and SRV1. Never put raw keys in Settings JSON, the browser, or any recording store. Auth headers are never recorded.
 - Dashboard must not assume `localhost` is the Spark. Prefer node-agent on-box probes and `http://<node>:8081/...`.
-- Traffic / adapter rows: metadata only (time, path, model, status, tokens, latency, source). No prompt or completion text. In-memory ring (herd already: last 200 relay rows) or short TTL.
-- Do not enable LiteLLM `store_prompts_in_spend_logs` for this integration.
-- Showcase history that already stores full text is a **demo artifact**; keep it out of the organic Traffic table. Future Showcase UI copy should say the run is synthetic and that full text is session-local.
+- **Default (implemented today for Traffic relay rows, and the default going forward):** metadata only (time, path, model, status, tokens, latency, source). Herd already keeps an in-memory ring of the last 200 relay rows ([server/fleet/traffic.js](https://github.com/airhamer/herd/blob/8dc99d0/server/fleet/traffic.js)). No prompt or completion text.
+- **Proposed opt-in content recording:** the operator may turn on prompt and/or response recording per node, group, or model route. This is new policy, not an existing settings parser. Effective policy is resolved by scoped inheritance with **stricter limits winning** (off beats on; shorter retention beats longer; smaller byte caps beat larger). A Component variant switch must not silently enable, disable, or bypass that policy.
+- When recording is on, require a **request-level observer** (LiteLLM spend/logs with an explicit store-prompts setting, or a compatible optional proxy/relay that sees the request body). Passive `/metrics` and engine counters cannot reconstruct payloads — do not pretend they can. LiteLLM’s `store_prompts_in_spend_logs` stays off unless this opt-in is explicitly enabled for that route.
+- Recorded content needs retention window, storage limits, deletion and access controls, a visible UI indicator that recording is active, and markers for incomplete streaming assemblies. Credentials and authorization headers are never stored.
+- Showcase history that already stores full text is a **demo artifact**; keep it out of the organic Traffic table unless the same route’s recording policy explicitly allows it. Future Showcase UI copy should say the run is synthetic.
 
 ---
 
@@ -284,7 +303,7 @@ Do not collapse these:
 
 **Requests:** Always render. If `llm[]` is missing, show “engine probe unavailable” with agent version / port / auth hints — not a blank page. Distinguish unsupported finished-count from zero. Showcase running is an optional banner (“synthetic load in progress; queue depths include demo traffic”).
 
-**Traffic:** Lanes from engine counters without a relay (already possible). Recent rows from the chosen adapter (LiteLLM attempts or relay fallback), each with `source`. Prerequisites checklist should say: agent 0.3+ can already have SGLang/vLLM counters; 0.5+ for `LLM_PROXY`; `LLM_PROXY` format is `8082:8081`; Guard URL does not fill this table; LiteLLM only sees clients that used LiteLLM.
+**Traffic:** Lanes from engine counters without a relay (already possible). Recent rows from the chosen adapter (LiteLLM attempts or relay fallback), each with `source`. Prerequisites checklist should say: agent 0.3+ can already have SGLang/vLLM counters; 0.5+ for `LLM_PROXY`; `LLM_PROXY` format is `8082:8081`; Guard URL does not fill this table; LiteLLM only sees clients that used LiteLLM. Show a recording-on indicator when the effective policy stores content. Open PR [#111](https://github.com/airhamer/herd/pull/111) and issue [#104](https://github.com/airhamer/herd/issues/104) still need the version-floor and `LLM_PROXY` syntax corrections called out in §2 when next touched — not in this documentation change.
 
 **Showcase:** Keep as an explicit Run action. Label timings “showcase session,” not “fleet workload.” Use first-visible-token TTFT; exclude empty keepalive chunks; if prefill is shown, prefer server `timings.prompt_*` or engine prefill series, otherwise “unsupported” rather than `prompt/TTFT` silently. Do not post Anthropic-shaped timings until a dedicated parser exists. Route through the keepalive port (SC11 already aims at this).
 
@@ -322,10 +341,17 @@ Proposed (not parsed today) — per-node observation record, to be designed into
       "baseUrl": "http://narthex:4000",
       "adminKeyRef": "env:LITELLM_ADMIN_KEY",
       "upstreamNodeId": "gx10-1c2c"
+    },
+    "recording": {
+      "content": "off",
+      "retentionHours": 24,
+      "maxBytes": 10485760
     }
   }
 }
 ```
+
+`recording.content` values shown here are a **proposal** (`off` | `metadata` | `prompts` | `prompts+responses`). Nothing in herd parses this object today.
 
 The `127.0.0.1:8082->http://127.0.0.1:8080` string is **not** valid `LLM_PROXY` input. Pointing a relay at `:8080` would also skip Hasso and is not recommended.
 
@@ -340,6 +366,7 @@ The `127.0.0.1:8082->http://127.0.0.1:8080` string is **not** valid `LLM_PROXY` 
 5. Align Traffic/Requests empty states with §12 (some of this is sketched in open PR #111; fix the version and `LLM_PROXY` syntax there when someone next touches it — not in this PR).
 6. Showcase labeling and prefill definition on the MIT fleet Showcase path.
 7. `LLM_PROXY` remains documented fallback only.
+8. Component-owned serving/monitoring profiles and compatible variant (standard ↔ uncensored) swaps — [#118](https://github.com/airhamer/herd/issues/118) `[COMP2]`, §18. Do not implement in this documentation change.
 
 Do not close or rewrite #111 / #104 in this change.
 
@@ -355,6 +382,9 @@ Do not close or rewrite #111 / #104 in this change.
 - Showcase session tokens have `source=showcase-*` and are excluded from organic rollups.
 - Guard `/health` still does not claim to be Traffic.
 - No new npm dependencies; do not edit `agent/catalog/stacks.js` or `stack-history.js`.
+- Compatible standard ↔ uncensored variant swap preserves component `id`, endpoints/routes, monitoring adapters, credential refs, and recording policy; labels and model-specific segments update; prior history stays attributed to the old variant; no stale running flag; no total-reset that double-counts.
+- Incompatible engine/protocol/topology/port variant is an explicit error, not a silent parent rewrite.
+- Opt-in content recording persists across a compatible swap and a dashboard restart; default remains metadata-only; secrets/headers are never stored; missing adapter capability is unknown, not zero.
 
 This documentation PR adds no runtime tests; none are required for a prose-only diff.
 
@@ -377,3 +407,42 @@ This documentation PR adds no runtime tests; none are required for a prose-only 
 - Hasso [01902c6](https://github.com/hasso5703/dgx-spark-qwen38/commit/01902c67709c4164c30ccf036422bfed6f172158), [engine-restarts.md](https://github.com/hasso5703/dgx-spark-qwen38/blob/01902c67709c4164c30ccf036422bfed6f172158/docs/engine-restarts.md), [OpenAI-compatible API guide](https://hasso5703.github.io/guides/openai-compatible-api-dgx-spark/)
 - LiteLLM docs linked in §5
 - Herd `8dc99d0` files cited in §2
+
+## 18. Component-owned serving and monitoring profiles
+
+Complementary catalog rule: [docs/COMPONENTS-DESIGN-PROPOSAL.md](./COMPONENTS-DESIGN-PROPOSAL.md) §8. This section is the monitoring SoT; the proposal file states the identity rule without repeating adapter details.
+
+### 18.1 What the Component owns
+
+A Component is a reusable **runtime profile**, not “whatever model name is on the card.” It owns:
+
+- Serving path and endpoints: engine bind/port (host placeholders remain per-box), optional Hasso/guard front, optional LiteLLM route.
+- Credential **references** only (`env:` / `file:`).
+- Monitoring adapters and the metric capabilities those adapters declare (see §9).
+- Resource and lifecycle actions (start/stop/switch preview, memory/context estimates as *inputs to revalidate*, not as identity).
+- Recording policy reference (default metadata; opt-in content — §11).
+
+Defaults come from the runtime profile in the catalog. Node or group overrides must be explicit fields, never guessed from a served model label such as “uncensored.”
+
+### 18.2 Variant subcomponents (standard ↔ uncensored)
+
+Weights and model variants (standard, uncensored, or any other compatible checkpoint of the same runtime) are **subcomponents**. A compatible swap:
+
+- **Must preserve** component identity (`id`), endpoint and route bindings, monitoring profile and adapters, credential references, and recording policy.
+- **Must update** served-model labels and correlation keys to the new variant id/aliases.
+- **Must** start a new segment of model-specific counters and history for the new variant, and **keep** prior segments attributed to the previous variant. Do not rewrite old rows’ model id. Do not treat a variant swap as an engine restart that zeroes totals (that would double-count or look like a wipe).
+- **Must not** leave a stale “running” status for the old variant, or mark the new one running before the probe confirms it.
+- **Must revalidate** resource, context, and tokenizer estimates *before* the switch (they may legitimately differ). Fit/memory preview stays required.
+
+**Compatibility boundary:** if the variant needs an incompatible engine, protocol, topology (for example tp or interconnect), or ports, do **not** silently rewrite the parent Component’s serving or monitoring settings. Return an explicit compatibility error and require a reviewed profile/component migration (new definition or an operator-approved copy), consistent with the existing copy-on-TP-or-machine-class rule.
+
+Runtime discovery after a swap re-checks declared capabilities. A successful weight load is not automatic proof that `/metrics`, queue gauges, or a LiteLLM mapping still work.
+
+### 18.3 Current implementation vs this proposal
+
+Today, catalog JSON pins `model` / `drafter` inside the component file ([COMPONENTS-DESIGN-PROPOSAL.md](./COMPONENTS-DESIGN-PROPOSAL.md) §2) and matching uses aliases (PR [#109](https://github.com/airhamer/herd/pull/109)). There is no separate `runtimeProfile` / `variants[]` object, no recording-policy field, and no code that guarantees monitoring bindings survive a standard ↔ uncensored swap. Traffic content recording is not implemented (metadata-only ring only). §13 examples and this section are specification, not parser support.
+
+### 18.4 Related work still outstanding
+
+Issues [#104](https://github.com/airhamer/herd/issues/104) and [#98](https://github.com/airhamer/herd/issues/98) / PR [#111](https://github.com/airhamer/herd/pull/111) remain the place to correct `LLM_PROXY` syntax and the 0.3-vs-0.4 counter wording when those branches move. This amendment does not edit them.
+

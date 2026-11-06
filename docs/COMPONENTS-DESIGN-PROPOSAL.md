@@ -478,3 +478,34 @@ with a rolling cap, fail-soft like stacks.json.
   stackId, null when empty/failed) so SC5+ drives UI/ETA from the snapshot
   alone. No UI changes; the stack-history.js prototype (component-set keyed,
   unwired) is superseded by this stack-id-keyed contract.
+
+---
+
+## 8. Amendment (2026-11-06) — variants vs runtime profile
+
+**Status:** proposed (owner-approved 2026-11-06). Monitoring details live in
+[`docs/telemetry-design.md`](./telemetry-design.md) §18 so this file does not
+become a second copy of the adapter matrix.
+
+§2 still lists `model` / `drafter` as pins on the component file. That remains
+true for a *variant*, but the **Component identity** is the reusable runtime
+profile: engine family and launch shape, serving path (engine, optional
+Hasso/guard, optional LiteLLM route), credential references, monitoring
+adapters, lifecycle actions, and recording policy.
+
+Standard vs uncensored weights (and similar compatible checkpoints) are
+**subcomponents**. Swapping them must not change the parent Component’s `id`,
+endpoint/route bindings, monitoring profile, credential references, or
+recording policy. Served-model labels and model-specific counter *segments*
+update; history already attributed to the previous variant stays attributed
+there. Resource, context, and tokenizer estimates may change and must be
+revalidated before the switch (they are measurements, like `memory_estimate_mb`,
+not a reason to rewrite ports or adapters).
+
+If a variant needs an incompatible engine, protocol, topology, or ports, do not
+silently edit the parent profile. That is the same spirit as §3 (copy-on-TP-or-
+machine-class): create or migrate a definition explicitly.
+
+This amendment does not invent catalog JSON syntax yet. Implementation gaps
+are tracked as [#118](https://github.com/airhamer/herd/issues/118) **COMP2** (spec PR [#117](https://github.com/airhamer/herd/pull/117)).
+
