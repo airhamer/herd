@@ -5,7 +5,6 @@ import os from "node:os";
 import path from "node:path";
 import { dispatchComponentAction } from "../componentDispatch.js";
 import { loadDefinitions } from "../../catalog/definitions.js";
-import { normalizeComponent } from "../../../shared/runtimeProfile.js";
 
 const SECRET = "test-secret";
 const CATALOG = path.join(path.dirname(new URL(import.meta.url).pathname), "../../catalog/components");
@@ -41,7 +40,9 @@ test("install preview/confirm/execute gating with mocked exec", async () => {
   };
   const preview = await dispatchComponentAction(req, { catalogDir: CATALOG, configDir, confirmSecret: SECRET });
   assert.equal(preview.ok, true);
-  assert.equal(preview.plan.recipe.steps[0].argv[1], "--plan");
+  const installStep = preview.plan.recipe.steps.find((s) => Array.isArray(s.argv) && s.argv[0] === "./install.sh");
+  assert.equal(installStep.argv[1], "--plan");
+  assert.ok(preview.plan.willDo.includes("checkout"));
   assert.equal(preview.plan.confirm, "required");
 
   const denied = await dispatchComponentAction(
@@ -57,6 +58,15 @@ test("install preview/confirm/execute gating with mocked exec", async () => {
       catalogDir: CATALOG,
       configDir,
       confirmSecret: SECRET,
+      home: "/home/u",
+      pathExists: () => false,
+      execHost: async () => ({ ok: true }),
+      execGit: async (argv) => {
+        if (argv.includes("rev-parse") && argv.at(-1) === "HEAD") {
+          return { ok: true, stdout: "01902c67709c4164c30ccf036422bfed6f172158\n" };
+        }
+        return { ok: true, stdout: "" };
+      },
       exec: async (file, args, opts) => {
         calls.push({ file, args, opts });
         return { ok: true, stdout: "ok" };
@@ -64,13 +74,14 @@ test("install preview/confirm/execute gating with mocked exec", async () => {
     }
   );
   assert.equal(run.ok, true);
-  assert.equal(run.canaryState, "loading");
-  assert.equal(calls[0].file, "./install.sh");
-  assert.deepEqual(calls[0].args, []);
+  assert.equal(run.canaryState, "installed");
+  const installCall = calls.find((c) => c.file === "./install.sh");
+  assert.ok(installCall);
+  assert.deepEqual(installCall.args, ["--no-start"]);
   assert.equal(run.state.recording.content, "metadata");
 });
 
-test("occupied 8080 blocks install preview", async () => {
+test("occupied exclusive peer plans a coordinated stop instead of blocking", async () => {
   const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "herd-cfg-"));
   const res = await dispatchComponentAction(
     {
@@ -93,6 +104,6 @@ test("occupied 8080 blocks install preview", async () => {
       portOccupier: { 8080: "qwen38-flash-next-sglang-tp1-gx10" },
     }
   );
-  assert.equal(res.ok, false);
-  assert.match(res.error, /8080/);
+  assert.equal(res.ok, true);
+  assert.ok(res.plan.willDo.includes("stop-peer") || res.plan.displaces === "qwen38-flash-next-sglang-tp1-gx10");
 });
