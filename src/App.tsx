@@ -808,7 +808,7 @@ function FleetViewPane({
       <RequestsPage
         nodeId={node.nodeId}
         nodeName={node.nodeName}
-        requests={node.requests ?? { stats: [], polledAt: node.polledAt }}
+        requests={node.requests ?? { nodeId: node.nodeId, stats: [], polledAt: node.polledAt }}
         byModel={node.requests ? fleet.requests.byModel : {}}
         byEngine={node.requests ? fleet.requests.byEngine : {}}
         byMachine={node.requests ? fleet.requests.byMachine : {}}
