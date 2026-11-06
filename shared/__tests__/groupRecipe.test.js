@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { planGroupRecipe } from "../groupRecipe.js";
+import { planGroupRecipe, planGroupFanout } from "../groupRecipe.js";
 import { buildRecipePlan } from "../recipePlan.js";
 import { normalizeComponent } from "../runtimeProfile.js";
 
@@ -79,10 +79,16 @@ test("incompatible membership or missing/mutating interconnect is an error", () 
 
 test("GLM preview injects DRY_RUN=1; confirm execution does not", () => {
   const raw = load("glm53-flash-tensorfold-tp2-gx10");
-  const preview = buildRecipePlan(raw, "install");
+  const group = { id: "g", members: ["h", "w"], headId: "h" };
+  const network = { config: { WORKER: "10.0.0.2" } };
+  const preview = planGroupFanout(raw, { action: "install", dryRun: true, group, network });
   assert.equal(preview.ok, true);
-  assert.equal(preview.plan.steps[0].env.DRY_RUN, "1");
-  const run = buildRecipePlan(raw, "install", { execute: true });
-  assert.equal(run.plan.steps[0].env.DRY_RUN, undefined);
-  assert.deepEqual(run.plan.steps[0].argv, ["./start.sh"]);
+  const headPrev = preview.plan.members.find((m) => m.role === "head");
+  assert.equal(headPrev.env.DRY_RUN, "1");
+  assert.deepEqual(headPrev.argv, ["./start.sh"]);
+  const run = planGroupFanout(raw, { action: "install", dryRun: false, group, network });
+  const headRun = run.plan.members.find((m) => m.role === "head");
+  assert.equal(headRun.env.DRY_RUN, undefined);
+  assert.deepEqual(headRun.argv, ["./start.sh"]);
+  assert.equal(run.plan.members.find((m) => m.role === "worker").runsInstaller, false);
 });

@@ -836,6 +836,16 @@ export function sendComponentAction(
   });
 }
 
+export function sendGroupComponentAction(
+  groupId: string,
+  body: ComponentActionSendRequest
+): Promise<import("../../shared/types").ComponentActionResult> {
+  return apiFetch(`/api/fleet/groups/${encodeURIComponent(groupId)}/component-actions`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
 export type RecordingStatus = {
   recording: boolean;
   available: boolean;

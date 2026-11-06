@@ -32,6 +32,7 @@ export const ALLOWED_ENV = Object.freeze([
   "HF_CACHE",
   "PORT",
   "TP",
+  "ROLE",
 ]);
 
 const SAFE_ENV_VAL = /^[A-Za-z0-9._:@\/+-]+$/;

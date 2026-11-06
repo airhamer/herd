@@ -21,7 +21,7 @@ import {
   resolveRecordingPolicy,
 } from "../../shared/runtimeProfile.js";
 import { buildRecipePlan, executePlanStep } from "../../shared/recipePlan.js";
-import { planGroupRecipe } from "../../shared/groupRecipe.js";
+import { planGroupRecipe, memberRolePlan } from "../../shared/groupRecipe.js";
 import { acquirePinnedCheckout, hostPreflight } from "../../shared/gitPin.js";
 import { planHardwareSwitch } from "../../shared/switchLifecycle.js";
 import { runSwitchModel } from "./switchModelExec.js";
@@ -83,7 +83,12 @@ export async function dispatchComponentAction(raw, deps = {}) {
   if (request.type === "swap-variant") {
     return handleSwapVariant(request, def, instance, store, instancePath, deps, env, started);
   }
-  if (request.type === "install" || request.type === "configure") {
+  const lifeTop = (def.raw?.lifecycle || def.lifecycle || {}).topology;
+  if (
+    request.type === "install" ||
+    request.type === "configure" ||
+    (lifeTop === "tp2" && request.role && (request.type === "stop" || request.type === "start"))
+  ) {
     return handleRecipeLifecycle(request, def, instance, deps, env, started);
   }
 
@@ -400,27 +405,12 @@ async function handleLifecycleVerb(request, def, instance, deps, env, started) {
 
 
 async function handleRecipeLifecycle(request, def, instance, deps, env, started) {
-  const action = request.type === "configure" ? "switch" : "install";
-  if ((def.raw?.lifecycle || {}).topology === "tp2") {
-    const groupPlan = planGroupRecipe(def, {
-      action,
-      group: deps.group || { members: request.groupRef ? [request.nodeId] : [] },
-      network: deps.network,
-    });
-    if (!groupPlan.ok) {
-      env.error = groupPlan.error;
-      env.message = groupPlan.error;
+  const action = request.type === "configure" ? "switch" : request.type === "stop" ? "stop" : request.type === "start" ? "start" : "install";
+  if ((def.raw?.lifecycle || {}).topology === "tp2" && !request.role) {
+    if (!request.dryRun) {
+      env.error = "tp=2 lifecycle must be dispatched to both group member agents (worker and head) via the group endpoint";
+      env.message = env.error;
       env.durationMs = Date.now() - started;
-      env.plan = {
-        willDo: [],
-        displaces: null,
-        confirm: "required",
-        confirmationToken: null,
-        estDowntimeMs: 0,
-        memoryDeltaMB: 0,
-        inflightRequests: null,
-        scopeBlocked: groupPlan.error,
-      };
       return env;
     }
   }
@@ -512,8 +502,17 @@ async function handleRecipeLifecycle(request, def, instance, deps, env, started)
         out = { ok: stopPeer.ok !== false && stopPeer.status !== "failure", error: stopPeer.error, stdout: stopPeer.message };
       }
     } else {
-      const cwdStep = { ...step, cwd: checkoutDest || step.cwd };
-      out = await executePlanStep(cwdStep, exec);
+      if (request.role) {
+        const member = memberRolePlan(def, request.role, { action, env: request.env });
+        if (!member.argv) {
+          out = { ok: true, stdout: `${request.role} checkout/readiness only (no installer argv on this role)` };
+        } else {
+          out = await executePlanStep({ ...step, argv: member.argv, env: member.env, cwd: checkoutDest || step.cwd }, exec);
+        }
+      } else {
+        const cwdStep = { ...step, cwd: checkoutDest || step.cwd };
+        out = await executePlanStep(cwdStep, exec);
+      }
     }
     steps.push({
       step: step.id || request.type,

@@ -68,3 +68,59 @@ export function planGroupRecipe(definition, ctx = {}) {
     },
   };
 }
+
+
+/**
+ * Per-member argv + allowlisted env for a TP=2 role.
+ * Worker/head entrypoints come from lifecycle.roles (pinned by source.upstreamCommit).
+ */
+export function memberRolePlan(definition, role, ctx = {}) {
+  const raw = definition.raw || definition;
+  const life = raw.lifecycle || {};
+  const roles = life.roles && typeof life.roles === "object" ? life.roles : {};
+  const spec = roles[role] || {};
+  const action = ctx.action || "install";
+  const dryRun = Boolean(ctx.dryRun);
+  let argv = null;
+  if (action === "stop") argv = spec.stopArgv || life.stop?.argv || null;
+  else if (spec.runsInstaller === false && action !== "stop") argv = null;
+  else if (dryRun) argv = spec.previewArgv || life.install?.argv || spec.installArgv || null;
+  else argv = spec.installArgv || life.install?.executeArgv || life.install?.argv || null;
+
+  const env = { ...(life.install?.env || {}), ...(ctx.env || {}), ROLE: role };
+  if (dryRun && spec.previewEnv) Object.assign(env, spec.previewEnv);
+  if (role === "head" && ctx.workerHost && !env.WORKER) env.WORKER = ctx.workerHost;
+  return {
+    role,
+    argv,
+    env,
+    runsInstaller: argv != null,
+    note: spec.note || null,
+    pinned: raw.source
+      ? { origin: raw.source.origin, commit: raw.source.upstreamCommit, license: raw.source.license }
+      : null,
+  };
+}
+
+export function planGroupFanout(definition, ctx = {}) {
+  const base = planGroupRecipe(definition, ctx);
+  if (!base.ok) return base;
+  const members = base.plan.order.map((m) => ({
+    ...m,
+    ...memberRolePlan(definition, m.role, {
+      action: ctx.action,
+      dryRun: ctx.dryRun,
+      env: ctx.network?.config,
+      workerHost: ctx.network?.config?.WORKER || ctx.workerHost,
+    }),
+  }));
+  return {
+    ok: true,
+    plan: {
+      ...base.plan,
+      members,
+      allOrNothingPreflight: true,
+      mocksOnlyNote: "Integration coverage is mock HTTP to two member agents; no live GPU success is claimed.",
+    },
+  };
+}

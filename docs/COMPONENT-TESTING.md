@@ -94,6 +94,17 @@ is never a verified numeric source.
 
 ## TP=2 groups
 
-GLM-5.3-Flash and DeepSeek-v4-Flash recipes fan out to the two group member
-agents (worker, then head) with required env. Preflight is all-or-nothing.
-CI and dashboard tests use mocks only — no live GPU success is claimed.
+From a group's Components tab, Install/Stop posts to
+`/api/fleet/groups/:id/component-actions`. The server:
+
+1. Requires exactly two registered members and probes both agents (`GET /health`).
+   Either failure aborts the whole action (all-or-nothing).
+2. Stops the previous component on head then worker (recipe `./stop.sh` /
+   `./stop-deepseek-v4-flash-dspark.sh`).
+3. Runs checkout on each member, then the pinned role entrypoint: GLM worker is
+   checkout/readiness only (head `./start.sh` with already-configured `WORKER`);
+   DeepSeek runs `./start-deepseek-v4-flash-dspark.sh` worker-first then head.
+   Required NCCL/IF names come from the existing overlay — herd does not
+   rewrite RoCE.
+
+CI and dashboard tests mock both agents. No live GPU success is claimed.

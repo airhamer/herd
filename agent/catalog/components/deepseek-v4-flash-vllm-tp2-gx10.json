@@ -161,6 +161,31 @@
         "./stop-deepseek-v4-flash-dspark.sh"
       ],
       "requiresSudo": false
+    },
+    "roles": {
+      "worker": {
+        "runsInstaller": true,
+        "installArgv": [
+          "./start-deepseek-v4-flash-dspark.sh"
+        ],
+        "prepareArgv": [
+          "./prepare-dspark-model-cache.sh"
+        ],
+        "stopArgv": [
+          "./stop-deepseek-v4-flash-dspark.sh"
+        ],
+        "note": "Worker-first start of the pinned DeepSeek launcher after checkout."
+      },
+      "head": {
+        "runsInstaller": true,
+        "installArgv": [
+          "./start-deepseek-v4-flash-dspark.sh"
+        ],
+        "stopArgv": [
+          "./stop-deepseek-v4-flash-dspark.sh"
+        ],
+        "note": "Head start after the worker agent reports readiness. NCCL/IF names come from the existing overlay only."
+      }
     }
   },
   "source": {

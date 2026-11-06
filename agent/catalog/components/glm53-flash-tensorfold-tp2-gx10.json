@@ -157,6 +157,28 @@
         "./stop.sh"
       ],
       "requiresSudo": false
+    },
+    "roles": {
+      "worker": {
+        "runsInstaller": false,
+        "stopArgv": [
+          "./stop.sh"
+        ],
+        "note": "Checkout + readiness + stop on the worker agent. Head ./start.sh starts both ranks using already-configured WORKER; this agent is not skipped."
+      },
+      "head": {
+        "runsInstaller": true,
+        "installArgv": [
+          "./start.sh"
+        ],
+        "previewEnv": {
+          "DRY_RUN": "1"
+        },
+        "stopArgv": [
+          "./stop.sh"
+        ],
+        "note": "Pinned ./start.sh (DRY_RUN=1 in preview). WORKER must already be configured; herd does not rewrite RoCE."
+      }
     }
   },
   "source": {
