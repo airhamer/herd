@@ -41,12 +41,21 @@ stub. Preview reports it when `sudo -n true` fails.
 4. Start the component separately if the installer was invoked with
    `--no-start`.
 
+Verified `install.sh` flags at pin
+https://github.com/hasso5703/alzeo/blob/01902c67709c4164c30ccf036422bfed6f172158/install.sh
+(`--plan`, `--no-start` “install everything but don't start the service now”,
+`--no-service`).
+
 ## Variant switch flow
 
 1. Select `stock` or `uncensored` (same 27B lane) or the flash lane variant
    that names a `switchTarget`.
 2. **swap variant…** asks the agent for a dry-run plan. The plan binds to
-   `./switch-model.sh <stock|uncensored|flash|flash-uncensored>` only.
+   `./switch-model.sh <stock|uncensored|flash|flash-uncensored>` only
+   (those four are in the pinned `switch-model.sh` case at
+   https://github.com/hasso5703/alzeo/blob/01902c67709c4164c30ccf036422bfed6f172158/switch-model.sh#L60).
+   Other upstream names (`fp8`, `flash-nvda`, …) are not bound to current
+   herd variants and fail compatibility rather than running a guessed command.
 3. Confirm downtime (model load can take many minutes). Port 8080 already
    belonging to *this* component, or to its exclusive peer that will be
    stopped first, must not block the coordinated stop-old → start-new path.
@@ -61,8 +70,10 @@ Default policy is **metadata**. Bodies are stored only when:
 
 - the effective policy (stricter-wins across component / node / group / route)
   is `prompts` or `prompts+responses`, and
-- an observer is actually present: `LLM_PROXY` already configured (optional
-  usage relay) or a LiteLLM base URL already configured.
+- an observer is actually present: an already-configured `LLM_PROXY`
+  `listen:upstream` usage relay bound to that component's engine/guard port.
+  `LITELLM_BASE_URL` alone is **not** an observer — LiteLLM spend-log pull
+  is not implemented. The UI must show **not recording / unavailable**.
 
 The dashboard never writes `LLM_PROXY` or changes user routing to turn
 recording on. If the observer is missing, the UI shows
@@ -99,12 +110,24 @@ From a group's Components tab, Install/Stop posts to
 
 1. Requires exactly two registered members and probes both agents (`GET /health`).
    Either failure aborts the whole action (all-or-nothing).
-2. Stops the previous component on head then worker (recipe `./stop.sh` /
-   `./stop-deepseek-v4-flash-dspark.sh`).
-3. Runs checkout on each member, then the pinned role entrypoint: GLM worker is
-   checkout/readiness only (head `./start.sh` with already-configured `WORKER`);
-   DeepSeek runs `./start-deepseek-v4-flash-dspark.sh` worker-first then head.
-   Required NCCL/IF names come from the existing overlay — herd does not
-   rewrite RoCE.
+2. Fails closed if required named interconnect/data-plane values are missing,
+   before any stop or mutation. Inventory `lanIp` is the management path
+   (dashboard ↔ agent) only — it is never copied into `WORKER`,
+   `WORKER_HOST`, `MASTER_ADDR`, or `NCCL_*`.
+3. Stops via the head orchestrator (`./stop.sh` /
+   `./stop-deepseek-v4-flash-dspark.sh`). Those scripts SSH to the worker.
+4. Checks out the pin on each member. Only the head runs the upstream start
+   entrypoint: GLM `./start.sh`; DeepSeek `./start-deepseek-v4-flash-dspark.sh`
+   (the script itself starts the worker rank first, then head). Workers are
+   checkout + readiness only.
 
-CI and dashboard tests mock both agents. No live GPU success is claimed.
+- GLM pin `02dac3879852b8c5713318d3d64a5a791002e954`: `WORKER` is an SSH
+  target; start.sh discovers the RoCE fabric from the route to `WORKER`.
+  https://github.com/MiaAI-Lab/GLM-5.3-Flash-DGX-Sparks-1104/blob/02dac3879852b8c5713318d3d64a5a791002e954/scripts/config.sh
+- DeepSeek pin `a8b4636710068fd30edb98e1365d567086cc208e` requires explicit
+  `WORKER_HOST`, `MASTER_ADDR`, `MASTER_PORT`, `NCCL_IB_HCA`,
+  `NCCL_SOCKET_IFNAME`.
+  https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark/blob/a8b4636710068fd30edb98e1365d567086cc208e/start-deepseek-v4-flash-dspark.sh
+
+Preview lists management vs named control/data paths. CI mocks both agents.
+No live GPU success is claimed. Live hardware is unverified.

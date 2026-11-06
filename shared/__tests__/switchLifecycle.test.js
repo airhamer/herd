@@ -22,3 +22,12 @@ test("plan requires confirmed downtime and reports long load", () => {
   assert.equal(p.estDowntimeMs, 20 * 60 * 1000);
   assert.deepEqual(p.willDo, ["switch-model", "canary"]);
 });
+
+test("invented targets fail closed; upstream-only names are not executed", () => {
+  const fake = validateSwitchTarget("turbo-flash");
+  assert.equal(fake.ok, false);
+  assert.equal(fake.code, "target-not-allowlisted");
+  const unbound = validateSwitchTarget("fp8");
+  assert.equal(unbound.ok, false);
+  assert.equal(unbound.code, "target-unbound-in-herd");
+});
