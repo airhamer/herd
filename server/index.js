@@ -88,6 +88,8 @@ import { registerGroupRoutes } from "./fleet/groupsRoutes.js";
 import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
 import { renderFleetMetrics } from "./fleet/metrics.js";
 import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
+import { createSshTransport } from "./fleet/sshTransport.js";
+import { LINUX_APT_PROBE_CMD, linuxUpgradePlan } from "./fleet/linuxUpdates.js";
 import { buildComponentAction, proxyComponentAction } from "./fleet/componentActions.js";
 import { loadComponentCatalog, joinComponentState } from "./fleet/componentCatalog.js";
 import { createWaveSequencer } from "./fleet/waveSequencer.js";
@@ -493,7 +495,14 @@ let waveSequencer = null;
 function refreshUpdatesLayer() {
   const nodes = loadNodes();
   const plan = updatePlanStore.read();
-  updatesProxy = createUpdatesProxy({ nodes, plan });
+  updatesProxy = createUpdatesProxy({
+    nodes,
+    plan,
+    linuxProbe: async (node) => {
+      const { exec } = createSshTransport(node);
+      return exec(LINUX_APT_PROBE_CMD, { timeoutMs: 30_000 });
+    },
+  });
   // BATCH 6c: the gate's evidence source is the proxy's own /updates fan-out
   // cache (arrow re-reads the current proxy across refreshes; production
   // /telemetry carries no update mount).
@@ -1413,6 +1422,13 @@ app.post("/api/fleet/nodes/:id/updates/now", async (req, res) => {
   }
   const rec = updatesNodeOr404(req, res);
   if (!rec) return;
+  if (rec.protocol === "ssh") {
+    return res.status(501).json({
+      error:
+        "Standard Linux package apply is not executed automatically. The dashboard only reports a confirmed dry-run plan; apt-get -y / dnf -y stay operator-run through a privileged executor that is not wired yet.",
+      plan: linuxUpgradePlan({ confirm: false }),
+    });
+  }
   const result = await proxyUpdatesAction(rec, { type: "dgx-update-now" });
   recordEvent(activity.updateStarted(rec, { ok: result.status === 200, error: result.body?.error }));
   if (result.status === 200) {

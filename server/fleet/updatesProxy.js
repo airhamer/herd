@@ -21,6 +21,7 @@
 // never an error.
 
 import fs from "fs";
+import { parseLinuxUpdateProbe, linuxUpdatesSnapshot } from "./linuxUpdates.js";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -137,6 +138,7 @@ export function createUpdatesProxy(opts = {}) {
       : TIMEOUT_DEFAULT_MS;
   const plan = opts.plan && typeof opts.plan === "object" ? opts.plan : null;
   const clock = typeof opts.now === "function" ? opts.now : () => Date.now();
+  const linuxProbe = typeof opts.linuxProbe === "function" ? opts.linuxProbe : null;
 
   /** @type {Map<string, object>} nodeId -> last good NodeUpdatesView */
   const lastViews = new Map();
@@ -157,6 +159,12 @@ export function createUpdatesProxy(opts = {}) {
     if (state.inProgress) return "updating";
     if (state.lastOutcome === "error") return "failed";
     if (snapshot) {
+      // UPD2: SSH Linux probe. A missing/failed probe must not read as current.
+      if (snapshot.backend === "linux") {
+        if (snapshot.upgradableCount == null) return "stale";
+        if (snapshot.upgradableCount > 0) return "available";
+        return "current";
+      }
       if (snapshot.otaAvailable != null) return "available";
       // Batch 10-B: pending package/firmware rows ARE updates-available. The
       // OTA flag alone misread every live box "current" while carrying
@@ -223,6 +231,21 @@ export function createUpdatesProxy(opts = {}) {
     }
     const settled = await Promise.allSettled(
       nodes.map(async (node) => {
+        const linuxish =
+          linuxProbe &&
+          node &&
+          node.protocol === "ssh" &&
+          (!node.platform || node.platform === "linux");
+        if (linuxish) {
+          const rawText = await linuxProbe(node);
+          const parsed = parseLinuxUpdateProbe(typeof rawText === "string" ? rawText : "");
+          const snapshot = linuxUpdatesSnapshot(parsed, clock());
+          return buildView(node, {
+            snapshot,
+            state: defaultUpdateState(),
+            schedules: [],
+          });
+        }
         const url = nodeUpdatesUrl(node);
         if (!url) throw new Error(`no resolvable endpoint for node ${node.id}`);
         const res = await f(url, {
