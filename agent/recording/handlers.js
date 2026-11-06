@@ -12,16 +12,17 @@ import {
 } from "./store.js";
 import { recordingAvailability } from "../../shared/recordingCapture.js";
 import { resolveRecordingPolicy } from "../../shared/runtimeProfile.js";
+import { parseRelaySpec } from "../proxy/usageRelay.js";
 
 export function observerIsPresent(opts = {}) {
   if (opts.observerPresent === true) return true;
   if (opts.observerPresent === false) return false;
   const env = opts.env || process.env;
-  // Already-configured optional relay. Never treat unset LLM_PROXY as present,
-  // and never write LLM_PROXY here.
-  if (typeof env.LLM_PROXY === "string" && env.LLM_PROXY.trim()) return true;
-  if (typeof env.LITELLM_BASE_URL === "string" && env.LITELLM_BASE_URL.trim()) return true;
-  return false;
+  // A configured usage relay (LLM_PROXY listen:upstream) is the only
+  // implemented observer. LiteLLM spend-log pull is not implemented, so
+  // LITELLM_BASE_URL alone must not look like a working recorder.
+  if (Array.isArray(opts.boundRelays) && opts.boundRelays.length > 0) return true;
+  return parseRelaySpec(env?.LLM_PROXY).length > 0;
 }
 
 export function handleListRecordings(store, query, ctx) {

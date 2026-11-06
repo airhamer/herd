@@ -413,7 +413,7 @@ function forwardHeaders(h) {
  * @param {{ listenPort: number, upstreamPort: number, upstreamHost?: string, bind?: string,
  *   now?: () => number, wallNow?: () => number }} opts
  */
-export function createUsageRelay({ listenPort, upstreamPort, upstreamHost = "127.0.0.1", bind = "127.0.0.1", now = () => performance.now(), wallNow = () => Date.now(), onCapture = null, maxCaptureBytes = 64 * 1024 }) {
+export function createUsageRelay({ listenPort, upstreamPort, upstreamHost = "127.0.0.1", bind = "127.0.0.1", now = () => performance.now(), wallNow = () => Date.now(), onCapture = null, onBind = null, maxCaptureBytes = 64 * 1024 }) {
   const ledger = createUsageLedger({ listenPort, upstreamPort });
   /** @type {http.Server|null} */
   let server = null;
@@ -423,6 +423,10 @@ export function createUsageRelay({ listenPort, upstreamPort, upstreamHost = "127
   function handle(req, res) {
     const t0 = now();
     const metered = req.method === "POST" && isMeteredPath(req.url);
+    const reqPath = (req.url || "").split("?")[0];
+    const bindSnapshot = typeof onBind === "function"
+      ? onBind({ listenPort, upstreamPort, path: reqPath })
+      : { listenPort, upstreamPort, path: reqPath };
     const client = req.socket?.remoteAddress ?? "unknown";
     let done = false;
     /** @type {ReturnType<typeof createRequestMeter> | null} */
@@ -452,12 +456,15 @@ export function createUsageRelay({ listenPort, upstreamPort, upstreamHost = "127
       if (capturing) {
         try {
           onCapture({
-            path: (req.url || "").split("?")[0],
+            path: reqPath,
             method: req.method,
             status,
             aborted: Boolean(aborted),
             requestBody: Buffer.concat(reqChunks).toString("utf8"),
             streamChunks: resChunks,
+            listenPort,
+            upstreamPort,
+            bind: bindSnapshot,
             // headers intentionally omitted
           });
         } catch (err) {
@@ -546,7 +553,7 @@ export function createUsageRelay({ listenPort, upstreamPort, upstreamHost = "127
  */
 export function createUsageRelays(env = process.env, extras = {}) {
   const bind = env.LLM_PROXY_BIND || "127.0.0.1";
-  const relays = parseRelaySpec(env.LLM_PROXY).map((s) => createUsageRelay({ ...s, bind, onCapture: extras.onCapture, maxCaptureBytes: extras.maxCaptureBytes }));
+  const relays = parseRelaySpec(env.LLM_PROXY).map((s) => createUsageRelay({ ...s, bind, onCapture: extras.onCapture, onBind: extras.onBind, maxCaptureBytes: extras.maxCaptureBytes }));
   return {
     relays,
     async start() {

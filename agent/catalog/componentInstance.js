@@ -46,3 +46,10 @@ export function writeInstance(store, nodeId, componentId, rec) {
   next.instances[instanceKey(nodeId, componentId)] = rec;
   return next;
 }
+
+export function nextVariantGeneration(prev, variantId) {
+  const rec = prev && typeof prev === "object" ? prev : {};
+  const gen = Number.isFinite(rec.variantGeneration) ? rec.variantGeneration : 0;
+  if (rec.variantId === variantId) return gen;
+  return gen + 1;
+}

@@ -41,12 +41,21 @@ stub. Preview reports it when `sudo -n true` fails.
 4. Start the component separately if the installer was invoked with
    `--no-start`.
 
+Verified `install.sh` flags at pin
+https://github.com/hasso5703/alzeo/blob/01902c67709c4164c30ccf036422bfed6f172158/install.sh
+(`--plan`, `--no-start` “install everything but don't start the service now”,
+`--no-service`).
+
 ## Variant switch flow
 
 1. Select `stock` or `uncensored` (same 27B lane) or the flash lane variant
    that names a `switchTarget`.
 2. **swap variant…** asks the agent for a dry-run plan. The plan binds to
-   `./switch-model.sh <stock|uncensored|flash|flash-uncensored>` only.
+   `./switch-model.sh <stock|uncensored|flash|flash-uncensored>` only
+   (those four are in the pinned `switch-model.sh` case at
+   https://github.com/hasso5703/alzeo/blob/01902c67709c4164c30ccf036422bfed6f172158/switch-model.sh#L60).
+   Other upstream names (`fp8`, `flash-nvda`, …) are not bound to current
+   herd variants and fail compatibility rather than running a guessed command.
 3. Confirm downtime (model load can take many minutes). Port 8080 already
    belonging to *this* component, or to its exclusive peer that will be
    stopped first, must not block the coordinated stop-old → start-new path.
@@ -61,8 +70,10 @@ Default policy is **metadata**. Bodies are stored only when:
 
 - the effective policy (stricter-wins across component / node / group / route)
   is `prompts` or `prompts+responses`, and
-- an observer is actually present: `LLM_PROXY` already configured (optional
-  usage relay) or a LiteLLM base URL already configured.
+- an observer is actually present: an already-configured `LLM_PROXY`
+  `listen:upstream` usage relay bound to that component's engine/guard port.
+  `LITELLM_BASE_URL` alone is **not** an observer — LiteLLM spend-log pull
+  is not implemented. The UI must show **not recording / unavailable**.
 
 The dashboard never writes `LLM_PROXY` or changes user routing to turn
 recording on. If the observer is missing, the UI shows
@@ -94,6 +105,21 @@ is never a verified numeric source.
 
 ## TP=2 groups
 
-GLM-5.3-Flash and DeepSeek-v4-Flash recipes fan out to the two group member
-agents (worker, then head) with required env. Preflight is all-or-nothing.
-CI and dashboard tests use mocks only — no live GPU success is claimed.
+GLM-5.3-Flash and DeepSeek-v4-Flash recipes talk to both group member
+agents (checkout + health). Upstream launchers run from the **head**:
+
+- GLM pin `02dac3879852b8c5713318d3d64a5a791002e954`: `WORKER` is an SSH
+  target; `./start.sh` / `./stop.sh` on the head start/stop both ranks and
+  discover the RoCE fabric from the route to `WORKER`. Do not fill `WORKER`
+  from inventory LAN IP. https://github.com/MiaAI-Lab/GLM-5.3-Flash-DGX-Sparks-1104/blob/02dac3879852b8c5713318d3d64a5a791002e954/scripts/config.sh
+- DeepSeek pin `a8b4636710068fd30edb98e1365d567086cc208e`: run
+  `./start-deepseek-v4-flash-dspark.sh` and `./stop-deepseek-v4-flash-dspark.sh`
+  from the head (scripts SSH to `WORKER_HOST`). Required data-plane env:
+  `WORKER_HOST`, `MASTER_ADDR`, `MASTER_PORT`, `NCCL_IB_HCA`,
+  `NCCL_SOCKET_IFNAME` — explicit overlay only, never inventory LAN.
+  https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark/blob/a8b4636710068fd30edb98e1365d567086cc208e/start-deepseek-v4-flash-dspark.sh
+
+Missing data-plane / interconnect values fail closed before any stop or
+mutation. Preview lists management (inventory `lanIp:agentPort`) separately
+from named control/data paths. CI and dashboard tests use mocks only — no
+live GPU success is claimed. Live hardware is unverified.
