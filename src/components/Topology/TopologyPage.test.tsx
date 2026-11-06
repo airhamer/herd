@@ -65,4 +65,11 @@ describe("TopologyPage", () => {
     expect(text).toContain("No links");
     expect(container.querySelectorAll("svg circle")).toHaveLength(0);
   });
+
+  it("a single standalone node states the role on the status line", () => {
+    const { container } = render(<TopologyPage nodes={[node("gx10-1c2c")]} links={[]} />);
+    expect(container.querySelector('[data-testid="topology-status"]')?.textContent).toContain(
+      "standalone — no interconnect; single-node engine",
+    );
+  });
 });

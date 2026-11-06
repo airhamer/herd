@@ -10,6 +10,23 @@ export interface TopologyPageProps {
   groupsApi?: GroupsApi;
 }
 
+function roleSummary(nodes: TopologyInfo[]): string {
+  const standalone = nodes.filter((n) => n.role === "standalone").length;
+  const head = nodes.filter((n) => n.role === "head").length;
+  const worker = nodes.filter((n) => n.role === "worker").length;
+  if (nodes.length === 1) {
+    const n = nodes[0];
+    if (n.role === "standalone") return "standalone — no interconnect; single-node engine";
+    if (n.role === "head") return `head${n.groupId ? ` (${n.groupId})` : ""}`;
+    if (n.role === "worker") return `worker${n.groupId ? ` (${n.groupId})` : ""}`;
+  }
+  const parts = [];
+  if (standalone) parts.push(`${standalone} standalone`);
+  if (head) parts.push(`${head} head`);
+  if (worker) parts.push(`${worker} worker`);
+  return parts.join(" · ") || "role unknown";
+}
+
 function formatMbps(mbps: number | null): string {
   if (mbps == null) return "unknown";
   if (mbps >= 1000) return `${(mbps / 1000).toFixed(mbps % 1000 === 0 ? 0 : 1)} Gbps`;
@@ -35,9 +52,10 @@ export function TopologyPage({ nodes, links, groupsApi }: TopologyPageProps) {
         >
           Topology
         </h1>
-        <span className="text-[11px] text-muted">
+        <span className="text-[11px] text-muted" data-testid="topology-status">
           {nodes.length} node{nodes.length === 1 ? "" : "s"} · {links.length} link
           {links.length === 1 ? "" : "s"}
+          {nodes.length > 0 ? ` · ${roleSummary(nodes)}` : ""}
         </span>
       </div>
 

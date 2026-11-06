@@ -573,15 +573,17 @@ export function NodeDetail(props: NodeDetailProps) {
 
         {/* Topology */}
         <Panel title="Topology" icon={<NetworkIcon />} bodyClassName="space-y-2">
-          {topology ? (
+          {topology || role ? (
             <>
-              <div className="grid grid-cols-2 gap-x-4 gap-y-2">
-                <DetailRow label="Role" value={topology.role} />
-                <DetailRow label="Rank" value={topology.rank != null ? String(topology.rank) : "—"} />
-                <DetailRow label="Group" value={topology.groupId ?? "—"} />
-                <DetailRow label="Head" value={topology.headId ?? "—"} />
+              <div className="grid grid-cols-2 gap-x-4 gap-y-2" data-testid="node-topology-role">
+                <DetailRow label="Role" value={role} />
+                <DetailRow label="Rank" value={role === "standalone" ? "—" : rank != null ? String(rank) : "—"} />
+                <DetailRow label="Group" value={role === "standalone" ? "—" : groupId ?? "—"} />
+                <DetailRow label="Head" value={role === "standalone" ? "—" : topology?.headId ?? "—"} />
               </div>
-              {topology.links.length > 0 ? (
+              {role === "standalone" && (!topology || topology.links.length === 0) ? (
+                <EmptyNote text="Standalone — no interconnect; single-node engine" />
+              ) : topology && topology.links.length > 0 ? (
                 <div className="space-y-1.5 border-t border-border pt-3">
                   <div className="text-[10px] uppercase tracking-wide text-muted">Links</div>
                   {topology.links.map((l, i) => (
