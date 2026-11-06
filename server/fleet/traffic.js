@@ -33,6 +33,51 @@ function isObj(v) {
 }
 const str = (v) => (typeof v === "string" ? v : null);
 
+/** @param {unknown} v */
+export function parseAgentVersion(v) {
+  const m = String(v ?? "").trim().match(/^(\d+)\.(\d+)/);
+  if (!m) return null;
+  return { major: Number(m[1]), minor: Number(m[2]) };
+}
+
+/** True when agentVersion is at least major.minor (unknown versions fail closed). */
+export function agentAtLeast(version, major, minor) {
+  const p = parseAgentVersion(version);
+  if (!p) return false;
+  return p.major > major || (p.major === major && p.minor >= minor);
+}
+
+/**
+ * What the Traffic / Requests tabs need. The Hasso keepalive/guard proxy on
+ * :8081 is not the herd usage relay and does not fill recent-request rows.
+ *
+ * @param {Record<string, any> | null | undefined} snapshot
+ */
+export function trafficPrereqs(snapshot) {
+  const agentVersion = typeof snapshot?.agentVersion === "string" ? snapshot.agentVersion : null;
+  const relays = Array.isArray(snapshot?.llmProxy) ? snapshot.llmProxy : [];
+  return {
+    agentVersion,
+    agentMeetsCounters: agentAtLeast(agentVersion, 0, 4),
+    agentMeetsRelay: agentAtLeast(agentVersion, 0, 5),
+    usageRelayConfigured: relays.length > 0,
+  };
+}
+
+/** Lane label: engine modelId, else a service/version observed on the same port. */
+export function servedModelLabel(entry, snapshot) {
+  const direct = str(entry?.modelId);
+  if (direct && direct.trim()) return direct;
+  const port = fin(entry?.port);
+  const services = Array.isArray(snapshot?.services) ? snapshot.services : [];
+  const fromSvc = services.find((s) => isObj(s) && fin(s.port) === port && typeof s.modelId === "string" && s.modelId.trim());
+  if (fromSvc) return fromSvc.modelId;
+  const versions = Array.isArray(snapshot?.versions) ? snapshot.versions : [];
+  const fromVer = versions.find((s) => isObj(s) && fin(s.port) === port && typeof s.modelId === "string" && s.modelId.trim());
+  if (fromVer) return fromVer.modelId;
+  return null;
+}
+
 /**
  * One relay row reduced to its metadata (decision 2).
  * @param {Record<string, any>} r
@@ -173,7 +218,7 @@ export function buildTrafficView(snapshot, recent = []) {
       return {
         port: e.port,
         backend: str(e.backend),
-        modelId: str(e.modelId),
+        modelId: servedModelLabel(e, snapshot),
         proxied: relay != null,
         listenPort: relay ? fin(relay.listenPort) : null,
         tokenSource,
@@ -203,6 +248,7 @@ export function buildTrafficView(snapshot, recent = []) {
     lanes,
     recent,
     recentMax: TRAFFIC_RECENT_MAX,
+    prerequisites: trafficPrereqs(snapshot),
   };
 }
 

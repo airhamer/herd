@@ -6,6 +6,7 @@ import type {
   TrafficRequestRow,
   TrafficTokenSource,
   TrafficValue,
+  TrafficPrerequisites,
   TrafficView,
 } from "../../../shared/types";
 import { fetchLlmTokenTotals, fetchNodeTraffic } from "../../api/client";
@@ -123,6 +124,77 @@ function RecentRow({ r }: { r: TrafficRequestRow }) {
 const TH = "pb-1 pr-3 text-left text-[10px] font-semibold uppercase tracking-wide text-muted";
 const THR = `${TH} text-right`;
 
+
+function Mark({ ok, label, detail }: { ok: boolean; label: string; detail: string }) {
+  return (
+    <li className="flex gap-2" data-testid={ok ? "prereq-met" : "prereq-missing"}>
+      <span aria-hidden="true">{ok ? "☑" : "☐"}</span>
+      <span>
+        <span className="text-text">{label}</span>
+        <span className="text-muted"> — {detail}</span>
+      </span>
+    </li>
+  );
+}
+
+
+export function prereqsFromAgent(agentVersion: string | null | undefined, usageRelayConfigured: boolean): TrafficPrerequisites {
+  const parts = String(agentVersion ?? "").trim().match(/^(\d+)\.(\d+)/);
+  const major = parts ? Number(parts[1]) : 0;
+  const minor = parts ? Number(parts[2]) : 0;
+  const atLeast = (maj: number, min: number) => (parts ? major > maj || (major === maj && minor >= min) : false);
+  return {
+    agentVersion: agentVersion ?? null,
+    agentMeetsCounters: atLeast(0, 4),
+    agentMeetsRelay: atLeast(0, 5),
+    usageRelayConfigured,
+  };
+}
+
+/** Shared "what it takes" checklist for Traffic and Requests. */
+export function TrafficPrereqPanel({
+  proxyEnabled,
+  prerequisites,
+}: {
+  proxyEnabled: boolean;
+  prerequisites?: TrafficPrerequisites | null;
+}) {
+  const agentOk = prerequisites?.agentMeetsRelay ?? false;
+  const countersOk = prerequisites?.agentMeetsCounters ?? false;
+  const relayOk = prerequisites?.usageRelayConfigured ?? proxyEnabled;
+  const version = prerequisites?.agentVersion ?? "unknown";
+  return (
+    <div className="rounded-lg border border-warning/50 bg-surface p-3 text-xs" data-testid="traffic-prereqs">
+      <div className="font-medium text-text">What it takes to fill Traffic and Requests</div>
+      <ul className="mt-2 space-y-1">
+        <Mark
+          ok={countersOk}
+          label={`Node agent ${version} (need 0.4+ for engine counters, 0.5+ for the usage relay)`}
+          detail={countersOk ? "this agent can export engine counters." : "upgrade the node agent; engine lanes may stay unlabeled or empty."}
+        />
+        <Mark
+          ok={agentOk}
+          label="Agent 0.5+ usage relay"
+          detail={agentOk ? "this agent can run LLM_PROXY." : "the herd usage relay needs agent 0.5 or newer (see docs/usage-relay.md)."}
+        />
+        <Mark
+          ok={relayOk}
+          label="LLM_PROXY configured on the node agent"
+          detail={
+            relayOk
+              ? "the herd usage relay is present."
+              : "set LLM_PROXY=<listen>-><upstream> on the node agent and point clients at the listen port. The Hasso keepalive/guard proxy on :8081 is not this relay and does not fill Recent requests."
+          }
+        />
+      </ul>
+      <p className="mt-2 text-muted">
+        Engine tok/s can appear from engine counters without the relay. Per-request rows and error counts need the
+        relay. See <code className="font-mono">docs/usage-relay.md</code>.
+      </p>
+    </div>
+  );
+}
+
 /**
  * SC5c (#74) Traffic sub-tab for one node: per-lane request and token stats
  * (engine counters, else the opt-in relay), 60 s and 300 s decode tok/s, TTFT,
@@ -180,13 +252,9 @@ export function TrafficPage({
 
       {error && <div className="rounded border border-danger/50 p-2 text-xs text-danger">Traffic unavailable: {error}</div>}
 
-      {view && !view.proxyEnabled && (
-        <div className="rounded-lg border border-warning/50 bg-surface p-3 text-xs" data-testid="proxy-off-hint">
-          <b className="text-warning">Proxy off.</b>{" "}
-          <span className="text-muted">
-            This node runs no usage relay, so lanes show engine counters only, and there are no errors or per-request rows. To meter
-            traffic, set <code className="font-mono">LLM_PROXY=&lt;listen&gt;:&lt;upstream&gt;</code> on the node agent and point clients at the listen port.
-          </span>
+      {view && (!view.proxyEnabled || view.prerequisites) && (
+        <div data-testid={!view.proxyEnabled ? "proxy-off-hint" : undefined}>
+          <TrafficPrereqPanel proxyEnabled={view.proxyEnabled} prerequisites={view.prerequisites} />
         </div>
       )}
 

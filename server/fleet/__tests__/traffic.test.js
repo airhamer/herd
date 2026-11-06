@@ -2,7 +2,7 @@
 import { after, before, describe, test } from "node:test";
 import { strict as assert } from "node:assert";
 import express from "express";
-import { TRAFFIC_RECENT_MAX, buildTrafficView, createTrafficLog, registerTrafficRoutes, requestRow } from "../traffic.js";
+import { TRAFFIC_RECENT_MAX, buildTrafficView, createTrafficLog, registerTrafficRoutes, requestRow, servedModelLabel, trafficPrereqs } from "../traffic.js";
 
 const val = (value, source) => ({ value, valid: value != null, source, windowS: 60, approximate: false, samples: 3 });
 const win = (decode, ttft, source) => ({
@@ -43,6 +43,28 @@ const relay = (recent, extra = {}) => ({
   clients: [{ client: "10.0.0.5" }],
   recent,
   ...extra,
+});
+
+describe("served model labels and prerequisites", () => {
+  test("lane model falls back to a service observed on the same port", () => {
+    const v = buildTrafficView({
+      nodeId: "n1",
+      agentVersion: "0.3.0",
+      llm: [{ port: 8080, backend: "sglang" }],
+      services: [{ name: "llm-tp1", engine: "sglang", port: 8080, modelId: "flash-nvda" }],
+    });
+    assert.equal(v.lanes[0].modelId, "flash-nvda");
+    assert.equal(v.prerequisites.agentMeetsRelay, false);
+    assert.equal(v.prerequisites.usageRelayConfigured, false);
+  });
+
+  test("agent 0.5 with llmProxy meets the relay prereqs", () => {
+    const p = trafficPrereqs({ agentVersion: "0.5.1", llmProxy: [{ listenPort: 8082, upstreamPort: 8080 }] });
+    assert.equal(p.agentMeetsCounters, true);
+    assert.equal(p.agentMeetsRelay, true);
+    assert.equal(p.usageRelayConfigured, true);
+    assert.equal(servedModelLabel({ port: 1 }, {}), null);
+  });
 });
 
 describe("buildTrafficView", () => {
