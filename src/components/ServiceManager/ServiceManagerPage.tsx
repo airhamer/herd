@@ -5,6 +5,7 @@ import type {
   VersionInfo,
 } from "../../../shared/types";
 import { fetchComponents, type CatalogComponent } from "../../api/client";
+import { matchServiceToComponent as matchLiveService } from "../../../shared/componentMatch.js";
 import { Panel } from "../ui/Panel";
 import { GridIcon } from "../ui/icons";
 import { KindBadge, ServiceCard, StatusBadge } from "./ServiceCard";
@@ -55,23 +56,9 @@ export type CatalogComponentWithPort = CatalogComponent & { port?: number | null
  */
 export function matchServiceToComponent(
   components: readonly CatalogComponentWithPort[],
-  service: Pick<ServiceInstance, "engine" | "port" | "modelId">,
+  service: Pick<ServiceInstance, "engine" | "port" | "modelId" | "name">,
 ): CatalogComponentWithPort | null {
-  if (!Array.isArray(components) || !service) return null;
-  const engine = typeof service.engine === "string" ? service.engine.trim().toLowerCase() : "";
-  if (!engine) return null;
-  for (const c of components) {
-    if (!c || typeof c.engine !== "string") continue;
-    if (c.engine.trim().toLowerCase() !== engine) continue;
-    const portHit = Number.isFinite(c.port ?? NaN) && (c.port as number) === service.port;
-    const modelHit =
-      typeof service.modelId === "string" &&
-      service.modelId !== "" &&
-      typeof c.servedModelName === "string" &&
-      c.servedModelName === service.modelId;
-    if (portHit || modelHit) return c;
-  }
-  return null;
+  return matchLiveService(components as CatalogComponentWithPort[], service) as CatalogComponentWithPort | null;
 }
 
 function Field({ label, value }: { label: string; value: string }) {

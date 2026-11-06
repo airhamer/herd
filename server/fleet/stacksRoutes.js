@@ -70,13 +70,17 @@ export function registerStackRoutes(app, deps) {
   const eta = (componentId, type) =>
     durations ? durations.eta(componentId, type) : { ms: BOOTSTRAP_ETA_MS[type] ?? BOOTSTRAP_ETA_MS.start, source: "estimate", runs: 0 };
 
-  function view(components = loadComponents()) {
+  function view(components = loadComponents(), scope = {}) {
     const nodes = listNodes();
-    const { stacks, facets } = categorizeStacks(bootstrapStacksForFleet(nodes, store.list()), {
+    let { stacks, facets } = categorizeStacks(bootstrapStacksForFleet(nodes, store.list()), {
       componentsById: new Map(components.map((c) => [c.id, c])),
       nodesById: new Map(nodes.map((n) => [n.id, n])),
       getSnapshot,
     });
+    const nodeId = typeof scope.nodeId === "string" ? scope.nodeId : "";
+    const groupId = typeof scope.groupId === "string" ? scope.groupId : "";
+    if (nodeId) stacks = stacks.filter((s) => (s.target?.nodeIds ?? []).includes(nodeId));
+    if (groupId) stacks = stacks.filter((s) => s.target?.groupId === groupId);
     return {
       stacks,
       facets: {
@@ -89,8 +93,10 @@ export function registerStackRoutes(app, deps) {
     };
   }
 
-  app.get("/api/stacks", (_req, res) => {
-    res.json(view());
+  app.get("/api/stacks", (req, res) => {
+    const nodeId = typeof req.query.node === "string" ? req.query.node : "";
+    const groupId = typeof req.query.group === "string" ? req.query.group : "";
+    res.json(view(loadComponents(), { nodeId, groupId }));
   });
 
   app.get("/api/stacks/export", (_req, res) => {

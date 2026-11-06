@@ -18,6 +18,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import { matchServiceToComponent as matchLiveService } from "../../shared/componentMatch.js";
 
 const CATALOG_DIR = path.join(
   path.dirname(new URL(import.meta.url).pathname),
@@ -117,7 +118,13 @@ export function loadComponentCatalog(dir = CATALOG_DIR) {
       engine: typeof raw.engine === "string" ? raw.engine : null,
       image: typeof raw.image === "string" ? raw.image : null,
       servedModelName: raw.model && typeof raw.model.servedModelName === "string" ? raw.model.servedModelName : null,
+      modelAliases: Array.isArray(raw.model?.aliases) ? raw.model.aliases.filter((a) => typeof a === "string") : [],
+      nameAliases: [
+        ...(Array.isArray(raw.runtimeAliases?.serviceNames) ? raw.runtimeAliases.serviceNames : []),
+        ...(Array.isArray(raw.runtimeAliases?.containerNames) ? raw.runtimeAliases.containerNames : []),
+      ].filter((a) => typeof a === "string"),
       port: raw.ports && Number.isFinite(raw.ports.engine) ? raw.ports.engine : null,
+      portPlaceholder: raw.ports ? raw.ports.placeholder !== false : true,
       memoryPerSparkMB:
         raw.memory_estimate_mb && Number.isFinite(raw.memory_estimate_mb.perSpark)
 
@@ -133,37 +140,16 @@ export function loadComponentCatalog(dir = CATALOG_DIR) {
 
 /**
  * Map one configured service (snapshot services[] row, SRV1 shape) to the
- * catalog component it owns. Matching facets are engine + model + port:
- *
- *   - engine must match case-insensitively (both sides required);
- *   - then EITHER facet may pin the row: the component's projected port
- *     equals service.port, or the live model id equals servedModelName.
- *
- * A stopped service carries no model id, so port is its only pin; an engine
- * match with no port or model agreement stays unmatched (the caller keeps
- * the row flat). First catalog order wins; pure and total.
+ * catalog component it owns. Shared rules live in shared/componentMatch.js:
+ * engine family plus model/name aliases; a recipe placeholder port is not
+ * enough to claim a live process.
  *
  * @param {object[]} components CatalogComponent[] from loadComponentCatalog
- * @param {{engine?: string|null, port?: number|null, modelId?: string|null}} service
+ * @param {{engine?: string|null, port?: number|null, modelId?: string|null, name?: string|null}} service
  * @returns {object|null} the owning component, or null
  */
 export function matchServiceToComponent(components, service) {
-  if (!Array.isArray(components) || !service || typeof service !== "object") return null;
-  const engine = typeof service.engine === "string" ? service.engine.trim().toLowerCase() : "";
-  if (!engine) return null;
-  for (const c of components) {
-    if (!c || typeof c.engine !== "string") continue;
-    if (c.engine.trim().toLowerCase() !== engine) continue;
-    const portHit =
-      Number.isFinite(c.port) && Number.isFinite(service.port) && c.port === service.port;
-    const modelHit =
-      typeof service.modelId === "string" &&
-      service.modelId !== "" &&
-      typeof c.servedModelName === "string" &&
-      c.servedModelName === service.modelId;
-    if (portHit || modelHit) return c;
-  }
-  return null;
+  return matchLiveService(components, service);
 }
 
 /**
@@ -175,19 +161,27 @@ export function matchServiceToComponent(components, service) {
  * @param {object[]} nodeSnaps NodeAgentSnapshot[] from the fleet connection
  * @returns {object[]} the same components array
  */
+function liveStateWord(row) {
+  const raw = row?.state || row?.status;
+  if (typeof raw !== "string" || !raw) return "unknown";
+  return raw;
+}
+
 export function joinComponentState(components, nodeSnaps = []) {
   for (const comp of components) {
     comp.nodes = [];
     for (const snap of nodeSnaps) {
       const versions = Array.isArray(snap?.versions) ? snap.versions : [];
-      const match = versions.find(
-        (v) =>
-          v &&
-          (comp.servedModelName ? v.modelId === comp.servedModelName : false) &&
-          (!comp.engine || v.engine === comp.engine)
-      );
+      const services = Array.isArray(snap?.services) ? snap.services : [];
+      const fromVersion = versions.find((v) => v && matchLiveService([comp], v) === comp);
+      const fromService = services.find((s) => s && matchLiveService([comp], s) === comp);
+      const match = fromService || fromVersion;
       if (match) {
-        comp.nodes.push({ nodeId: snap.nodeId, nodeName: snap.nodeName || snap.nodeId, state: match.state });
+        comp.nodes.push({
+          nodeId: snap.nodeId,
+          nodeName: snap.nodeName || snap.nodeId,
+          state: liveStateWord(match),
+        });
       }
     }
   }

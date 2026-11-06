@@ -17,6 +17,7 @@
     "repo": "RadixArk/Qwen3.8-Flash-Next-NVFP4",
     "revision": "7b719225242aacd3dbd3f9407468c2ee9a9d2594",
     "servedModelName": "qwen3.8-flash-next",
+    "aliases": ["qwen38-flash-next", "flash-nvda", "flash", "qwen3.8-flash-next"],
     "quantization": "modelopt_fp4"
   },
   "drafter": {
@@ -72,7 +73,8 @@
       "--reasoning-parser", "qwen3", "--tool-call-parser", "qwen3_coder"
     ]
   },
-  "ports": { "engine": 30000, "notes": "Hasso box default PORT=30000, keepalive proxy PORT+1; per-box choice (host placeholder upstream)." },
+  "ports": { "engine": 30000, "placeholder": true, "notes": "Hasso box default PORT=30000, keepalive proxy PORT+1; per-box choice (host placeholder upstream). Live 1c2c serves the engine on 8080 behind keepalive/guard proxy 8081 — do not treat 30000 as the running port." },
+  "runtimeAliases": { "serviceNames": ["qwen38-flash", "qwen38-flash.service"], "containerNames": ["qwen38-flash"] },
   "memoryProfile": {
     "docker": { "memory": "110g", "memorySwap": "110g", "shmSize": "16g", "network": "host", "ipc": "host" },
     "hostFloorGiB": 96,

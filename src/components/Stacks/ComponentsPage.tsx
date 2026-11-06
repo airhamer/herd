@@ -111,7 +111,14 @@ function FilterSelect({
  * it as the real action, carrying the plan's confirmationToken when the
  * confirm class is "required" (the agent refuses those without a token).
  */
-export function ComponentsPage() {
+export interface ComponentsPageProps {
+  /** Limit stacks and actions to one node (node-detail sub-tab). */
+  scopeNodeId?: string;
+  /** Limit stacks to one spark group (group-detail sub-tab). */
+  scopeGroupId?: string;
+}
+
+export function ComponentsPage({ scopeNodeId, scopeGroupId }: ComponentsPageProps = {}) {
   const [components, setComponents] = useState<CatalogComponent[] | null>(null);
   const [stacks, setStacks] = useState<FleetStack[]>([]);
   const [facets, setFacets] = useState<StacksView["facets"]>({ tp: [], sources: [], engines: [], purposes: [] });
@@ -131,7 +138,7 @@ export function ComponentsPage() {
         fetchFleetNodes(),
         // SC10 stacks fail-soft: an older server without /api/stacks must
         // never take the Components tab down with it.
-        fetchStacks().catch(
+        fetchStacks({ nodeId: scopeNodeId, groupId: scopeGroupId }).catch(
           (): StacksView => ({ stacks: [], facets: { tp: [], sources: [], engines: [], purposes: [] }, errors: [] })
         ),
       ]);
@@ -145,7 +152,7 @@ export function ComponentsPage() {
     } catch (err) {
       setLoadError(errText(err));
     }
-  }, []);
+  }, [scopeNodeId, scopeGroupId]);
 
   useEffect(() => {
     void reload();
@@ -165,6 +172,14 @@ export function ComponentsPage() {
     [stacks, filters, shownStacks]
   );
   const visible = useMemo(() => filterComponents(components ?? [], stacks, filters), [components, stacks, filters]);
+  const hiddenComponents = useMemo(() => {
+    if (!components) return 0;
+    return filterComponents(components, stacks, { ...filters, showBlocked: true }).length - visible.length;
+  }, [components, stacks, filters, visible]);
+  const unresolvedCount = useMemo(
+    () => stacks.reduce((n, s) => n + ((s.unresolved ?? []).length > 0 ? 1 : 0), 0),
+    [stacks],
+  );
   const stackIds = useMemo(() => Array.from(new Set(stacks.map((s) => s.id))), [stacks]);
   const filtered =
     JSON.stringify({ ...filters, showBlocked: false }) !== JSON.stringify({ ...DEFAULT_FILTERS, showBlocked: false });
@@ -302,7 +317,12 @@ export function ComponentsPage() {
             Components ({visible.length})
           </h3>
           {visible.length === 0 ? (
-            <p className="text-xs text-muted">No components match the catalog filters.</p>
+            <p className="text-xs text-muted" data-testid="components-empty">
+              No components match the catalog filters.
+              {hiddenComponents > 0 ? ` ${hiddenComponents} blocked hidden.` : ""}
+              {unresolvedCount > 0 ? ` ${unresolvedCount} stack${unresolvedCount === 1 ? "" : "s"} name an unknown component.` : ""}
+              {hiddenComponents > 0 ? " Turn on “show blocked” to inspect them." : ""}
+            </p>
           ) : (
             <div className="flex flex-col gap-3">
               {visible.map((comp) => (

@@ -73,14 +73,18 @@ const matches = (want: string, have: string[]) => want === "all" || have.include
 
 /** Stack cards that pass the filters. The stack filter highlights a card; it does not hide the others. */
 export function filterStacks(stacks: FleetStack[], f: StackFilters): FleetStack[] {
-  return stacks.filter(
-    (s) =>
-      (f.showBlocked || s.category !== "blocked") &&
+  return stacks.filter((s) => {
+    const unresolved = (s.unresolved ?? []).length > 0;
+    // Unresolved names stay visible (unknown chips) even when blocked is hidden.
+    const blockedOk = f.showBlocked || s.category !== "blocked" || unresolved;
+    return (
+      blockedOk &&
       (f.tp === "all" || String(s.tp) === f.tp) &&
       matches(f.source, s.facets?.sources ?? []) &&
       matches(f.engine, s.facets?.engines ?? []) &&
       matches(f.purpose, s.facets?.purposes ?? [])
-  );
+    );
+  });
 }
 
 /**
@@ -95,6 +99,9 @@ export function componentBlockedReason(c: CatalogComponent, stacks: FleetStack[]
     if (!scopeTps.has(c.tp)) return `tp${c.tp}: no ${c.tp}-machine group in this fleet`;
   }
   const holding = stacks.filter((s) => s.componentNames.includes(c.id));
+  // Hidden only when every landing of this component is blocked — a tp1
+  // definition that fits a standalone Spark stays visible even if its tp2
+  // copies are blocked.
   if (holding.length > 0 && holding.every((s) => s.category === "blocked")) return holding[0].categoryReason;
   return null;
 }

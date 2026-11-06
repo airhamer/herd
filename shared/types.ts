@@ -709,6 +709,8 @@ export interface CategorizedStack extends Stack {
   categoryReason: string;
   perNode: StackNodeVerdict[];
   facets: StackFacets;
+  /** Component ids this landing named that are not in the catalog. Empty when every name resolved. */
+  unresolved?: string[];
 }
 
 /** SC5a: GET /api/stacks response. */
