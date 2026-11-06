@@ -4,6 +4,7 @@ import { GroupCard } from "./GroupCard";
 import { collectGroups, groupHolder } from "./FleetPage";
 import { GroupSinglesPanel } from "./GroupSinglesPanel";
 import type { CatalogComponent } from "../../api/client";
+import { ComponentsPage } from "../Stacks/ComponentsPage";
 
 export interface GroupDetailPageProps {
   groupId: string;
@@ -96,6 +97,10 @@ export function GroupDetailPage({ groupId, nodes, topologyNodes, onSelectNode, o
         members={group.members.map(({ snapshot: m }) => ({ nodeId: m.nodeId, nodeName: m.nodeName, mem: m.mem, gpu: m.gpu }))}
         {...(loadComponents ? { loadComponents } : {})}
       />
+      <h2 className="panel-title">Components</h2>
+      <div data-testid="group-detail-components">
+        <ComponentsPage scopeGroupId={group.groupId} />
+      </div>
     </div>
   );
 }

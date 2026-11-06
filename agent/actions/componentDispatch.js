@@ -21,6 +21,7 @@ import {
   resolveRecordingPolicy,
 } from "../../shared/runtimeProfile.js";
 import { buildRecipePlan, executePlanStep } from "../../shared/recipePlan.js";
+import { planGroupRecipe } from "../../shared/groupRecipe.js";
 import { loadDefinitions, getDefinition, DEFAULT_CATALOG_DIR } from "../catalog/definitions.js";
 import {
   loadInstanceStore,
@@ -286,6 +287,29 @@ async function handleLifecycleVerb(request, def, instance, deps, env, started) {
 
 async function handleRecipeLifecycle(request, def, instance, deps, env, started) {
   const action = request.type === "configure" ? "switch" : "install";
+  if ((def.raw?.lifecycle || {}).topology === "tp2") {
+    const groupPlan = planGroupRecipe(def, {
+      action,
+      group: deps.group || { members: request.groupRef ? [request.nodeId] : [] },
+      network: deps.network,
+    });
+    if (!groupPlan.ok) {
+      env.error = groupPlan.error;
+      env.message = groupPlan.error;
+      env.durationMs = Date.now() - started;
+      env.plan = {
+        willDo: [],
+        displaces: null,
+        confirm: "required",
+        confirmationToken: null,
+        estDowntimeMs: 0,
+        memoryDeltaMB: 0,
+        inflightRequests: null,
+        scopeBlocked: groupPlan.error,
+      };
+      return env;
+    }
+  }
   const preview = buildRecipePlan(def, action, {
     execute: request.dryRun ? false : true,
     portOccupier: deps.portOccupier || null,
@@ -293,6 +317,7 @@ async function handleRecipeLifecycle(request, def, instance, deps, env, started)
     workdirExists: deps.workdirExists,
     group: deps.group,
     network: deps.network,
+    requireGroup: false,
   });
   const secret = deps.confirmSecret || process.env.HERD_ACTION_SECRET || "herd-component-action";
   if (!preview.ok && preview.code !== "preflight") {

@@ -1,0 +1,178 @@
+{
+  "id": "glm53-flash-tensorfold-tp2-gx10",
+  "name": "GLM-5.3-Flash EXL3 (TensorFold, TP=2)",
+  "purpose": "code",
+  "kind": "llm",
+  "tp": 2,
+  "machineClass": "dgx-spark-gb10-128g",
+  "memory_estimate_mb": {
+    "perSpark": 85300,
+    "basis": "upstream-documented",
+    "notes": "MiaAI README (pin 02dac3879852): per Spark on the served pair, model 83.3 GiB, KV pool 12.5 GiB, prompt cache 3.6 GiB, MEMORY_RESERVE_GIB=9.5. Not measured by herd."
+  },
+  "engine": "tensorfold",
+  "image": null,
+  "imageAlias": "tensorfold-glm53-spark (content-hashed tag; built by upstream ./start.sh)",
+  "model": {
+    "repo": "Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold",
+    "revision": "76c0b517",
+    "servedModelName": "glm-5.3-flash",
+    "aliases": [
+      "glm53-flash",
+      "glm-5.3-flash"
+    ],
+    "quantization": "exl3-4bpw"
+  },
+  "drafter": {
+    "algorithm": "DFlash2",
+    "repo": "incoai/GLM-5.3-Flash-DFlash2",
+    "revision": "bf582e4e",
+    "license": "CC BY-NC-ND 4.0",
+    "notes": "Upstream: for commercial use set DRAFTER=mtp or none. Herd does not bypass that term."
+  },
+  "flags": {
+    "context_length": 1048576,
+    "notes": "Serving knobs (PARALLEL, KV, DENSE, etc.) live in the pinned upstream start.sh / scripts/config.sh. This file does not invent launch flags."
+  },
+  "ports": {
+    "engine": 8020,
+    "placeholder": true,
+    "notes": "Upstream default PORT=8020 (API on rank 0). local.sh on a served pair may set 8888 \u2014 treat as host overlay, not a silent rewrite."
+  },
+  "runtimeAliases": {
+    "serviceNames": [
+      "glm53-flash-tp2"
+    ],
+    "containerNames": []
+  },
+  "runtimeProfile": {
+    "engine": "tensorfold",
+    "protocol": "tensorfold-http",
+    "topology": {
+      "tp": 2,
+      "machineClass": "dgx-spark-gb10-128g"
+    },
+    "ports": {
+      "engine": 8020,
+      "guard": null,
+      "placeholder": true
+    },
+    "adapters": [
+      {
+        "id": "tensorfold",
+        "kind": "engine",
+        "support": "unverified",
+        "capabilities": []
+      }
+    ],
+    "credentialRefs": [
+      "env:TENSORFOLD_API_KEY"
+    ],
+    "recording": {
+      "content": "metadata",
+      "observer": null
+    },
+    "litellmRouteAssumedDeployed": false
+  },
+  "variants": [
+    {
+      "id": "official",
+      "label": "official EXL3 4bpw",
+      "role": "standard",
+      "model": {
+        "repo": "Mia-AiLab/GLM-5.3-Flash-EXL3-4bpw-TensorFold",
+        "revision": "76c0b517",
+        "servedModelName": "glm-5.3-flash",
+        "aliases": [
+          "glm53-flash"
+        ]
+      },
+      "context_length": 1048576,
+      "memory_estimate_mb": {
+        "perSpark": 85300,
+        "basis": "upstream-documented"
+      }
+    }
+  ],
+  "multi_spark": {
+    "supported": true,
+    "topology": "tp2",
+    "roles": [
+      "head",
+      "worker"
+    ],
+    "rule": "Requires a configured two-Spark group. Binds the group's existing head/worker membership and interconnect. Does not change RoCE hardware."
+  },
+  "lifecycle": {
+    "topology": "tp2",
+    "orchestrator": "head",
+    "workdir": "~/GLM-5.3-Flash-DGX-Sparks-1104",
+    "loadingDeadlineMs": 1200000,
+    "requiredEnv": [
+      "WORKER"
+    ],
+    "startOrder": [
+      "worker",
+      "head"
+    ],
+    "notes": [
+      "Apache-2.0 upstream recipe \u2014 herd does not copy its scripts. Dashboard invokes the pinned entry points only.",
+      "DRY_RUN=1 ./start.sh prints the plan including the link it finds.",
+      "./start.sh checks both Sparks, builds the image, places weights, starts rank 1 then rank 0.",
+      "./stop.sh stops both ranks.",
+      "Upstream performance tables are citations, not herd SLAs.",
+      "ConnectX-7 cabling and IPv4 on one subnet are prerequisites to validate, never to configure silently."
+    ],
+    "install": {
+      "argv": [
+        "./start.sh"
+      ],
+      "env": {},
+      "executeArgv": [
+        "./start.sh"
+      ],
+      "requiresSudo": false,
+      "estDiskGB": 220,
+      "estBootMs": 1200000,
+      "notes": [
+        "Preview uses DRY_RUN=1; confirm runs ./start.sh from the pinned checkout. WORKER must already be set in the group's overlay."
+      ],
+      "previewEnv": {
+        "DRY_RUN": "1"
+      }
+    },
+    "switch": {
+      "argv": [
+        "./start.sh"
+      ],
+      "env": {},
+      "requiresSudo": false,
+      "startsEngine": false,
+      "previewEnv": {
+        "DRY_RUN": "1"
+      }
+    },
+    "stop": {
+      "argv": [
+        "./stop.sh"
+      ],
+      "requiresSudo": false
+    }
+  },
+  "source": {
+    "origin": "MiaAI-Lab/GLM-5.3-Flash-DGX-Sparks-1104",
+    "upstreamCommit": "02dac3879852b8c5713318d3d64a5a791002e954",
+    "derivedFrom": [
+      "README.md",
+      "LICENSE",
+      "NOTICE.md",
+      "start.sh (header/usage only)",
+      "stop.sh (name)"
+    ],
+    "license": "Apache-2.0",
+    "repoLicenseNote": "Do not copy Apache-2.0 recipe/engine patches into herd. TensorFold itself is Apache-2.0 (from 0.6.0).",
+    "modelLicenseNote": "Checkpoint and drafter licenses are separate; drafter default is CC BY-NC-ND 4.0.",
+    "retrievedAt": "2026-11-06"
+  },
+  "description": "TP=2 GLM-5.3-Flash on two DGX Sparks via the pinned MiaAI TensorFold recipe entry points. Herd wraps ./start.sh and ./stop.sh; it does not vendor upstream scripts or claim TensorFold metrics support (unverified adapter)."
+}

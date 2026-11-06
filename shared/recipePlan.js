@@ -84,7 +84,11 @@ export function buildRecipePlan(definition, action, ctx = {}) {
     return { ok: false, error: `no lifecycle.${action} plan`, code: "no-step" };
   }
 
-  const envCheck = validateEnv({ ...(spec.env || {}), ...(ctx.env || {}) });
+  const baseEnv = { ...(spec.env || {}), ...(ctx.env || {}) };
+  if (!ctx.execute && spec.previewEnv && typeof spec.previewEnv === "object") {
+    Object.assign(baseEnv, spec.previewEnv);
+  }
+  const envCheck = validateEnv(baseEnv);
   if (!envCheck.ok) return { ok: false, error: envCheck.error, code: "unsafe-env" };
 
   const argv = Array.isArray(spec.executeArgv) && ctx.execute ? spec.executeArgv : spec.argv;
@@ -130,7 +134,7 @@ export function buildRecipePlan(definition, action, ctx = {}) {
   if (life.topology === "tp2") {
     const group = ctx.group || {};
     const members = Array.isArray(group.members) ? group.members : [];
-    if (members.length !== 2 && ctx.requireGroup !== false) {
+    if (members.length !== 2 && ctx.requireGroup === true) {
       blocked.push(`tp=2 recipe needs a group with exactly two members (got ${members.length})`);
     }
     if (ctx.network && ctx.network.mutateHardware) {

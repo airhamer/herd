@@ -1,0 +1,182 @@
+{
+  "id": "deepseek-v4-flash-vllm-tp2-gx10",
+  "name": "DeepSeek-V4-Flash Vision-Exp (vLLM DSpark, TP=2)",
+  "purpose": "code",
+  "kind": "llm",
+  "tp": 2,
+  "machineClass": "dgx-spark-gb10-128g",
+  "memory_estimate_mb": {
+    "perSpark": null,
+    "basis": "unknown",
+    "notes": "Upstream documents KV 17.04 GiB / 2,331,430 tokens on their cluster (util 0.835) and a 157 GiB gated abliteration side-path. Total per-Spark footprint was not independently measured here."
+  },
+  "engine": "vllm",
+  "image": "ghcr.io/anemll/dspark-vllm-gx10:0.1.1",
+  "imageAlias": "ghcr.io/anemll/dspark-vllm-gx10:0.1.1",
+  "model": {
+    "repo": "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
+    "revision": "86f746b36186f0e567729a5c06a8c918caba82a9",
+    "servedModelName": "deepseek-v4-flash-vision-exp",
+    "aliases": [
+      "deepseek-v4-flash",
+      "deepseek-v4-flash-vision-exp"
+    ],
+    "quantization": "nvfp4"
+  },
+  "flags": {
+    "context_length": 1048576,
+    "notes": "MAX_MODEL_LEN / MAX_NUM_SEQS and NCCL knobs stay in the operator's .env.dspark. This file does not invent launch flags."
+  },
+  "ports": {
+    "engine": 8888,
+    "placeholder": true,
+    "notes": "Upstream default VLLM_PORT 8888 on the head API."
+  },
+  "runtimeAliases": {
+    "serviceNames": [
+      "deepseek-v4-flash-tp2"
+    ],
+    "containerNames": [
+      "deepseek-v4-flash"
+    ]
+  },
+  "runtimeProfile": {
+    "engine": "vllm",
+    "protocol": "vllm-http",
+    "topology": {
+      "tp": 2,
+      "machineClass": "dgx-spark-gb10-128g"
+    },
+    "ports": {
+      "engine": 8888,
+      "guard": null,
+      "placeholder": true
+    },
+    "adapters": [
+      {
+        "id": "vllm",
+        "kind": "engine",
+        "support": "verified",
+        "capabilities": [
+          "metrics",
+          "queue"
+        ]
+      }
+    ],
+    "credentialRefs": [
+      "env:HF_TOKEN"
+    ],
+    "recording": {
+      "content": "metadata",
+      "observer": null
+    },
+    "litellmRouteAssumedDeployed": false
+  },
+  "variants": [
+    {
+      "id": "official",
+      "label": "official Vision-Exp",
+      "role": "standard",
+      "model": {
+        "repo": "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
+        "revision": "86f746b36186f0e567729a5c06a8c918caba82a9",
+        "servedModelName": "deepseek-v4-flash-vision-exp",
+        "aliases": [
+          "deepseek-v4-flash"
+        ]
+      },
+      "context_length": 1048576
+    },
+    {
+      "id": "abliterated",
+      "label": "abliterated (gated direction, experimental)",
+      "role": "uncensored",
+      "requires": {},
+      "model": {
+        "repo": "deepseek-ai/DeepSeek-V4-Flash-Vision-Exp",
+        "revision": "86f746b36186f0e567729a5c06a8c918caba82a9",
+        "servedModelName": "deepseek-v4-flash-vision-exp",
+        "aliases": [
+          "deepseek-v4-flash-abliterated"
+        ]
+      },
+      "notes": "ABLITERATED=1 uses a gated 18 KiB direction download (HF_TOKEN, operator agreement). Herd never bypasses the gate or fetches the 157 GiB Keys checkpoint."
+    }
+  ],
+  "multi_spark": {
+    "supported": true,
+    "topology": "tp2",
+    "roles": [
+      "head",
+      "worker"
+    ],
+    "rule": "Run from the head. Requires WORKER_HOST, MASTER_ADDR, NCCL_IB_HCA, NCCL_SOCKET_IFNAME already set. Optional TP=3 is a different launcher (./start-tp3.sh) and a different component."
+  },
+  "lifecycle": {
+    "topology": "tp2",
+    "orchestrator": "head",
+    "workdir": "~/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark",
+    "loadingDeadlineMs": 1200000,
+    "requiredEnv": [
+      "WORKER_HOST",
+      "MASTER_ADDR",
+      "NCCL_IB_HCA",
+      "NCCL_SOCKET_IFNAME"
+    ],
+    "startOrder": [
+      "worker",
+      "head"
+    ],
+    "notes": [
+      "MIT upstream (Tony Deangelo / MiaAI-Lab). Herd does not copy launcher source.",
+      "./prepare-dspark-model-cache.sh --official then ./start-deepseek-v4-flash-dspark.sh (worker first, then head).",
+      "./stop-deepseek-v4-flash-dspark.sh stops both ranks.",
+      "Abliterated prepare is gated; no access bypass.",
+      "Do not silently change RoCE devices or IF names; validate the configured ones only."
+    ],
+    "install": {
+      "argv": [
+        "./prepare-dspark-model-cache.sh"
+      ],
+      "executeArgv": [
+        "./prepare-dspark-model-cache.sh"
+      ],
+      "requiresSudo": false,
+      "estDiskGB": null,
+      "estBootMs": 1200000,
+      "notes": [
+        "prepare downloads official weights when missing. Confirm does not pass --abliterated unless the operator's overlay requested that gated path."
+      ]
+    },
+    "switch": {
+      "argv": [
+        "./start-deepseek-v4-flash-dspark.sh"
+      ],
+      "requiresSudo": false,
+      "startsEngine": true,
+      "note": "Upstream start brings worker up first, then head."
+    },
+    "stop": {
+      "argv": [
+        "./stop-deepseek-v4-flash-dspark.sh"
+      ],
+      "requiresSudo": false
+    }
+  },
+  "source": {
+    "origin": "MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark",
+    "upstreamCommit": "a8b4636710068fd30edb98e1365d567086cc208e",
+    "derivedFrom": [
+      "README.md",
+      "LICENSE",
+      "start-deepseek-v4-flash-dspark.sh (usage header)",
+      "prepare-dspark-model-cache.sh (name)",
+      "stop-deepseek-v4-flash-dspark.sh (name)"
+    ],
+    "license": "MIT",
+    "copyright": "Copyright (c) 2026 Tony Deangelo",
+    "modelLicenseNote": "Official Vision-Exp weights vs gated abliteration extras are distinct; HF_TOKEN agreement required for the gated path.",
+    "retrievedAt": "2026-11-06"
+  },
+  "description": "TP=2 DeepSeek-V4-Flash Vision-Exp via pinned DSpark entry points (vLLM). Group recording/history identity follows COMP2. NCCL/RoCE settings must already exist on the group; herd will not rewrite them."
+}
