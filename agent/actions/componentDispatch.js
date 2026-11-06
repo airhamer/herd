@@ -187,8 +187,8 @@ async function handleSwapVariant(request, def, instance, store, instancePath, de
 
   if (hw) {
     const exec = typeof deps.execSwitch === "function"
-      ? await deps.execSwitch({ argv: hw.argv, cwd: deps.switchCwd })
-      : await runSwitchModel(hw.argv, { cwd: deps.switchCwd, execFile: deps.execFile });
+      ? await deps.execSwitch({ argv: hw.argv, cwd: deps.switchCwd || instance.checkoutDir || process.env.ALZEO_DIR || process.env.HASSO_WORKDIR })
+      : await runSwitchModel(hw.argv, { cwd: deps.switchCwd || instance.checkoutDir || process.env.ALZEO_DIR || process.env.HASSO_WORKDIR, execFile: deps.execFile });
     if (!exec || exec.ok === false) {
       // Desired metadata stays on the previous variant. We do not claim the
       // hardware was rolled back — switch-model.sh does not provide a
@@ -514,11 +514,21 @@ async function handleRecipeLifecycle(request, def, instance, deps, env, started)
     ? `${request.type} completed at ${checkoutDest}; pin verified before upstream scripts. Engine not started (--no-start). Recording policy unchanged.`
     : `${request.type} completed. Recording policy unchanged.`;
   env.steps = steps;
+  if (checkoutDest && request.nodeId) {
+    const rec = { ...instance, checkoutDir: checkoutDest };
+    const cfg = deps.configDir || process.env.HERD_AGENT_CONFIG || "agent/config";
+    const instPath = deps.instancePath || defaultInstancePath(cfg);
+    const store = typeof deps.loadStore === "function" ? deps.loadStore() : loadInstanceStore(instPath);
+    const next = writeInstance(store, request.nodeId, request.componentId, rec);
+    if (typeof deps.saveStore === "function") deps.saveStore(next);
+    else saveInstanceStore(instPath, next);
+  }
   env.state = {
     componentId: def.id,
     variantId: instance.variantId,
     servedModelName: instance.servedModelName,
     recording: resolveRecordingPolicy([def.runtimeProfile.recording, instance.recording]),
+    checkoutDir: checkoutDest || instance.checkoutDir || null,
   };
   env.durationMs = Date.now() - started;
   return env;
