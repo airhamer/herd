@@ -31,6 +31,10 @@ A component definition is scoped to **(tp, inference-machine-class)**:
 See `docs/COMPONENTS-DESIGN-PROPOSAL.md` (repo docs) for the full schema and
 the conversion rules used for the Hasso-derived examples.
 
+Variant weights (standard vs uncensored) are subcomponents of a Component;
+they must not rewrite the serving/monitoring profile. See proposal §8 and
+`docs/telemetry-design.md` §18.
+
 ## Aliases and placeholder ports
 
 A definition may list `model.aliases` (served model ids the live engine might
