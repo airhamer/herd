@@ -507,5 +507,5 @@ silently edit the parent profile. That is the same spirit as §3 (copy-on-TP-or-
 machine-class): create or migrate a definition explicitly.
 
 This amendment does not invent catalog JSON syntax yet. Implementation gaps
-are tracked as **COMP2** (link from the follow-up telemetry-design pull request).
+are tracked as [#118](https://github.com/airhamer/herd/issues/118) **COMP2** (spec PR [#117](https://github.com/airhamer/herd/pull/117)).
 

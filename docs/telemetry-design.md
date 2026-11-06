@@ -3,7 +3,7 @@
 **Status:** proposed  
 **Date:** 2026-11-06 (America/New_York)  
 **Authoring branch:** `vadig/telemetry-profiles` (follow-up to merged [#116](https://github.com/airhamer/herd/pull/116))  
-**Defect:** [COMP2] implementation gaps — see the reciprocal issue linked from the pull request once filed.  
+**Defect:** [#118](https://github.com/airhamer/herd/issues/118) `[COMP2]` implementation gaps (project board Todo). Spec PR [#117](https://github.com/airhamer/herd/pull/117).  
 **Does not implement** the architecture. This is an ADR for later spec-based work.  
 **License:** herd stays MIT. Upstream sparkDash has been Apache-2.0 since [v2.0.0](https://github.com/MiaAI-Lab/sparkDash/commit/5051a33db3aa6ddc875dca1bf4cc71939d49af59) (license text commit `5051a33`, 2026-10-09). This note inspects upstream source to explain mechanisms and cites pinned commits. It does **not** copy upstream code. Later implementation must be written from this specification, not transplanted from sparkDash. After this inspection, that work is not independent clean-room authorship.
 
@@ -366,7 +366,7 @@ The `127.0.0.1:8082->http://127.0.0.1:8080` string is **not** valid `LLM_PROXY` 
 5. Align Traffic/Requests empty states with §12 (some of this is sketched in open PR #111; fix the version and `LLM_PROXY` syntax there when someone next touches it — not in this PR).
 6. Showcase labeling and prefill definition on the MIT fleet Showcase path.
 7. `LLM_PROXY` remains documented fallback only.
-8. Component-owned serving/monitoring profiles and compatible variant (standard ↔ uncensored) swaps — [COMP2] defect, §18. Do not implement in this documentation change.
+8. Component-owned serving/monitoring profiles and compatible variant (standard ↔ uncensored) swaps — [#118](https://github.com/airhamer/herd/issues/118) `[COMP2]`, §18. Do not implement in this documentation change.
 
 Do not close or rewrite #111 / #104 in this change.
 
