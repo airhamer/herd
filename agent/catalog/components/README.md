@@ -60,3 +60,10 @@ Optional `lifecycle` describes dashboard-driven install and unit rewrite using
 deadlines. Confirm is required. The agent executes argv arrays (no shell), and
 only after a matching confirmation token. Missing checkouts are blockers — the
 dashboard will not `curl | sh`.
+
+## TP=2 group recipes
+
+`glm53-flash-tensorfold-tp2-gx10.json` and `deepseek-v4-flash-vllm-tp2-gx10.json`
+target a two-Spark group. They record pinned upstream entry points only
+(Apache-2.0 GLM recipe code is not copied). Interconnect settings are
+validated, never rewritten.

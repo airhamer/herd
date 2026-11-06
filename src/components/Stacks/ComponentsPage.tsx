@@ -5,6 +5,7 @@ import {
   fetchStacks,
   saveStack,
   sendComponentAction,
+  sendGroupComponentAction,
   fetchRecordingStatus,
   fetchRecordings,
   fetchRecording,
@@ -216,7 +217,9 @@ export function ComponentsPage({ scopeNodeId, scopeGroupId }: ComponentsPageProp
       };
       setAction((a) => ({ ...a, busy: key, error: null }));
       try {
-        const result = await sendComponentAction(nodeId, body);
+        const result = scopeGroupId && comp.tp === 2
+          ? await sendGroupComponentAction(scopeGroupId, { ...body, groupRef: scopeGroupId })
+          : await sendComponentAction(nodeId, body);
         setAction((a) => ({
           ...a,
           busy: null,
@@ -232,7 +235,7 @@ export function ComponentsPage({ scopeNodeId, scopeGroupId }: ComponentsPageProp
         }));
       }
     },
-    [nodeNames, reload]
+    [nodeNames, reload, scopeGroupId]
   );
 
   return (

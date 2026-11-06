@@ -89,6 +89,8 @@ import { aggregateRequests, fleetGpuFromMonitor } from "./fleet/aggregate.js";
 import { renderFleetMetrics } from "./fleet/metrics.js";
 import { createUpdatesProxy, createPlanStore } from "./fleet/updatesProxy.js";
 import { buildComponentAction, proxyComponentAction } from "./fleet/componentActions.js";
+import { dispatchGroupComponentAction } from "./fleet/groupRecipeActions.js";
+import { loadDefinitions, getDefinition } from "../agent/catalog/definitions.js";
 import { proxyAgentJson, requireRecordingAccess } from "./fleet/recordingProxy.js";
 import { loadComponentCatalog, joinComponentState } from "./fleet/componentCatalog.js";
 import { createWaveSequencer } from "./fleet/waveSequencer.js";
@@ -1274,6 +1276,46 @@ app.post("/api/fleet/nodes/:id/component-actions", async (req, res) => {
  * route above — the browser sends ComponentActionRequest fields there and
  * gets ComponentActionResult back (dry-run preview = same route, dryRun:true).
  */
+
+
+app.post("/api/fleet/groups/:id/component-actions", async (req, res) => {
+  const nodes = listNodes();
+  const doc = groupStore.read(nodes);
+  const group = (doc.groups || []).find((g) => g.id === req.params.id);
+  if (!group || !Array.isArray(group.members) || group.members.length !== 2) {
+    return res.status(404).json({ error: "Group not found or not a two-member TP=2 group" });
+  }
+  const { definitions } = loadDefinitions();
+  const def = getDefinition(definitions, req.body?.componentId);
+  if (!def) return res.status(404).json({ error: "unknown component" });
+  const workerId = group.members.find((m, i) => (group.headId ? m !== group.headId : i === 1)) || group.members[1];
+  const headId = group.headId || group.members[0];
+  const workerRec = nodes.find((n) => n.id === workerId);
+  const headRec = nodes.find((n) => n.id === headId);
+  const config = { ...(req.body?.network?.config || req.body?.env || {}) };
+  // Inventory lanIp is management/control (agent health) only. Do not copy it
+  // into WORKER / WORKER_HOST / MASTER_ADDR / NCCL_* (explicit overlay required).
+  void workerRec;
+  void headRec;
+  const built = buildComponentAction({ ...req.body, groupRef: group.id, exclusiveWith: null }, {
+    nodeId: headId,
+    actor: req.auth?.actor ?? req.headers["x-actor"] ?? null,
+  });
+  if (!built.ok) return res.status(built.status).json({ error: built.error });
+  const out = await dispatchGroupComponentAction({
+    definition: def,
+    group: { ...group, headId, members: group.members },
+    network: { config, mutateHardware: false },
+    request: built.request,
+    listNodes: nodes,
+    probeHealth: async (rec) => {
+      const r = await proxyAgentJson(rec, "/health", { timeoutMs: 4000 });
+      return { ok: r.status === 200 && r.body?.ok !== false, error: r.body?.error };
+    },
+    proxy: (rec, request) => proxyComponentAction(rec, request),
+  });
+  res.status(out.status).json(out.body);
+});
 
 app.get("/api/fleet/nodes/:id/recordings", async (req, res) => {
   const rec = listNodes().find((n) => n.id === req.params.id);

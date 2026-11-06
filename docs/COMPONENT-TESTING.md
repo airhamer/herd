@@ -105,21 +105,29 @@ is never a verified numeric source.
 
 ## TP=2 groups
 
-GLM-5.3-Flash and DeepSeek-v4-Flash recipes talk to both group member
-agents (checkout + health). Upstream launchers run from the **head**:
+From a group's Components tab, Install/Stop posts to
+`/api/fleet/groups/:id/component-actions`. The server:
+
+1. Requires exactly two registered members and probes both agents (`GET /health`).
+   Either failure aborts the whole action (all-or-nothing).
+2. Fails closed if required named interconnect/data-plane values are missing,
+   before any stop or mutation. Inventory `lanIp` is the management path
+   (dashboard ↔ agent) only — it is never copied into `WORKER`,
+   `WORKER_HOST`, `MASTER_ADDR`, or `NCCL_*`.
+3. Stops via the head orchestrator (`./stop.sh` /
+   `./stop-deepseek-v4-flash-dspark.sh`). Those scripts SSH to the worker.
+4. Checks out the pin on each member. Only the head runs the upstream start
+   entrypoint: GLM `./start.sh`; DeepSeek `./start-deepseek-v4-flash-dspark.sh`
+   (the script itself starts the worker rank first, then head). Workers are
+   checkout + readiness only.
 
 - GLM pin `02dac3879852b8c5713318d3d64a5a791002e954`: `WORKER` is an SSH
-  target; `./start.sh` / `./stop.sh` on the head start/stop both ranks and
-  discover the RoCE fabric from the route to `WORKER`. Do not fill `WORKER`
-  from inventory LAN IP. https://github.com/MiaAI-Lab/GLM-5.3-Flash-DGX-Sparks-1104/blob/02dac3879852b8c5713318d3d64a5a791002e954/scripts/config.sh
-- DeepSeek pin `a8b4636710068fd30edb98e1365d567086cc208e`: run
-  `./start-deepseek-v4-flash-dspark.sh` and `./stop-deepseek-v4-flash-dspark.sh`
-  from the head (scripts SSH to `WORKER_HOST`). Required data-plane env:
+  target; start.sh discovers the RoCE fabric from the route to `WORKER`.
+  https://github.com/MiaAI-Lab/GLM-5.3-Flash-DGX-Sparks-1104/blob/02dac3879852b8c5713318d3d64a5a791002e954/scripts/config.sh
+- DeepSeek pin `a8b4636710068fd30edb98e1365d567086cc208e` requires explicit
   `WORKER_HOST`, `MASTER_ADDR`, `MASTER_PORT`, `NCCL_IB_HCA`,
-  `NCCL_SOCKET_IFNAME` — explicit overlay only, never inventory LAN.
+  `NCCL_SOCKET_IFNAME`.
   https://github.com/MiaAI-Lab/DeepSeek-v4-Flash-DSpark-2x-DGX-Spark/blob/a8b4636710068fd30edb98e1365d567086cc208e/start-deepseek-v4-flash-dspark.sh
 
-Missing data-plane / interconnect values fail closed before any stop or
-mutation. Preview lists management (inventory `lanIp:agentPort`) separately
-from named control/data paths. CI and dashboard tests use mocks only — no
-live GPU success is claimed. Live hardware is unverified.
+Preview lists management vs named control/data paths. CI mocks both agents.
+No live GPU success is claimed. Live hardware is unverified.
