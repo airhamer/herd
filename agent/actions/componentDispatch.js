@@ -29,6 +29,7 @@ import {
   saveInstanceStore,
   readInstance,
   writeInstance,
+  nextVariantGeneration,
   defaultInstancePath,
 } from "../catalog/componentInstance.js";
 
@@ -235,6 +236,7 @@ async function handleSwapVariant(request, def, instance, store, instancePath, de
 
     const nextRec = {
       variantId: preview.result.variantId,
+      variantGeneration: nextVariantGeneration(instance, preview.result.variantId),
       recording: preview.result.recording,
       segments: preview.result.segments,
       servedModelName: preview.result.servedModelName,
@@ -271,6 +273,7 @@ async function handleSwapVariant(request, def, instance, store, instancePath, de
 
   const nextRec = {
     variantId: preview.result.variantId,
+    variantGeneration: nextVariantGeneration(instance, preview.result.variantId),
     recording: preview.result.recording,
     segments: preview.result.segments,
     servedModelName: preview.result.servedModelName,

@@ -45,8 +45,13 @@ export function saveRecordingStore(filePath, store) {
   fs.mkdirSync(dir, { recursive: true });
   const tmp = `${filePath}.tmp`;
   const payload = { version: 1, records: store.records };
-  fs.writeFileSync(tmp, JSON.stringify(payload) + "\n");
+  fs.writeFileSync(tmp, JSON.stringify(payload) + "\n", { mode: 0o600 });
   fs.renameSync(tmp, filePath);
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch {
+    /* best-effort owner-only mode after atomic replace */
+  }
 }
 
 export function vacuumStore(store, opts = {}) {
@@ -111,6 +116,7 @@ export function buildCaptureRecord(input, policy) {
     segment: ids.segment,
     componentId: input.componentId,
     variantId: input.variantId || "default",
+    variantGeneration: Number.isFinite(input.variantGeneration) ? input.variantGeneration : 0,
     nodeId: input.nodeId || null,
     capturedAt: input.capturedAt || Date.now(),
     expiresAt:
@@ -161,6 +167,7 @@ export function listCaptures(store, filter = {}) {
       segment: r.segment,
       componentId: r.componentId,
       variantId: r.variantId,
+      variantGeneration: r.variantGeneration ?? 0,
       nodeId: r.nodeId,
       capturedAt: r.capturedAt,
       expiresAt: r.expiresAt,

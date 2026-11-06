@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { handleListRecordings, handleGetRecording, handleDeleteRecording, handleRecordingStatus } from "../handlers.js";
+import { handleListRecordings, handleGetRecording, handleDeleteRecording, handleRecordingStatus, observerIsPresent } from "../handlers.js";
 import { emptyRecordingStore, appendCapture, buildCaptureRecord } from "../store.js";
 
 const policy = { content: "prompts+responses", retentionHours: 24, maxBytes: 4096, observer: "relay" };
@@ -54,4 +54,20 @@ test("delete + status without observer", () => {
   });
   assert.match(status.body.ui, /unavailable/);
   assert.equal(status.body.recording, false);
+});
+
+test("LITELLM_BASE_URL alone is not a present observer", () => {
+  assert.equal(observerIsPresent({ env: { LITELLM_BASE_URL: "http://127.0.0.1:4000" } }), false);
+  assert.equal(observerIsPresent({ env: { LITELLM_BASE_URL: "http://127.0.0.1:4000", LLM_PROXY: "" } }), false);
+  assert.equal(observerIsPresent({ env: { LLM_PROXY: "not-valid", LITELLM_BASE_URL: "http://x" } }), false);
+  assert.equal(observerIsPresent({ env: { LLM_PROXY: "18080:8080" } }), true);
+});
+
+test("disabled policy status is not marked actively recording even with a relay", () => {
+  const status = handleRecordingStatus({
+    policy: { content: "metadata", observer: "relay" },
+    ctx: { observerPresent: true },
+  });
+  assert.equal(status.body.recording, false);
+  assert.equal(status.body.available, true);
 });

@@ -3,7 +3,32 @@
  *
  * The dashboard may only invoke `./switch-model.sh <allowlisted-target>`.
  * No shell strings, no extra flags, no arbitrary paths.
+ *
+ * Verified against the pinned alzeo `switch-model.sh` case at
+ * https://github.com/hasso5703/alzeo/blob/01902c67709c4164c30ccf036422bfed6f172158/switch-model.sh
+ * (parser `case "$MODEL" in` around line 60). Unsupported invented names
+ * fail compatibility instead of executing a guessed command.
  */
+export const PINNED_ALZEO_SWITCH_TARGETS = Object.freeze([
+  "stock",
+  "uncensored",
+  "fp8",
+  "uncensored-fp8",
+  "flash",
+  "flash-nvda",
+  "flash-uncensored",
+  "image",
+  "image-turbo",
+  "video",
+  "kolibri",
+  "kolibri-nvfp4",
+  "nemotron",
+  "nemotron-super",
+  "flash-local",
+  "ornith-122b",
+]);
+
+/** Targets bound to current herd recipe variants (subset of the pin). */
 export const ALLOWED_SWITCH_TARGETS = Object.freeze([
   "stock",
   "uncensored",
@@ -24,10 +49,13 @@ export function validateSwitchTarget(target) {
     return { ok: false, error: "no switchTarget on variant (metadata-only swap)", code: "no-switch-target" };
   }
   if (typeof target !== "string" || !TARGET_SET.has(target)) {
+    const pinned = PINNED_ALZEO_SWITCH_TARGETS.includes(target);
     return {
       ok: false,
-      error: `switch target '${String(target)}' is not allowlisted (expected ${ALLOWED_SWITCH_TARGETS.join("|")})`,
-      code: "target-not-allowlisted",
+      error: pinned
+        ? `switch target '${target}' exists upstream but no current herd recipe variant binds it`
+        : `switch target '${String(target)}' is not a pinned switch-model.sh target (expected ${ALLOWED_SWITCH_TARGETS.join("|")})`,
+      code: pinned ? "target-unbound-in-herd" : "target-not-allowlisted",
     };
   }
   return { ok: true, target, argv: [SWITCH_SCRIPT, target] };

@@ -122,3 +122,21 @@ test("buildCaptureRecord rejects injected secret fields by never adding headers"
   assert.ok(!JSON.stringify(r).toLowerCase().includes("authorization"));
   assert.ok(!JSON.stringify(r).includes("Bearer"));
 });
+
+test("retention file is owner-only after atomic save", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "herd-rec-"));
+  const file = defaultRecordingPath(dir);
+  saveRecordingStore(file, appendCapture(emptyRecordingStore(), rec()));
+  const mode = fs.statSync(file).mode & 0o777;
+  assert.equal(mode, 0o600);
+});
+
+test("metadata list never includes prompt or response text", () => {
+  const listed = listCaptures(appendCapture(emptyRecordingStore(), rec({ prompt: "secret prompt body" })));
+  assert.equal(listed[0].hasPrompt, true);
+  const blob = JSON.stringify(listed);
+  assert.equal(blob.includes("secret prompt body"), false);
+  assert.equal(blob.includes("there"), false);
+  assert.equal("prompt" in listed[0], false);
+  assert.equal("response" in listed[0], false);
+});
