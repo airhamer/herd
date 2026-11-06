@@ -25,6 +25,7 @@ export const ALLOWED_ENV = Object.freeze([
   "WORKER",
   "WORKER_HOST",
   "MASTER_ADDR",
+  "MASTER_PORT",
   "NCCL_IB_HCA",
   "NCCL_SOCKET_IFNAME",
   "VLLM_HOST_IP",

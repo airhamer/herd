@@ -161,10 +161,8 @@
     "roles": {
       "worker": {
         "runsInstaller": false,
-        "stopArgv": [
-          "./stop.sh"
-        ],
-        "note": "Checkout + readiness + stop on the worker agent. Head ./start.sh starts both ranks using already-configured WORKER; this agent is not skipped."
+        "runsStop": false,
+        "note": "Checkout + readiness only. Pinned ./start.sh and ./stop.sh run from the head and SSH to WORKER (scripts/config.sh). Do not invoke them on the worker agent."
       },
       "head": {
         "runsInstaller": true,
@@ -177,7 +175,7 @@
         "stopArgv": [
           "./stop.sh"
         ],
-        "note": "Pinned ./start.sh (DRY_RUN=1 in preview). WORKER must already be configured; herd does not rewrite RoCE."
+        "note": "Pinned ./start.sh / ./stop.sh from the head (DRY_RUN=1 in preview). WORKER must be an explicit SSH target; herd does not fill it from inventory LAN or rewrite RoCE."
       }
     }
   },

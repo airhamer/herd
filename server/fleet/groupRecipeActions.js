@@ -3,7 +3,7 @@
  * All-or-nothing preflight, worker-then-head (or reverse for stop),
  * no RoCE mutation, mocks-friendly proxy injection. Never claims live GPU success.
  */
-import { planGroupFanout } from "../../shared/groupRecipe.js";
+import { planGroupFanout, memberRolePlan } from "../../shared/groupRecipe.js";
 import { validateEnv } from "../../shared/recipePlan.js";
 import { mintConfirmationToken } from "../../agent/actions/component.js";
 
@@ -72,8 +72,19 @@ export async function dispatchGroupComponentAction(opts) {
 
   const steps = [];
   // Stop old component safely across the group (reverse order) before a new install/start.
+  // Only members with a real orchestrator stop entrypoint are contacted (typically head).
   if (action === "install" || action === "start") {
     for (const m of [...recs].reverse()) {
+      const stopPlan = memberRolePlan(definition, m.role, { action: "stop", env: m.env });
+      if (!stopPlan.argv) {
+        steps.push({
+          step: `stop-${m.role}`,
+          nodeId: m.nodeId,
+          status: "skipped",
+          message: "no upstream stop entrypoint on this role (orchestrator-only)",
+        });
+        continue;
+      }
       const stopBody = {
         ...request,
         type: "stop",

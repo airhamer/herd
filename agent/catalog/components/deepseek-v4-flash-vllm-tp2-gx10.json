@@ -110,7 +110,7 @@
       "head",
       "worker"
     ],
-    "rule": "Run from the head. Requires WORKER_HOST, MASTER_ADDR, NCCL_IB_HCA, NCCL_SOCKET_IFNAME already set. Optional TP=3 is a different launcher (./start-tp3.sh) and a different component."
+    "rule": "Run from the head. Requires WORKER_HOST, MASTER_ADDR, MASTER_PORT, NCCL_IB_HCA, NCCL_SOCKET_IFNAME already set. Optional TP=3 is a different launcher (./start-tp3.sh) and a different component."
   },
   "lifecycle": {
     "topology": "tp2",
@@ -120,6 +120,7 @@
     "requiredEnv": [
       "WORKER_HOST",
       "MASTER_ADDR",
+      "MASTER_PORT",
       "NCCL_IB_HCA",
       "NCCL_SOCKET_IFNAME"
     ],
@@ -164,17 +165,9 @@
     },
     "roles": {
       "worker": {
-        "runsInstaller": true,
-        "installArgv": [
-          "./start-deepseek-v4-flash-dspark.sh"
-        ],
-        "prepareArgv": [
-          "./prepare-dspark-model-cache.sh"
-        ],
-        "stopArgv": [
-          "./stop-deepseek-v4-flash-dspark.sh"
-        ],
-        "note": "Worker-first start of the pinned DeepSeek launcher after checkout."
+        "runsInstaller": false,
+        "runsStop": false,
+        "note": "Checkout + readiness only. README: run everything from the head. start-deepseek-v4-flash-dspark.sh and stop-deepseek-v4-flash-dspark.sh SSH to WORKER_HOST."
       },
       "head": {
         "runsInstaller": true,
@@ -184,7 +177,7 @@
         "stopArgv": [
           "./stop-deepseek-v4-flash-dspark.sh"
         ],
-        "note": "Head start after the worker agent reports readiness. NCCL/IF names come from the existing overlay only."
+        "note": "Head runs the pinned start/stop scripts (they bring the worker rank up/down over SSH). WORKER_HOST, MASTER_ADDR, MASTER_PORT, NCCL_IB_HCA, NCCL_SOCKET_IFNAME must be explicit overlay values."
       }
     }
   },

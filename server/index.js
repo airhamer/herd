@@ -1293,9 +1293,10 @@ app.post("/api/fleet/groups/:id/component-actions", async (req, res) => {
   const workerRec = nodes.find((n) => n.id === workerId);
   const headRec = nodes.find((n) => n.id === headId);
   const config = { ...(req.body?.network?.config || req.body?.env || {}) };
-  if (!config.WORKER && workerRec?.lanIp) config.WORKER = workerRec.lanIp;
-  if (!config.WORKER_HOST && workerRec?.lanIp) config.WORKER_HOST = workerRec.lanIp;
-  if (!config.MASTER_ADDR && headRec?.lanIp) config.MASTER_ADDR = headRec.lanIp;
+  // Inventory lanIp is management/control (agent health) only. Do not copy it
+  // into WORKER / WORKER_HOST / MASTER_ADDR / NCCL_* (explicit overlay required).
+  void workerRec;
+  void headRec;
   const built = buildComponentAction({ ...req.body, groupRef: group.id, exclusiveWith: null }, {
     nodeId: headId,
     actor: req.auth?.actor ?? req.headers["x-actor"] ?? null,
