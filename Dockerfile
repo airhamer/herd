@@ -57,6 +57,9 @@ COPY --from=builder /app/server ./server
 # server/fleet imports agent/catalog (stacks-catalog, memory, components JSON)
 # and agent/actions/roceLinks — ship the agent tree in the dashboard image too.
 COPY --from=builder /app/agent ./agent
+# server/fleet imports ../../shared/componentMatch.js at runtime (root shared/,
+# not src/shared) — ship it in the dashboard image too.
+COPY --from=builder /app/shared ./shared
 COPY --from=builder /app/src/shared ./src/shared
 COPY --from=builder /app/src/components/ShowcasePage/showcasePrompts.ts ./src/components/ShowcasePage/showcasePrompts.ts
 COPY --from=builder /app/config ./config
