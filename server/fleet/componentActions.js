@@ -29,7 +29,7 @@
 import { randomUUID } from "node:crypto";
 
 /** v2 verbs (shared/types.ts ComponentActionType). */
-const TYPES = ["start", "stop", "restart"];
+const TYPES = ["start", "stop", "restart", "swap-variant"];
 
 /**
  * Build a v2 ComponentActionRequest from a browser payload.
@@ -71,6 +71,10 @@ export function buildComponentAction(body, ctx) {
   const timeoutMs = pick("timeoutMs");
   if (timeoutMs !== null && !(typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0))
     issues.push("timeoutMs must be positive number or null");
+  const variantId = pick("variantId");
+  if (variantId !== null && typeof variantId !== "string") issues.push("variantId must be string or null");
+  if (type === "swap-variant" && (typeof variantId !== "string" || variantId.trim() === ""))
+    issues.push("variantId is required for swap-variant");
 
   if (issues.length > 0) return { ok: false, status: 400, error: issues.join("; ") };
 
@@ -89,6 +93,7 @@ export function buildComponentAction(body, ctx) {
       dryRun,
       recipeName,
       timeoutMs,
+      variantId,
       actor: typeof ctx?.actor === "string" ? ctx.actor : null,
     },
   };

@@ -1241,7 +1241,7 @@ export interface ActionResponse {
  *  by scanning live state becomes, in v2, either `start` with
  *  `exclusiveWith` (stated intent, take-turn) or a server-orchestrated
  *  stop-then-start. The agent only ever executes one goal-state verb. */
-export type ComponentActionType = "start" | "stop" | "restart";
+export type ComponentActionType = "start" | "stop" | "restart" | "swap-variant";
 
 /** Confirmation class for a real (non-dry-run) execution. */
 export type ComponentActionConfirm = "none" | "required";
@@ -1297,6 +1297,8 @@ export interface ComponentActionRequest {
   recipeName: string | null;
   /** Wall-clock budget ms (canary budget included); null = engine default. */
   timeoutMs: number | null;
+  /** Target variant id when type is swap-variant. */
+  variantId?: string | null;
   /** Requesting principal ("dashboard:<user>" / "agent:<id>"), audit-only. */
   actor: string | null;
 }
@@ -1354,7 +1356,7 @@ export interface ComponentActionResult {
 /** Dry-run plan: what the agent WOULD do, in order, and what it costs. */
 export interface ComponentActionPlan {
   /** Ordered step verbs for the real run (empty when scopeBlocked). */
-  willDo: Array<"stop" | "start" | "canary" | "traffic-check">;
+  willDo: Array<"stop" | "start" | "canary" | "traffic-check" | "swap-variant" | "install" | "configure">;
   /** Component stopped by the take-turn (null when none). */
   displaces: string | null;
   /** Confirmation class for the real execution. */

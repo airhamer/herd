@@ -35,6 +35,7 @@
 import http from "node:http";
 
 import { dispatchAction } from "./actions/dispatch.js";
+import { dispatchComponentAction, isV2ComponentAction } from "./actions/componentDispatch.js";
 import { readAudit, DEFAULT_READ_LIMIT } from "./actions/audit.js";
 import { applyLinkPlan } from "./actions/roceLinks.js";
 
@@ -188,7 +189,7 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
             } catch {
               throw Object.assign(new Error("invalid JSON body"), { httpStatus: 400 });
             }
-            return dispatchAction(request, {
+            const dispatchDeps = {
               ...(catalog && {
                 getRecipe: catalog.getRecipe,
                 listRecipes: catalog.listRecipes,
@@ -197,7 +198,15 @@ export function createHttpServer(snapshotFn, port = 30091, bind = "0.0.0.0", opt
               auditPath,
               llmAuthTokens,
               ...(updates && { updates }),
-            }).then((response) => ({ status: 200, body: response }));
+            };
+            if (isV2ComponentAction(request)) {
+              return dispatchComponentAction(request, {
+                dispatchAction,
+                dispatchDeps,
+                confirmSecret: process.env.HERD_ACTION_SECRET,
+              }).then((response) => ({ status: 200, body: response }));
+            }
+            return dispatchAction(request, dispatchDeps).then((response) => ({ status: 200, body: response }));
           })
           .then(({ status, body }) => json(res, status, body))
           .catch((err) => {

@@ -31,6 +31,17 @@ A component definition is scoped to **(tp, inference-machine-class)**:
 See `docs/COMPONENTS-DESIGN-PROPOSAL.md` (repo docs) for the full schema and
 the conversion rules used for the Hasso-derived examples.
 
+Optional `runtimeProfile` and `variants[]` fields (#118) separate the reusable
+serving/monitoring profile (endpoints, adapters, credential *references*,
+recording policy) from weight variants such as stock vs uncensored. Existing
+files without those fields still load: the profile is synthesized from
+`engine`, `ports`, and `model`. A compatible variant swap keeps the parent
+profile; an incompatible engine/protocol/topology/port change is an error.
+Recording defaults to metadata; content recording is an explicit opt-in that
+requires a request-level observer. Instance state (active variant, recording,
+counter segments) is stored in `agent/config/component-instances.json`, not
+by rewriting the catalog file.
+
 ## Aliases and placeholder ports
 
 A definition may list `model.aliases` (served model ids the live engine might

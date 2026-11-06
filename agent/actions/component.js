@@ -20,7 +20,7 @@
 import { createHmac } from "node:crypto";
 
 /** V2 verbs (shared/types.ts ComponentActionType). */
-export const COMPONENT_ACTION_TYPES = ["start", "stop", "restart"];
+export const COMPONENT_ACTION_TYPES = ["start", "stop", "restart", "swap-variant"];
 
 /** Token TTL: a dry-run plan is only valid briefly (live state drifts). */
 export const CONFIRM_TOKEN_TTL_MS = 10 * 60 * 1000;
@@ -67,6 +67,10 @@ export function validateComponentActionRequest(raw) {
     issues.push("timeoutMs must be a positive number or null");
   if (r.actor != null && typeof r.actor !== "string")
     issues.push("actor must be a string or null");
+  if (r.variantId != null && typeof r.variantId !== "string")
+    issues.push("variantId must be a string or null");
+  if (r.type === "swap-variant" && (typeof r.variantId !== "string" || r.variantId.trim() === ""))
+    issues.push("variantId is required for swap-variant");
 
   return { ok: issues.length === 0, issues };
 }
@@ -130,6 +134,9 @@ function hmac(payload, secret) {
  * @returns {object} ActionRequest (shared/types.ts v1)
  */
 export function downgradeToV1(r, resolved) {
+  if (r.type === "swap-variant") {
+    throw new Error("swap-variant has no v1 downgrade (it updates instance state only)");
+  }
   return {
     actionId: r.actionId,
     type: r.type,
